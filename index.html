@@ -291,19 +291,26 @@
 <script>
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
-// Version 3 adds postCreatedAt and enriched flag; permalink and author fields
 db.version(3).stores({
   items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, syncedAt',
   folders: '++id, name, icon, createdAt',
   config: 'key'
+});
+// Version 4: adds enrichAttempts so failed fetches can be retried separately
+// from successful enrichments, and resets incorrectly-stamped failed items
+db.version(4).stores({
+  items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichAttempts, syncedAt',
+  folders: '++id, name, icon, createdAt',
+  config: 'key'
 }).upgrade(tx => {
-  // Migrate existing items: mark them as needing enrichment if no title/subreddit
   return tx.table('items').toCollection().modify(item => {
-    if (item.postCreatedAt === undefined) item.postCreatedAt = null;
-    if (item.enriched === undefined) item.enriched = !!(item.title && item.subreddit);
-    if (item.permalink === undefined) item.permalink = item.url || '';
-    if (item.author === undefined) item.author = '';
-    if (item.score === undefined) item.score = null;
+    if (item.enrichAttempts === undefined) item.enrichAttempts = 0;
+    // Items stamped enriched:true but with no title/subreddit were rate-limited
+    // failures that got incorrectly marked done — reset them so they will retry
+    if (item.enriched && !item.title && !item.subreddit) {
+      item.enriched = false;
+      item.enrichAttempts = 1;
+    }
   });
 });
 
@@ -347,51 +354,49 @@ async function loadData() {
 }
 
 // ─── ENRICHMENT ──────────────────────────────────────────────────────────────
-// Fetches title, subreddit, post_created_at, author from Reddit's public .json API
-// Works without authentication for any public Reddit post or comment
+// Fetches title, subreddit, post_created_at, author from Reddit's public .json API.
+// Works without authentication. Uses adaptive rate limiting and batch pausing
+// to survive enriching thousands of items without getting blocked by Reddit.
+
+// enriched field values:
+//   false / 0 / undefined = needs enrichment
+//   true / 1              = successfully enriched OR permanently unavailable (deleted/private)
+// enrichAttempts field tracks how many times we've tried, so we can skip
+// items that have failed many times (truly deleted/private) vs ones that
+// just got rate-limited mid-run.
 
 async function enrichItemFromReddit(item) {
-  // Build the .json URL from the item's URL or permalink
-  let jsonUrl = null;
-
-  // We need a reddit.com permalink to fetch metadata
   const redditUrl = item.permalink || item.url || '';
-  if (redditUrl.includes('reddit.com')) {
-    // Strip query string, ensure no trailing slash issues, append .json
-    const clean = redditUrl.split('?')[0].replace(/\/$/, '');
-    jsonUrl = clean + '.json?raw_json=1&limit=1';
-  }
+  if (!redditUrl.includes('reddit.com')) return null;
 
-  if (!jsonUrl) return null;
+  const clean = redditUrl.split('?')[0].replace(/\/$/, '');
+  const jsonUrl = clean + '.json?raw_json=1&limit=1';
 
   try {
     const res = await fetch(jsonUrl, {
       headers: { 'Accept': 'application/json' }
     });
+
+    // 429 = rate limited — caller should back off
+    if (res.status === 429) return 'rate_limited';
+    // 403/404 = deleted or private — mark as done so we don't retry forever
+    if (res.status === 403 || res.status === 404) return 'unavailable';
     if (!res.ok) return null;
 
     const data = await res.json();
 
-    // Reddit returns an array: [post_listing, comments_listing]
-    // For posts: data[0].data.children[0].data
-    // For comments: data[1].data.children[0].data (the specific comment)
-    let postData = null;
-    let commentData = null;
+    if (!Array.isArray(data) || data.length === 0) return null;
 
-    if (Array.isArray(data) && data.length > 0) {
-      const postChildren = data[0]?.data?.children;
-      if (postChildren?.length > 0) {
-        postData = postChildren[0].data;
-      }
-      if (item.type === 'comment' && data.length > 1) {
-        const commentChildren = data[1]?.data?.children;
-        if (commentChildren?.length > 0) {
-          commentData = commentChildren[0].data;
-        }
-      }
-    }
-
+    const postChildren = data[0]?.data?.children;
+    if (!postChildren?.length) return null;
+    const postData = postChildren[0].data;
     if (!postData) return null;
+
+    let commentData = null;
+    if (item.type === 'comment' && data.length > 1) {
+      const cc = data[1]?.data?.children;
+      if (cc?.length) commentData = cc[0].data;
+    }
 
     const enriched = {
       subreddit: postData.subreddit || item.subreddit || '',
@@ -399,15 +404,14 @@ async function enrichItemFromReddit(item) {
         ? new Date(postData.created_utc * 1000).toISOString()
         : item.postCreatedAt || null,
       enriched: true,
+      enrichAttempts: (item.enrichAttempts || 0) + 1,
     };
 
     if (item.type === 'comment') {
-      // For comments: title = parent post title, body = comment body
       enriched.title = postData.title || item.title || 'Saved Comment';
       enriched.author = commentData?.author || item.author || '';
       enriched.body = commentData?.body || item.body || '';
       enriched.score = commentData?.score ?? item.score ?? null;
-      // postCreatedAt for comments should be when the *comment* was made
       if (commentData?.created_utc) {
         enriched.postCreatedAt = new Date(commentData.created_utc * 1000).toISOString();
       }
@@ -416,7 +420,6 @@ async function enrichItemFromReddit(item) {
       enriched.author = postData.author || item.author || '';
       enriched.body = postData.selftext || item.body || '';
       enriched.score = postData.score ?? item.score ?? null;
-      // For link posts, also grab the external URL if we only had the permalink
       if (postData.url && !postData.url.includes('reddit.com/r/')) {
         enriched.url = postData.url;
       }
@@ -424,17 +427,42 @@ async function enrichItemFromReddit(item) {
 
     return enriched;
   } catch(e) {
-    return null; // Silently skip — deleted posts, private subreddits, etc.
+    return null;
   }
 }
 
-async function enrichAllItems() {
-  if (state.enriching) return;
+// How many consecutive failures before we take a long break
+const FAILURE_THRESHOLD = 5;
+// How long to pause after hitting the failure threshold (ms)
+const BACKOFF_PAUSE = 60000; // 1 minute
+// Base delay between requests (ms)
+const BASE_DELAY = 2000;
+// Batch size before a shorter mid-batch pause
+const BATCH_SIZE = 50;
+const BATCH_PAUSE = 15000; // 15 seconds between batches
 
-  const unenriched = await db.items.where('enriched').equals(0).toArray();
-  // Also catch items where enriched is null/undefined
-  const nullEnriched = state.items.filter(i => !i.enriched && !unenriched.find(u => u.id === i.id));
-  const toEnrich = [...unenriched, ...nullEnriched];
+let enrichStopped = false;
+
+async function enrichAllItems(retryFailed = false) {
+  if (state.enriching) return;
+  enrichStopped = false;
+
+  // Decide which items to process:
+  // Normal run: items where enriched is falsy
+  // Retry run: items that were attempted (enrichAttempts > 0) but still have no title
+  let toEnrich;
+  if (retryFailed) {
+    // Reset items that were previously stamped as done but have no useful data
+    await db.items.toCollection().modify(item => {
+      if (item.enriched && !item.title && !item.subreddit) {
+        item.enriched = false;
+      }
+    });
+    await loadData();
+  }
+
+  const allItems = await db.items.toArray();
+  toEnrich = allItems.filter(i => !i.enriched);
 
   if (toEnrich.length === 0) {
     showToast('All items already enriched ✓', 'success');
@@ -442,62 +470,117 @@ async function enrichAllItems() {
   }
 
   state.enriching = true;
-  state.enrichProgress = { done: 0, total: toEnrich.length };
+  state.enrichProgress = { done: 0, total: toEnrich.length, enriched: 0, failed: 0, rateLimited: 0 };
   render();
 
   let enrichedCount = 0;
   let failedCount = 0;
+  let consecutiveFails = 0;
 
   for (let i = 0; i < toEnrich.length; i++) {
-    const item = toEnrich[i];
-    state.enrichProgress.done = i;
-
-    // Update progress in the import page if it's visible
-    updateEnrichProgress(i, toEnrich.length, enrichedCount, failedCount);
-
-    const data = await enrichItemFromReddit(item);
-    if (data) {
-      await db.items.update(item.id, data);
-      enrichedCount++;
-    } else {
-      // Mark as attempted even if failed (deleted post, etc.)
-      await db.items.update(item.id, { enriched: true });
-      failedCount++;
+    if (enrichStopped) {
+      showToast('Enrichment paused — click Start to resume', 'warning');
+      break;
     }
 
-    // Polite delay — Reddit's public JSON API has rate limits
-    // 1.5 seconds per request = ~40 items/minute
-    await sleep(1500);
+    const item = toEnrich[i];
+    state.enrichProgress.done = i + 1;
+    updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, consecutiveFails);
+
+    const result = await enrichItemFromReddit(item);
+
+    if (result === 'rate_limited') {
+      // Reddit told us explicitly to slow down — long pause then retry same item
+      consecutiveFails++;
+      state.enrichProgress.rateLimited++;
+      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, consecutiveFails, true);
+      await sleep(BACKOFF_PAUSE);
+      i--; // retry this item
+      continue;
+
+    } else if (result === 'unavailable') {
+      // Deleted or private — mark done so we don't retry endlessly
+      await db.items.update(item.id, {
+        enriched: true,
+        enrichAttempts: (item.enrichAttempts || 0) + 1
+      });
+      failedCount++;
+      consecutiveFails = 0;
+
+    } else if (result && typeof result === 'object') {
+      // Success
+      await db.items.update(item.id, result);
+      enrichedCount++;
+      consecutiveFails = 0;
+
+    } else {
+      // null = network error or unexpected response — could be rate limiting
+      consecutiveFails++;
+      await db.items.update(item.id, {
+        enrichAttempts: (item.enrichAttempts || 0) + 1
+        // Note: enriched stays false so it can be retried
+      });
+      failedCount++;
+
+      if (consecutiveFails >= FAILURE_THRESHOLD) {
+        // Too many consecutive failures — Reddit is probably throttling us.
+        // Take a long break before continuing.
+        updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, consecutiveFails, true);
+        await sleep(BACKOFF_PAUSE);
+        consecutiveFails = 0;
+      }
+    }
+
+    // Every BATCH_SIZE items, take a short break to let Reddit's rate limit window reset
+    if ((i + 1) % BATCH_SIZE === 0 && i < toEnrich.length - 1) {
+      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 0, false, true);
+      await sleep(BATCH_PAUSE);
+    } else {
+      await sleep(BASE_DELAY);
+    }
   }
 
   state.enriching = false;
-  state.enrichProgress = { done: 0, total: 0 };
+  state.enrichProgress = { done: 0, total: 0, enriched: 0, failed: 0, rateLimited: 0 };
   await loadData();
 
-  // Push enriched data to Supabase if configured
-  if (state.supabaseUrl) {
-    const allItems = await db.items.toArray();
-    await pushToSupabase(allItems.slice(0, 200)); // push recently enriched batch
+  // Push enriched data to Supabase in batches
+  if (state.supabaseUrl && enrichedCount > 0) {
+    const enrichedItems = await db.items.filter(i => i.enriched && i.title).toArray();
+    for (let i = 0; i < enrichedItems.length; i += 200) {
+      await pushToSupabase(enrichedItems.slice(i, i + 200));
+    }
   }
 
-  showToast(`Enriched ${enrichedCount} items${failedCount > 0 ? ` (${failedCount} unavailable)` : ''} ✓`, 'success');
+  const remaining = (await db.items.filter(i => !i.enriched).count());
+  showToast(
+    `✓ Enriched ${enrichedCount} items · ${failedCount} unavailable${remaining > 0 ? ` · ${remaining} remaining` : ''}`,
+    enrichedCount > 0 ? 'success' : 'warning'
+  );
   render();
 }
 
-function updateEnrichProgress(done, total, enriched, failed) {
-  const el = document.getElementById('enrich-progress-details');
-  if (el) {
-    const pct = Math.round((done / total) * 100);
-    el.innerHTML = `
-      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-      <div style="font-size:12px;color:var(--text-muted);text-align:center">
-        ${done} / ${total} processed · ${enriched} enriched · ${failed} unavailable
-      </div>
-    `;
-  }
+function stopEnrichment() {
+  enrichStopped = true;
 }
 
-// ─── SUPABASE ────────────────────────────────────────────────────────────────
+function updateEnrichProgress(done, total, enriched, failed, consecutiveFails, backingOff = false, batchPause = false) {
+  const el = document.getElementById('enrich-progress-details');
+  if (!el) return;
+  const pct = Math.round((done / total) * 100);
+  let statusMsg = '';
+  if (backingOff) statusMsg = `<span style="color:var(--warning)">⏳ Rate limited — waiting 60s before continuing...</span>`;
+  else if (batchPause) statusMsg = `<span style="color:var(--accent2)">☕ Batch pause (15s) — letting Reddit's rate limit reset...</span>`;
+  else if (consecutiveFails >= 3) statusMsg = `<span style="color:var(--warning)">⚠ ${consecutiveFails} consecutive failures — may be rate limited</span>`;
+
+  el.innerHTML = `
+    <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+    <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">
+      ${done} / ${total} processed &nbsp;·&nbsp; ${enriched} enriched &nbsp;·&nbsp; ${failed} unavailable
+    </div>
+    ${statusMsg ? `<div style="font-size:12px;text-align:center;margin-top:6px">${statusMsg}</div>` : ''}
+  `;
+}PABASE ────────────────────────────────────────────────────────────────
 async function supabaseFetch(path, method='GET', body=null) {
   if (!state.supabaseUrl || !state.supabaseKey) throw new Error('Supabase not configured');
   const res = await fetch(`${state.supabaseUrl}/rest/v1${path}`, {
@@ -1006,6 +1089,10 @@ function renderFolders() {
 
 function renderImport() {
   const needsEnrich = state.items.filter(i => !i.enriched).length;
+  // Items that were attempted but still have no data (rate-limited victims)
+  const retryable = state.items.filter(i => i.enriched && !i.title && !i.subreddit).length +
+                    state.items.filter(i => !i.enriched && (i.enrichAttempts || 0) > 0).length;
+  const p = state.enrichProgress;
 
   return `
     <div class="section-header">
@@ -1021,34 +1108,50 @@ function renderImport() {
     </div>
 
     <!-- Enrichment section -->
-    ${needsEnrich > 0 ? `
+    ${needsEnrich > 0 || state.enriching ? `
       <div class="card" style="border-color:rgba(251,191,36,0.3)">
         <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px;color:var(--warning)">
-          ⚡ Enrich ${needsEnrich} Items
+          ⚡ ${needsEnrich} Item${needsEnrich !== 1 ? 's' : ''} Need Enrichment
         </div>
         <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
-          These items are missing titles, subreddit names, or post dates. RedditVault can fetch
-          this information from Reddit's public API automatically — no login required.
-          <br><br>
-          <strong style="color:var(--text)">Rate:</strong> ~40 items per minute (to be polite to Reddit's servers).
-          ${needsEnrich > 100 ? `At this rate, ${needsEnrich} items will take about ${Math.ceil(needsEnrich/40)} minutes.` : ''}
+          Fetches titles, subreddit names, authors, and post dates from Reddit's public API.
+          Processes <strong style="color:var(--text)">50 items at a time</strong> with a
+          15-second pause between batches, and backs off automatically if Reddit rate-limits us.
+          ${needsEnrich > 200 ? `<br><br><strong style="color:var(--text)">Estimated time for ${needsEnrich} items:</strong>
+          ~${Math.ceil(needsEnrich / 50 * 0.75)} minutes (including batch pauses).
+          You can leave this tab open in the background.` : ''}
         </p>
         ${state.enriching ? `
           <div id="enrich-progress-details">
             <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
             <div style="font-size:12px;color:var(--text-muted);text-align:center">Starting...</div>
           </div>
-          <button class="btn btn-warning" style="width:100%;justify-content:center;margin-top:10px" disabled>⏳ Enriching...</button>
-        ` : `
-          <button class="btn btn-warning" style="width:100%;justify-content:center" onclick="enrichAllItems()">
-            ⚡ Start Enrichment
+          <button class="btn btn-danger" style="width:100%;justify-content:center;margin-top:10px" onclick="stopEnrichment()">
+            ⏹ Pause Enrichment
           </button>
+          <p style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:8px">
+            Safe to pause — progress is saved after each item. Click Start to resume where it left off.
+          </p>
+        ` : `
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-warning" style="flex:1;justify-content:center;min-width:140px" onclick="enrichAllItems(false)">
+              ⚡ Start Enrichment
+            </button>
+            ${retryable > 0 ? `
+              <button class="btn btn-ghost" style="flex:1;justify-content:center;min-width:140px" onclick="enrichAllItems(true)" title="Re-attempt items that previously returned no data">
+                🔄 Retry ${retryable} Failed
+              </button>
+            ` : ''}
+          </div>
         `}
       </div>
     ` : state.items.length > 0 ? `
       <div class="card" style="border-color:rgba(52,211,153,0.3)">
         <div style="color:var(--success);font-weight:600;margin-bottom:4px">✓ All items enriched</div>
-        <div style="font-size:13px;color:var(--text-muted)">All your saved items have titles, subreddits, and dates.</div>
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:10px">All your saved items have titles, subreddits, and dates.</div>
+        ${retryable > 0 ? `
+          <button class="btn btn-ghost btn-sm" onclick="enrichAllItems(true)">🔄 Retry ${retryable} items with missing data</button>
+        ` : ''}
       </div>
     ` : ''}
 
@@ -1061,7 +1164,7 @@ function renderImport() {
         <li>Wait for an email (a few hours to 24h)</li>
         <li>Download and unzip the file</li>
         <li>Find <strong style="color:var(--text)">saved_posts.csv</strong> inside</li>
-        <li>Import it above, then click <strong style="color:var(--text)">"Start Enrichment"</strong> to fetch full titles &amp; dates</li>
+        <li>Import it above, then click <strong style="color:var(--text)">"Start Enrichment"</strong></li>
       </ol>
     </div>
 
