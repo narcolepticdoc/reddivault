@@ -1,0 +1,1328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="RedditVault" />
+  <meta name="theme-color" content="#1a0a2e" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <title>RedditVault</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d0618;
+      --surface: #160d2a;
+      --surface2: #1f1340;
+      --border: #2d1f55;
+      --accent: #7c3aed;
+      --accent2: #a855f7;
+      --accent3: #f472b6;
+      --text: #e2d9f3;
+      --text-muted: #8b7aaa;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --radius: 14px;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      min-height: -webkit-fill-available;
+      overflow-x: hidden;
+    }
+    #app { min-height: 100vh; display: flex; flex-direction: column; }
+
+    .header {
+      background: linear-gradient(135deg, #1a0a2e 0%, #0d0618 100%);
+      border-bottom: 1px solid var(--border);
+      padding: calc(var(--safe-top) + 16px) 20px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 100;
+      backdrop-filter: blur(20px);
+    }
+    .logo { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 22px;
+      background: linear-gradient(135deg, var(--accent2), var(--accent3));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .logo span { font-weight: 400; }
+
+    .nav-bar {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: flex; padding: 8px 0 calc(var(--safe-bottom) + 8px);
+      z-index: 100;
+    }
+    .nav-item {
+      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 6px; cursor: pointer; border: none; background: none;
+      color: var(--text-muted); font-family: 'DM Sans', sans-serif; font-size: 11px;
+      transition: color 0.2s;
+    }
+    .nav-item.active { color: var(--accent2); }
+    .nav-icon { font-size: 22px; line-height: 1; }
+
+    .content { flex: 1; padding: 20px; padding-bottom: 100px; overflow-y: auto; }
+
+    /* Cards */
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px; margin-bottom: 12px;
+      transition: border-color 0.2s, transform 0.1s;
+    }
+    .card:active { transform: scale(0.99); }
+    .card.needs-enrichment { border-color: rgba(251,191,36,0.3); }
+
+    /* Badges */
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 8px; border-radius: 20px; font-size: 11px; font-weight: 500;
+    }
+    .badge-post { background: rgba(124,58,237,0.2); color: var(--accent2); }
+    .badge-comment { background: rgba(244,114,182,0.15); color: var(--accent3); }
+    .badge-enriching { background: rgba(251,191,36,0.15); color: var(--warning); }
+
+    /* Folder chip */
+    .folder-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 10px; border-radius: 20px; font-size: 12px;
+      background: rgba(168,85,247,0.15); color: var(--accent2);
+      border: 1px solid rgba(168,85,247,0.3); cursor: pointer;
+      transition: background 0.2s;
+    }
+    .folder-chip:hover { background: rgba(168,85,247,0.25); }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 10px 18px; border-radius: 10px; font-family: 'DM Sans', sans-serif;
+      font-size: 14px; font-weight: 500; cursor: pointer; border: none;
+      transition: all 0.2s; text-decoration: none;
+    }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { background: var(--accent2); }
+    .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+    .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 8px; }
+    .btn-danger { background: rgba(248,113,113,0.15); color: var(--danger); border: 1px solid rgba(248,113,113,0.3); }
+    .btn-warning { background: rgba(251,191,36,0.15); color: var(--warning); border: 1px solid rgba(251,191,36,0.3); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Inputs */
+    .input {
+      width: 100%; padding: 12px 16px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 10px;
+      color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px;
+      outline: none; transition: border-color 0.2s;
+    }
+    .input:focus { border-color: var(--accent2); }
+    .input::placeholder { color: var(--text-muted); }
+
+    /* Search */
+    .search-wrap { position: relative; margin-bottom: 16px; }
+    .search-wrap .input { padding-left: 42px; }
+    .search-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+      font-size: 18px; color: var(--text-muted); pointer-events: none; }
+
+    /* Section header */
+    .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .section-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 20px; }
+
+    /* Empty state */
+    .empty { text-align: center; padding: 60px 20px; color: var(--text-muted); }
+    .empty-icon { font-size: 52px; margin-bottom: 16px; }
+    .empty h3 { font-family: 'Syne', sans-serif; font-size: 18px; color: var(--text); margin-bottom: 8px; }
+    .empty p { font-size: 14px; line-height: 1.6; }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed var(--border); border-radius: var(--radius);
+      padding: 40px 20px; text-align: center; cursor: pointer;
+      transition: all 0.2s; margin-bottom: 20px;
+    }
+    .drop-zone.drag-over { border-color: var(--accent2); background: rgba(168,85,247,0.05); }
+    .drop-zone-icon { font-size: 44px; margin-bottom: 12px; }
+    .drop-zone h3 { font-family: 'Syne', sans-serif; font-size: 17px; margin-bottom: 6px; }
+    .drop-zone p { font-size: 13px; color: var(--text-muted); }
+
+    /* Folder grid */
+    .folder-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+    .folder-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 18px 14px; cursor: pointer;
+      transition: all 0.2s; position: relative; overflow: hidden;
+    }
+    .folder-card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--accent), var(--accent3));
+    }
+    .folder-card:active { transform: scale(0.97); }
+    .folder-card-icon { font-size: 28px; margin-bottom: 8px; }
+    .folder-card-name { font-family: 'Syne', sans-serif; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+    .folder-card-count { font-size: 12px; color: var(--text-muted); }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: flex; align-items: flex-end; z-index: 200;
+      backdrop-filter: blur(4px);
+    }
+    .modal {
+      background: var(--surface); border-radius: 20px 20px 0 0;
+      padding: 24px 20px calc(var(--safe-bottom) + 24px);
+      width: 100%; max-height: 80vh; overflow-y: auto;
+      border-top: 1px solid var(--border);
+    }
+    .modal-handle { width: 40px; height: 4px; background: var(--border);
+      border-radius: 2px; margin: 0 auto 20px; }
+    .modal-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 18px; margin-bottom: 16px; }
+
+    /* Toast */
+    .toast-container { position: fixed; top: calc(var(--safe-top) + 80px); right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
+    .toast {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 16px; font-size: 13px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      animation: slideIn 0.3s ease; max-width: 280px;
+    }
+    .toast.success { border-color: var(--success); color: var(--success); }
+    .toast.error { border-color: var(--danger); color: var(--danger); }
+    .toast.warning { border-color: var(--warning); color: var(--warning); }
+    @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+    /* Progress */
+    .progress-bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin: 12px 0; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent3));
+      border-radius: 2px; transition: width 0.3s; }
+
+    /* Stats */
+    .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px; text-align: center; }
+    .stat-num { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 22px;
+      background: linear-gradient(135deg, var(--accent2), var(--accent3));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+    /* Filter pills */
+    .filter-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 16px; scrollbar-width: none; }
+    .filter-row::-webkit-scrollbar { display: none; }
+    .filter-pill {
+      display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+      padding: 6px 14px; border-radius: 20px; font-size: 13px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface2); color: var(--text-muted);
+      transition: all 0.2s;
+    }
+    .filter-pill.active { background: var(--accent); border-color: var(--accent); color: white; }
+
+    /* Config */
+    .config-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+    .sync-status { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 8px 12px;
+      background: var(--surface2); border-radius: 8px; margin-bottom: 12px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .status-dot.connected { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    .status-dot.disconnected { background: var(--text-muted); }
+    .status-dot.syncing { background: var(--warning); animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* Enrichment banner */
+    .enrich-banner {
+      background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.25);
+      border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .enrich-banner-text { flex: 1; min-width: 160px; }
+    .enrich-banner-text strong { display: block; font-size: 14px; color: var(--warning); margin-bottom: 2px; }
+    .enrich-banner-text span { font-size: 12px; color: var(--text-muted); }
+
+    /* Date row on cards */
+    .date-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 11px; color: var(--text-muted); }
+    .date-item { display: flex; align-items: center; gap: 3px; }
+
+    .divider { height: 1px; background: var(--border); margin: 16px 0; }
+    label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 6px; }
+    .form-group { margin-bottom: 14px; }
+
+    .item-url { font-size: 12px; color: var(--accent2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .subreddit-tag { font-size: 12px; color: var(--accent3); font-weight: 500; }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div class="logo">Reddit<span>Vault</span></div>
+    <div id="header-actions"></div>
+  </div>
+  <div class="content" id="main-content"></div>
+  <nav class="nav-bar">
+    <button class="nav-item active" onclick="showPage('home')" id="nav-home">
+      <span class="nav-icon">🏠</span><span>Home</span>
+    </button>
+    <button class="nav-item" onclick="showPage('browse')" id="nav-browse">
+      <span class="nav-icon">📋</span><span>All Saves</span>
+    </button>
+    <button class="nav-item" onclick="showPage('folders')" id="nav-folders">
+      <span class="nav-icon">📁</span><span>Folders</span>
+    </button>
+    <button class="nav-item" onclick="showPage('import')" id="nav-import">
+      <span class="nav-icon">⬆️</span><span>Import</span>
+    </button>
+    <button class="nav-item" onclick="showPage('settings')" id="nav-settings">
+      <span class="nav-icon">⚙️</span><span>Settings</span>
+    </button>
+  </nav>
+  <div class="toast-container" id="toasts"></div>
+</div>
+
+<script>
+// ─── DATABASE ────────────────────────────────────────────────────────────────
+const db = new Dexie('RedditVault');
+// Version 3 adds postCreatedAt and enriched flag; permalink and author fields
+db.version(3).stores({
+  items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, syncedAt',
+  folders: '++id, name, icon, createdAt',
+  config: 'key'
+}).upgrade(tx => {
+  // Migrate existing items: mark them as needing enrichment if no title/subreddit
+  return tx.table('items').toCollection().modify(item => {
+    if (item.postCreatedAt === undefined) item.postCreatedAt = null;
+    if (item.enriched === undefined) item.enriched = !!(item.title && item.subreddit);
+    if (item.permalink === undefined) item.permalink = item.url || '';
+    if (item.author === undefined) item.author = '';
+    if (item.score === undefined) item.score = null;
+  });
+});
+
+// ─── STATE ──────────────────────────────────────────────────────────────────
+let state = {
+  page: 'home',
+  items: [],
+  folders: [],
+  search: '',
+  filterType: 'all',
+  filterFolder: 'all',
+  supabaseUrl: '',
+  supabaseKey: '',
+  lastSync: null,
+  syncStatus: 'disconnected',
+  enriching: false,
+  enrichProgress: { done: 0, total: 0 },
+};
+
+// ─── INIT ────────────────────────────────────────────────────────────────────
+async function init() {
+  await loadConfig();
+  await loadData();
+  render();
+}
+
+async function loadConfig() {
+  try {
+    const url = await db.config.get('supabaseUrl');
+    const key = await db.config.get('supabaseKey');
+    const lastSync = await db.config.get('lastSync');
+    if (url) state.supabaseUrl = url.value;
+    if (key) state.supabaseKey = key.value;
+    if (lastSync) state.lastSync = lastSync.value;
+  } catch(e) {}
+}
+
+async function loadData() {
+  state.items = await db.items.orderBy('savedAt').reverse().toArray();
+  state.folders = await db.folders.toArray();
+}
+
+// ─── ENRICHMENT ──────────────────────────────────────────────────────────────
+// Fetches title, subreddit, post_created_at, author from Reddit's public .json API
+// Works without authentication for any public Reddit post or comment
+
+async function enrichItemFromReddit(item) {
+  // Build the .json URL from the item's URL or permalink
+  let jsonUrl = null;
+
+  // We need a reddit.com permalink to fetch metadata
+  const redditUrl = item.permalink || item.url || '';
+  if (redditUrl.includes('reddit.com')) {
+    // Strip query string, ensure no trailing slash issues, append .json
+    const clean = redditUrl.split('?')[0].replace(/\/$/, '');
+    jsonUrl = clean + '.json?raw_json=1&limit=1';
+  }
+
+  if (!jsonUrl) return null;
+
+  try {
+    const res = await fetch(jsonUrl, {
+      headers: { 'Accept': 'application/json' }
+    });
+    if (!res.ok) return null;
+
+    const data = await res.json();
+
+    // Reddit returns an array: [post_listing, comments_listing]
+    // For posts: data[0].data.children[0].data
+    // For comments: data[1].data.children[0].data (the specific comment)
+    let postData = null;
+    let commentData = null;
+
+    if (Array.isArray(data) && data.length > 0) {
+      const postChildren = data[0]?.data?.children;
+      if (postChildren?.length > 0) {
+        postData = postChildren[0].data;
+      }
+      if (item.type === 'comment' && data.length > 1) {
+        const commentChildren = data[1]?.data?.children;
+        if (commentChildren?.length > 0) {
+          commentData = commentChildren[0].data;
+        }
+      }
+    }
+
+    if (!postData) return null;
+
+    const enriched = {
+      subreddit: postData.subreddit || item.subreddit || '',
+      postCreatedAt: postData.created_utc
+        ? new Date(postData.created_utc * 1000).toISOString()
+        : item.postCreatedAt || null,
+      enriched: true,
+    };
+
+    if (item.type === 'comment') {
+      // For comments: title = parent post title, body = comment body
+      enriched.title = postData.title || item.title || 'Saved Comment';
+      enriched.author = commentData?.author || item.author || '';
+      enriched.body = commentData?.body || item.body || '';
+      enriched.score = commentData?.score ?? item.score ?? null;
+      // postCreatedAt for comments should be when the *comment* was made
+      if (commentData?.created_utc) {
+        enriched.postCreatedAt = new Date(commentData.created_utc * 1000).toISOString();
+      }
+    } else {
+      enriched.title = postData.title || item.title || 'Untitled Post';
+      enriched.author = postData.author || item.author || '';
+      enriched.body = postData.selftext || item.body || '';
+      enriched.score = postData.score ?? item.score ?? null;
+      // For link posts, also grab the external URL if we only had the permalink
+      if (postData.url && !postData.url.includes('reddit.com/r/')) {
+        enriched.url = postData.url;
+      }
+    }
+
+    return enriched;
+  } catch(e) {
+    return null; // Silently skip — deleted posts, private subreddits, etc.
+  }
+}
+
+async function enrichAllItems() {
+  if (state.enriching) return;
+
+  const unenriched = await db.items.where('enriched').equals(0).toArray();
+  // Also catch items where enriched is null/undefined
+  const nullEnriched = state.items.filter(i => !i.enriched && !unenriched.find(u => u.id === i.id));
+  const toEnrich = [...unenriched, ...nullEnriched];
+
+  if (toEnrich.length === 0) {
+    showToast('All items already enriched ✓', 'success');
+    return;
+  }
+
+  state.enriching = true;
+  state.enrichProgress = { done: 0, total: toEnrich.length };
+  render();
+
+  let enrichedCount = 0;
+  let failedCount = 0;
+
+  for (let i = 0; i < toEnrich.length; i++) {
+    const item = toEnrich[i];
+    state.enrichProgress.done = i;
+
+    // Update progress in the import page if it's visible
+    updateEnrichProgress(i, toEnrich.length, enrichedCount, failedCount);
+
+    const data = await enrichItemFromReddit(item);
+    if (data) {
+      await db.items.update(item.id, data);
+      enrichedCount++;
+    } else {
+      // Mark as attempted even if failed (deleted post, etc.)
+      await db.items.update(item.id, { enriched: true });
+      failedCount++;
+    }
+
+    // Polite delay — Reddit's public JSON API has rate limits
+    // 1.5 seconds per request = ~40 items/minute
+    await sleep(1500);
+  }
+
+  state.enriching = false;
+  state.enrichProgress = { done: 0, total: 0 };
+  await loadData();
+
+  // Push enriched data to Supabase if configured
+  if (state.supabaseUrl) {
+    const allItems = await db.items.toArray();
+    await pushToSupabase(allItems.slice(0, 200)); // push recently enriched batch
+  }
+
+  showToast(`Enriched ${enrichedCount} items${failedCount > 0 ? ` (${failedCount} unavailable)` : ''} ✓`, 'success');
+  render();
+}
+
+function updateEnrichProgress(done, total, enriched, failed) {
+  const el = document.getElementById('enrich-progress-details');
+  if (el) {
+    const pct = Math.round((done / total) * 100);
+    el.innerHTML = `
+      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+      <div style="font-size:12px;color:var(--text-muted);text-align:center">
+        ${done} / ${total} processed · ${enriched} enriched · ${failed} unavailable
+      </div>
+    `;
+  }
+}
+
+// ─── SUPABASE ────────────────────────────────────────────────────────────────
+async function supabaseFetch(path, method='GET', body=null) {
+  if (!state.supabaseUrl || !state.supabaseKey) throw new Error('Supabase not configured');
+  const res = await fetch(`${state.supabaseUrl}/rest/v1${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': state.supabaseKey,
+      'Authorization': `Bearer ${state.supabaseKey}`,
+      'Prefer': method === 'POST' ? 'resolution=merge-duplicates' : ''
+    },
+    body: body ? JSON.stringify(body) : null
+  });
+  if (!res.ok) throw new Error(`Supabase error: ${res.status}`);
+  return method === 'GET' ? res.json() : res;
+}
+
+async function syncFromSupabase() {
+  state.syncStatus = 'syncing';
+  renderHeaderActions();
+  try {
+    const remoteItems = await supabaseFetch('/reddit_saves?select=*&order=saved_at.desc&limit=5000');
+    const remoteFolders = await supabaseFetch('/reddit_folders?select=*');
+
+    for (const f of remoteFolders) {
+      const exists = await db.folders.where('name').equals(f.name).first();
+      if (!exists) {
+        await db.folders.add({ name: f.name, icon: f.icon || '📁', createdAt: f.created_at });
+      }
+    }
+
+    for (const item of remoteItems) {
+      const exists = await db.items.where('redditId').equals(item.reddit_id).first();
+      if (!exists) {
+        await db.items.add({
+          redditId: item.reddit_id,
+          type: item.type,
+          subreddit: item.subreddit || '',
+          title: item.title || '',
+          url: item.url || '',
+          permalink: item.permalink || item.url || '',
+          body: item.body || '',
+          author: item.author || '',
+          score: item.score ?? null,
+          folder: item.folder || null,
+          savedAt: item.saved_at,
+          postCreatedAt: item.post_created_at || null,
+          enriched: !!(item.title && item.subreddit),
+          syncedAt: new Date().toISOString()
+        });
+      } else {
+        // Always update folder, and update enrichment data if remote has it and local doesn't
+        const updates = { folder: item.folder };
+        if (!exists.enriched && item.title && item.subreddit) {
+          updates.title = item.title;
+          updates.subreddit = item.subreddit;
+          updates.author = item.author || exists.author;
+          updates.score = item.score ?? exists.score;
+          updates.postCreatedAt = item.post_created_at || exists.postCreatedAt;
+          updates.enriched = true;
+        }
+        await db.items.update(exists.id, updates);
+      }
+    }
+
+    await db.config.put({ key: 'lastSync', value: new Date().toISOString() });
+    state.lastSync = new Date().toISOString();
+    state.syncStatus = 'connected';
+    await loadData();
+    showToast('Synced from cloud ✓', 'success');
+    render();
+  } catch(e) {
+    state.syncStatus = 'disconnected';
+    showToast('Sync failed: ' + e.message, 'error');
+    renderHeaderActions();
+  }
+}
+
+async function pushToSupabase(items) {
+  if (!state.supabaseUrl || !state.supabaseKey) return;
+  const payload = items.map(i => ({
+    reddit_id: i.redditId,
+    type: i.type,
+    subreddit: i.subreddit || '',
+    title: i.title || '',
+    url: i.url || '',
+    permalink: i.permalink || i.url || '',
+    body: i.body || '',
+    author: i.author || '',
+    score: i.score ?? null,
+    folder: i.folder || null,
+    saved_at: i.savedAt,
+    post_created_at: i.postCreatedAt || null,
+  }));
+  try {
+    await supabaseFetch('/reddit_saves?on_conflict=reddit_id', 'POST', payload);
+  } catch(e) {
+    console.warn('Push failed:', e);
+  }
+}
+
+async function pushFolderUpdate(itemId, folder) {
+  if (!state.supabaseUrl || !state.supabaseKey) return;
+  const item = await db.items.get(itemId);
+  if (!item) return;
+  try {
+    await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', { folder });
+  } catch(e) {}
+}
+
+// ─── IMPORT ──────────────────────────────────────────────────────────────────
+async function handleCSVImport(file) {
+  return new Promise((resolve) => {
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        const rows = results.data;
+        let added = 0, dupes = 0;
+
+        for (const row of rows) {
+          // Reddit's data export CSV has these columns:
+          // id, permalink, url, title, body, created_utc, subreddit, type
+          // However the "saved items" export often only has: id, permalink, url
+          const redditId = row.id || '';
+          if (!redditId) continue;
+
+          const exists = await db.items.where('redditId').equals(redditId).first();
+          if (exists) { dupes++; continue; }
+
+          // Detect type from permalink path: /r/sub/comments/id/title/ = post
+          // /r/sub/comments/id/title/commentid/ = comment
+          const permalink = row.permalink || '';
+          const isComment = permalink.split('/').filter(Boolean).length > 5;
+
+          // Determine if we have enough data already or need enrichment
+          const hasTitle = !!(row.title && row.title.trim());
+          const hasSubreddit = !!(row.subreddit && row.subreddit.trim());
+          const hasEnoughData = hasTitle && hasSubreddit;
+
+          // Extract subreddit from permalink if not in CSV: /r/SUBREDDIT/...
+          let subreddit = row.subreddit || '';
+          if (!subreddit && permalink) {
+            const parts = permalink.split('/').filter(Boolean);
+            if (parts[0] === 'r' && parts[1]) subreddit = parts[1];
+          }
+
+          // Build permalink as full URL
+          const fullPermalink = permalink.startsWith('http')
+            ? permalink
+            : `https://www.reddit.com${permalink}`;
+
+          // For the display URL: use provided url, or fall back to permalink
+          const url = row.url || fullPermalink;
+
+          // Parse created_utc if available (it's a Unix timestamp)
+          const postCreatedAt = row.created_utc && !isNaN(parseInt(row.created_utc))
+            ? new Date(parseInt(row.created_utc) * 1000).toISOString()
+            : null;
+
+          await db.items.add({
+            redditId,
+            type: isComment ? 'comment' : 'post',
+            subreddit,
+            title: row.title || '',
+            url,
+            permalink: fullPermalink,
+            body: row.body || '',
+            author: row.author || '',
+            score: null,
+            savedAt: new Date().toISOString(), // CSV doesn't include save time
+            postCreatedAt,
+            enriched: hasEnoughData, // Mark for enrichment if missing title/subreddit
+            syncedAt: null,
+            folder: null
+          });
+          added++;
+        }
+
+        await loadData();
+
+        // Push new items to Supabase if configured
+        if (state.supabaseUrl) {
+          const newItems = state.items.filter(i => !i.syncedAt);
+          if (newItems.length > 0) {
+            await pushToSupabase(newItems);
+            await db.items.where('syncedAt').equals(null).modify({ syncedAt: new Date().toISOString() });
+          }
+        }
+
+        resolve({ added, dupes, total: rows.length });
+      }
+    });
+  });
+}
+
+async function handleJSONImport(data) {
+  let added = 0, dupes = 0;
+  const items = Array.isArray(data) ? data : data.items || [];
+  for (const item of items) {
+    if (!item.redditId) continue;
+    const exists = await db.items.where('redditId').equals(item.redditId).first();
+    if (exists) { dupes++; continue; }
+    // Ensure all new fields exist
+    await db.items.add({
+      ...item,
+      postCreatedAt: item.postCreatedAt || null,
+      enriched: item.enriched ?? !!(item.title && item.subreddit),
+      permalink: item.permalink || item.url || '',
+      author: item.author || '',
+      score: item.score ?? null,
+    });
+    added++;
+  }
+  const folders_ = Array.isArray(data) ? [] : data.folders || [];
+  for (const f of folders_) {
+    const exists = await db.folders.where('name').equals(f.name).first();
+    if (!exists) await db.folders.add(f);
+  }
+  await loadData();
+  return { added, dupes };
+}
+
+// ─── FOLDERS ─────────────────────────────────────────────────────────────────
+async function createFolder(name, icon='📁') {
+  const exists = state.folders.find(f => f.name.toLowerCase() === name.toLowerCase());
+  if (exists) { showToast('Folder already exists', 'error'); return; }
+  await db.folders.add({ name, icon, createdAt: new Date().toISOString() });
+  await loadData();
+  render();
+  showToast(`Folder "${name}" created`, 'success');
+}
+
+async function deleteFolder(id) {
+  const folder = state.folders.find(f => f.id === id);
+  if (!folder) return;
+  await db.items.where('folder').equals(folder.name).modify({ folder: null });
+  await db.folders.delete(id);
+  await loadData();
+  render();
+  showToast('Folder deleted', 'success');
+}
+
+async function assignFolder(itemId, folderName) {
+  await db.items.update(itemId, { folder: folderName || null });
+  await pushFolderUpdate(itemId, folderName || null);
+  await loadData();
+  render();
+  showToast(folderName ? `Moved to "${folderName}"` : 'Removed from folder', 'success');
+}
+
+async function deleteItem(itemId) {
+  await db.items.delete(itemId);
+  await loadData();
+  render();
+  showToast('Item removed', 'success');
+}
+
+// ─── EXPORT ──────────────────────────────────────────────────────────────────
+async function exportJSON() {
+  const items = await db.items.toArray();
+  const folders = await db.folders.toArray();
+  const data = JSON.stringify({ items, folders, exportedAt: new Date().toISOString() }, null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `reddivault-backup-${new Date().toISOString().split('T')[0]}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('Backup downloaded ✓', 'success');
+}
+
+// ─── RENDER ──────────────────────────────────────────────────────────────────
+function showPage(page) {
+  state.page = page;
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.getElementById(`nav-${page}`)?.classList.add('active');
+  render();
+}
+
+function render() {
+  const content = document.getElementById('main-content');
+  renderHeaderActions();
+  switch(state.page) {
+    case 'home':     content.innerHTML = renderHome(); break;
+    case 'browse':   content.innerHTML = renderBrowse(); break;
+    case 'folders':  content.innerHTML = renderFolders(); break;
+    case 'import':   content.innerHTML = renderImport(); break;
+    case 'settings': content.innerHTML = renderSettings(); break;
+  }
+  attachEventListeners();
+}
+
+function renderHeaderActions() {
+  const el = document.getElementById('header-actions');
+  if (state.syncStatus === 'syncing') {
+    el.innerHTML = `<span style="font-size:12px;color:var(--warning)">🔄 Syncing...</span>`;
+  } else if (state.supabaseUrl && state.supabaseKey) {
+    el.innerHTML = `<button class="btn btn-sm btn-ghost" onclick="syncFromSupabase()">🟢 Sync</button>`;
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+function renderHome() {
+  const total = state.items.length;
+  const posts = state.items.filter(i => i.type === 'post').length;
+  const needsEnrich = state.items.filter(i => !i.enriched).length;
+  const recent = state.items.slice(0, 5);
+
+  return `
+    <div class="stats-row">
+      <div class="stat-card"><div class="stat-num">${total.toLocaleString()}</div><div class="stat-label">Saved Items</div></div>
+      <div class="stat-card"><div class="stat-num">${posts.toLocaleString()}</div><div class="stat-label">Posts</div></div>
+      <div class="stat-card"><div class="stat-num">${state.folders.length}</div><div class="stat-label">Folders</div></div>
+    </div>
+
+    ${needsEnrich > 0 ? `
+      <div class="enrich-banner">
+        <div class="enrich-banner-text">
+          <strong>⚡ ${needsEnrich} items need enrichment</strong>
+          <span>Missing titles, subreddits, or post dates from CSV import</span>
+        </div>
+        <button class="btn btn-warning btn-sm" onclick="showPage('import')" style="white-space:nowrap">Enrich Now</button>
+      </div>
+    ` : ''}
+
+    ${total === 0 ? `
+      <div class="empty">
+        <div class="empty-icon">📥</div>
+        <h3>No saved items yet</h3>
+        <p>Import your Reddit saved posts CSV or sync from the cloud to get started.</p>
+        <br>
+        <button class="btn btn-primary" onclick="showPage('import')">Import CSV</button>
+      </div>
+    ` : `
+      <div class="section-header">
+        <div class="section-title">Recently Saved</div>
+        <button class="btn btn-ghost btn-sm" onclick="showPage('browse')">See all →</button>
+      </div>
+      ${recent.map(item => renderItemCard(item, false)).join('')}
+    `}
+  `;
+}
+
+function renderBrowse() {
+  let items = filteredItems();
+
+  return `
+    <div class="search-wrap">
+      <span class="search-icon">🔍</span>
+      <input class="input" id="search-input" placeholder="Search titles, subreddits, authors..." value="${escHtml(state.search)}" oninput="state.search=this.value;renderBrowseList()">
+    </div>
+    <div class="filter-row">
+      <button class="filter-pill ${state.filterType==='all'?'active':''}" onclick="setFilter('type','all')">All Types</button>
+      <button class="filter-pill ${state.filterType==='post'?'active':''}" onclick="setFilter('type','post')">📝 Posts</button>
+      <button class="filter-pill ${state.filterType==='comment'?'active':''}" onclick="setFilter('type','comment')">💬 Comments</button>
+    </div>
+    <div class="filter-row">
+      <button class="filter-pill ${state.filterFolder==='all'?'active':''}" onclick="setFilter('folder','all')">All Folders</button>
+      <button class="filter-pill ${state.filterFolder==='__none__'?'active':''}" onclick="setFilter('folder','__none__')">📭 Unfiled</button>
+      ${state.folders.map(f=>`<button class="filter-pill ${state.filterFolder===f.name?'active':''}" onclick="setFilter('folder','${escAttr(f.name)}')">${f.icon} ${escHtml(f.name)}</button>`).join('')}
+    </div>
+    <div id="browse-list">
+      ${renderBrowseItems(items)}
+    </div>
+    <div style="text-align:center;padding:12px 0;font-size:13px;color:var(--text-muted)">${items.length} item${items.length!==1?'s':''}</div>
+  `;
+}
+
+function filteredItems() {
+  let items = state.items;
+  if (state.search) {
+    const q = state.search.toLowerCase();
+    items = items.filter(i =>
+      i.title?.toLowerCase().includes(q) ||
+      i.subreddit?.toLowerCase().includes(q) ||
+      i.author?.toLowerCase().includes(q) ||
+      i.body?.toLowerCase().includes(q)
+    );
+  }
+  if (state.filterType !== 'all') items = items.filter(i => i.type === state.filterType);
+  if (state.filterFolder === '__none__') items = items.filter(i => !i.folder);
+  else if (state.filterFolder !== 'all') items = items.filter(i => i.folder === state.filterFolder);
+  return items;
+}
+
+function renderBrowseItems(items) {
+  if (items.length === 0) {
+    return `<div class="empty"><div class="empty-icon">🔍</div><h3>No results</h3><p>Try adjusting your search or filters.</p></div>`;
+  }
+  return items.map(item => renderItemCard(item, true)).join('');
+}
+
+function renderBrowseList() {
+  const el = document.getElementById('browse-list');
+  if (!el) { render(); return; }
+  el.innerHTML = renderBrowseItems(filteredItems());
+}
+
+function setFilter(type, value) {
+  if (type === 'type') state.filterType = value;
+  if (type === 'folder') state.filterFolder = value;
+  render();
+}
+
+function renderItemCard(item, showActions) {
+  const badgeClass = item.type === 'comment' ? 'badge-comment' : 'badge-post';
+  const badgeLabel = item.type === 'comment' ? '💬 Comment' : '📝 Post';
+  const folder = item.folder ? `<span class="folder-chip" onclick="showFolderMenu(${item.id})">${getFolderIcon(item.folder)} ${escHtml(item.folder)}</span>` : '';
+  const needsEnrich = !item.enriched;
+
+  // Date display: show post created date if available, otherwise saved date
+  const postDate = item.postCreatedAt
+    ? `<span class="date-item" title="Date posted to Reddit">📅 ${fmtDate(item.postCreatedAt)}</span>`
+    : '';
+  const savedDate = item.savedAt
+    ? `<span class="date-item" title="Date synced/imported">💾 ${fmtDate(item.savedAt)}</span>`
+    : '';
+
+  // Show subreddit prominently, or a warning if missing
+  const subredditDisplay = item.subreddit
+    ? `<span class="subreddit-tag">r/${escHtml(item.subreddit)}</span>`
+    : `<span style="font-size:12px;color:var(--warning)">⚠ unknown subreddit</span>`;
+
+  const titleDisplay = item.title
+    ? escHtml(item.title)
+    : `<span style="color:var(--text-muted);font-style:italic">No title — needs enrichment</span>`;
+
+  // Open link: prefer permalink for comments (goes to comment context),
+  // use url for link posts (goes to external destination)
+  const openUrl = (item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '#';
+  const permalinkUrl = item.permalink || item.url || '#';
+
+  return `
+    <div class="card ${needsEnrich ? 'needs-enrichment' : ''}">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <span class="badge ${badgeClass}">${badgeLabel}</span>
+        ${subredditDisplay}
+        ${needsEnrich ? `<span class="badge badge-enriching">⚡ needs enrichment</span>` : ''}
+        ${item.author ? `<span style="font-size:11px;color:var(--text-muted)">u/${escHtml(item.author)}</span>` : ''}
+      </div>
+
+      <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px;color:var(--text);line-height:1.3;margin-bottom:6px">
+        ${titleDisplay}
+      </div>
+
+      ${item.body ? `<div style="font-size:13px;color:var(--text-muted);margin-top:4px;line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${escHtml(item.body)}</div>` : ''}
+
+      <div class="date-row">
+        ${postDate}
+        ${savedDate}
+        ${item.score != null ? `<span class="date-item">⬆ ${item.score.toLocaleString()}</span>` : ''}
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+        ${folder}
+        <div style="margin-left:auto;display:flex;gap:6px">
+          ${showActions ? `
+            <button class="btn btn-ghost btn-sm" onclick="showFolderMenu(${item.id})" title="Move to folder">📁</button>
+            <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener" title="Open">↗</a>
+            ${item.type !== 'comment' && permalinkUrl !== openUrl ? `<a class="btn btn-ghost btn-sm" href="${escHtml(permalinkUrl)}" target="_blank" rel="noopener" title="Reddit thread">💬</a>` : ''}
+            <button class="btn btn-danger btn-sm" onclick="if(confirm('Remove this item?'))deleteItem(${item.id})" title="Delete">🗑</button>
+          ` : `
+            <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">Open →</a>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderFolders() {
+  return `
+    <div class="section-header">
+      <div class="section-title">Folders</div>
+      <button class="btn btn-primary btn-sm" onclick="showCreateFolder()">+ New</button>
+    </div>
+    ${state.folders.length === 0 ? `
+      <div class="empty">
+        <div class="empty-icon">📁</div>
+        <h3>No folders yet</h3>
+        <p>Create folders to organize your saved items by topic, project, or anything else.</p>
+      </div>
+    ` : `
+      <div class="folder-grid">
+        ${state.folders.map(f => {
+          const count = state.items.filter(i => i.folder === f.name).length;
+          return `
+            <div class="folder-card" onclick="setFilter('folder','${escAttr(f.name)}');showPage('browse')">
+              <div class="folder-card-icon">${f.icon}</div>
+              <div class="folder-card-name">${escHtml(f.name)}</div>
+              <div class="folder-card-count">${count} item${count!==1?'s':''}</div>
+              <button class="btn btn-danger btn-sm" style="margin-top:10px;width:100%" onclick="event.stopPropagation();if(confirm('Delete folder? Items will be unfiled.'))deleteFolder(${f.id})">Delete</button>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `}
+    <div style="font-size:13px;color:var(--text-muted);padding:12px 0">
+      ${state.items.filter(i => !i.folder).length} unfiled items
+      ${state.items.filter(i => !i.folder).length > 0 ? `<button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="setFilter('folder','__none__');showPage('browse')">View →</button>` : ''}
+    </div>
+  `;
+}
+
+function renderImport() {
+  const needsEnrich = state.items.filter(i => !i.enriched).length;
+
+  return `
+    <div class="section-header">
+      <div class="section-title">Import & Enrich</div>
+    </div>
+
+    <!-- CSV import drop zone -->
+    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()">
+      <div class="drop-zone-icon">📥</div>
+      <h3>Import Reddit CSV</h3>
+      <p>Tap to select your saved_posts.csv file<br>or drag and drop here</p>
+      <input type="file" id="csv-file" accept=".csv,.json" style="display:none">
+    </div>
+
+    <!-- Enrichment section -->
+    ${needsEnrich > 0 ? `
+      <div class="card" style="border-color:rgba(251,191,36,0.3)">
+        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px;color:var(--warning)">
+          ⚡ Enrich ${needsEnrich} Items
+        </div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
+          These items are missing titles, subreddit names, or post dates. RedditVault can fetch
+          this information from Reddit's public API automatically — no login required.
+          <br><br>
+          <strong style="color:var(--text)">Rate:</strong> ~40 items per minute (to be polite to Reddit's servers).
+          ${needsEnrich > 100 ? `At this rate, ${needsEnrich} items will take about ${Math.ceil(needsEnrich/40)} minutes.` : ''}
+        </p>
+        ${state.enriching ? `
+          <div id="enrich-progress-details">
+            <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
+            <div style="font-size:12px;color:var(--text-muted);text-align:center">Starting...</div>
+          </div>
+          <button class="btn btn-warning" style="width:100%;justify-content:center;margin-top:10px" disabled>⏳ Enriching...</button>
+        ` : `
+          <button class="btn btn-warning" style="width:100%;justify-content:center" onclick="enrichAllItems()">
+            ⚡ Start Enrichment
+          </button>
+        `}
+      </div>
+    ` : state.items.length > 0 ? `
+      <div class="card" style="border-color:rgba(52,211,153,0.3)">
+        <div style="color:var(--success);font-weight:600;margin-bottom:4px">✓ All items enriched</div>
+        <div style="font-size:13px;color:var(--text-muted)">All your saved items have titles, subreddits, and dates.</div>
+      </div>
+    ` : ''}
+
+    <!-- How to get Reddit data -->
+    <div class="card">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:10px">📋 How to get your Reddit data</div>
+      <ol style="font-size:13px;color:var(--text-muted);line-height:2.2;padding-left:18px">
+        <li>Go to <strong style="color:var(--text)">reddit.com/settings</strong></li>
+        <li>Click <strong style="color:var(--text)">"Data Request"</strong> or <strong style="color:var(--text)">"Request data archive"</strong></li>
+        <li>Wait for an email (a few hours to 24h)</li>
+        <li>Download and unzip the file</li>
+        <li>Find <strong style="color:var(--text)">saved_posts.csv</strong> inside</li>
+        <li>Import it above, then click <strong style="color:var(--text)">"Start Enrichment"</strong> to fetch full titles &amp; dates</li>
+      </ol>
+    </div>
+
+    <!-- Backup restore -->
+    <div class="card">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:10px">🔄 Restore from Backup</div>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Import a previously exported RedditVault .json backup file.</p>
+      <button class="btn btn-secondary" onclick="document.getElementById('csv-file').click()">Select .json Backup</button>
+    </div>
+
+    <div id="import-progress" style="display:none">
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+      <div style="font-size:13px;color:var(--text-muted);text-align:center" id="progress-label">Processing...</div>
+    </div>
+  `;
+}
+
+function renderSettings() {
+  const lastSyncStr = state.lastSync ? new Date(state.lastSync).toLocaleString() : 'Never';
+  const unenriched = state.items.filter(i => !i.enriched).length;
+
+  return `
+    <div class="section-title" style="margin-bottom:16px">Settings</div>
+
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">☁️ Cloud Sync (Supabase)</div>
+      <div class="sync-status">
+        <div class="status-dot ${state.syncStatus}"></div>
+        <span>${state.syncStatus === 'connected' ? 'Connected' : state.syncStatus === 'syncing' ? 'Syncing...' : 'Not connected'}</span>
+        ${state.lastSync ? `<span style="margin-left:auto;color:var(--text-muted);font-size:11px">Last: ${lastSyncStr}</span>` : ''}
+      </div>
+      <div class="form-group">
+        <label>Supabase Project URL</label>
+        <input class="input" id="sb-url" placeholder="https://xxxx.supabase.co" value="${escHtml(state.supabaseUrl)}">
+      </div>
+      <div class="form-group">
+        <label>Supabase Anon Key</label>
+        <input class="input" id="sb-key" type="password" placeholder="eyJhbGc..." value="${escHtml(state.supabaseKey)}">
+      </div>
+      <button class="btn btn-primary" onclick="saveSupabaseConfig()" style="width:100%;justify-content:center">Save & Test Connection</button>
+    </div>
+
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">💾 Local Backup</div>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Export all your data as a JSON backup. Use to transfer between devices or as a safety backup.</p>
+      <button class="btn btn-secondary" onclick="exportJSON()" style="width:100%;justify-content:center">⬇️ Export Backup JSON</button>
+    </div>
+
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">📊 Library Stats</div>
+      <div style="font-size:13px;line-height:2.2">
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Total items</span><span>${state.items.length.toLocaleString()}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Posts</span><span>${state.items.filter(i=>i.type==='post').length.toLocaleString()}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Comments</span><span>${state.items.filter(i=>i.type==='comment').length.toLocaleString()}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Folders</span><span>${state.folders.length}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unfiled</span><span>${state.items.filter(i=>!i.folder).length}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Need enrichment</span>
+          <span style="${unenriched>0?'color:var(--warning)':''}">${unenriched}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px;color:var(--danger)">⚠️ Danger Zone</div>
+      <button class="btn btn-danger" style="width:100%;justify-content:center" onclick="if(confirm('Delete ALL local data? Make sure you have a backup first!'))clearAllData()">Clear All Local Data</button>
+    </div>
+  `;
+}
+
+// ─── MODALS ──────────────────────────────────────────────────────────────────
+function showModal(html) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal"><div class="modal-handle"></div>${html}</div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+  document.body.appendChild(overlay);
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay')?.remove();
+}
+
+function showCreateFolder() {
+  const ICONS = ['📁','🔖','⭐','🎮','💻','🎵','🎬','📚','🏋️','🍕','✈️','💡','🔬','💼','🌿','🎨','🏠','💰','🗺️','🎯'];
+  showModal(`
+    <div class="modal-title">New Folder</div>
+    <div class="form-group">
+      <label>Folder Name</label>
+      <input class="input" id="folder-name" placeholder="e.g. Recipes, Work, Gaming..." autofocus>
+    </div>
+    <div class="form-group">
+      <label>Icon</label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px" id="icon-picker">
+        ${ICONS.map((icon,i) => `<button onclick="selectIcon('${icon}',this)" class="icon-btn" style="font-size:24px;padding:6px;border-radius:8px;background:${i===0?'var(--accent2)':'var(--surface2)'};border:1px solid var(--border);cursor:pointer">${icon}</button>`).join('')}
+      </div>
+      <input type="hidden" id="folder-icon" value="📁">
+    </div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;justify-content:center">Cancel</button>
+      <button class="btn btn-primary" onclick="doCreateFolder()" style="flex:1;justify-content:center">Create</button>
+    </div>
+  `);
+}
+
+function selectIcon(icon, btn) {
+  document.querySelectorAll('.icon-btn').forEach(b => b.style.background = 'var(--surface2)');
+  btn.style.background = 'var(--accent2)';
+  document.getElementById('folder-icon').value = icon;
+}
+
+async function doCreateFolder() {
+  const name = document.getElementById('folder-name')?.value?.trim();
+  const icon = document.getElementById('folder-icon')?.value || '📁';
+  if (!name) { showToast('Please enter a folder name', 'error'); return; }
+  closeModal();
+  await createFolder(name, icon);
+}
+
+function showFolderMenu(itemId) {
+  const item = state.items.find(i => i.id === itemId);
+  if (!item) return;
+  const shortTitle = (item.title || 'this item').substring(0, 60);
+  showModal(`
+    <div class="modal-title">Move to Folder</div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">${escHtml(shortTitle)}${item.title?.length > 60 ? '...' : ''}</p>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button class="btn btn-secondary" onclick="assignFolder(${itemId},null);closeModal()" style="justify-content:flex-start">
+        📭 Remove from folder
+      </button>
+      ${state.folders.map(f => `
+        <button class="btn ${item.folder===f.name?'btn-primary':'btn-secondary'}" onclick="assignFolder(${itemId},'${escAttr(f.name)}');closeModal()" style="justify-content:flex-start">
+          ${f.icon} ${escHtml(f.name)} ${item.folder===f.name?'✓':''}
+        </button>
+      `).join('')}
+      <button class="btn btn-ghost" onclick="closeModal();showCreateFolder()" style="justify-content:flex-start">+ Create New Folder</button>
+    </div>
+    <div style="margin-top:12px">
+      <button class="btn btn-ghost" onclick="closeModal()" style="width:100%;justify-content:center">Cancel</button>
+    </div>
+  `);
+}
+
+// ─── EVENT LISTENERS ──────────────────────────────────────────────────────────
+function attachEventListeners() {
+  const fileInput = document.getElementById('csv-file');
+  if (fileInput) {
+    fileInput.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      await handleFileImport(file);
+    };
+  }
+
+  const dropZone = document.getElementById('drop-zone');
+  if (dropZone) {
+    dropZone.ondragover = e => { e.preventDefault(); dropZone.classList.add('drag-over'); };
+    dropZone.ondragleave = () => dropZone.classList.remove('drag-over');
+    dropZone.ondrop = async e => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file) await handleFileImport(file);
+    };
+  }
+}
+
+async function handleFileImport(file) {
+  const progress = document.getElementById('import-progress');
+  const fill = document.getElementById('progress-fill');
+  const label = document.getElementById('progress-label');
+  if (progress) progress.style.display = 'block';
+  if (fill) fill.style.width = '30%';
+  if (label) label.textContent = 'Reading file...';
+
+  try {
+    let result;
+    if (file.name.endsWith('.json')) {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (fill) fill.style.width = '60%';
+      if (label) label.textContent = 'Importing...';
+      result = await handleJSONImport(data);
+    } else {
+      if (fill) fill.style.width = '60%';
+      if (label) label.textContent = 'Importing...';
+      result = await handleCSVImport(file);
+    }
+    if (fill) fill.style.width = '100%';
+
+    const needsEnrich = state.items.filter(i => !i.enriched).length;
+    if (label) label.textContent = `Done! Added ${result.added} items (${result.dupes} duplicates skipped)${needsEnrich > 0 ? `. ${needsEnrich} items need enrichment.` : ''}`;
+    showToast(`✓ Imported ${result.added} new items`, 'success');
+
+    // Re-render import page to show enrichment prompt
+    setTimeout(() => render(), 1000);
+  } catch(e) {
+    if (label) label.textContent = 'Error: ' + e.message;
+    showToast('Import failed: ' + e.message, 'error');
+  }
+}
+
+async function saveSupabaseConfig() {
+  const url = document.getElementById('sb-url')?.value?.trim();
+  const key = document.getElementById('sb-key')?.value?.trim();
+  if (!url || !key) { showToast('Please fill in both fields', 'error'); return; }
+  await db.config.put({ key: 'supabaseUrl', value: url });
+  await db.config.put({ key: 'supabaseKey', value: key });
+  state.supabaseUrl = url;
+  state.supabaseKey = key;
+  showToast('Saved! Testing connection...', 'success');
+  await syncFromSupabase();
+}
+
+async function clearAllData() {
+  await db.items.clear();
+  await db.folders.clear();
+  await loadData();
+  render();
+  showToast('All local data cleared', 'success');
+}
+
+// ─── UTILITIES ────────────────────────────────────────────────────────────────
+function getFolderIcon(name) {
+  return state.folders.find(f => f.name === name)?.icon || '📁';
+}
+
+function escHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escAttr(str) {
+  if (!str) return '';
+  return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch(e) { return ''; }
+}
+
+function showToast(msg, type='success') {
+  const container = document.getElementById('toasts');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = msg;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ─── SERVICE WORKER ───────────────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+init();
+</script>
+</body>
+</html>
