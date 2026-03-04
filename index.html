@@ -293,7 +293,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '3.6';
+const APP_VERSION = '3.7';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -441,21 +441,20 @@ async function enrichItemFromReddit(item) {
 // Strategy: stay well under Reddit's limit by design rather than reacting to
 // rate limit errors after the fact.
 //
-// Reddit's public JSON API allows roughly 100 requests per 10 minutes.
-// We target ~17 req/min (3.5s delay) = ~170 req/10min when running freely,
-// BUT we pause for 3 minutes every 25 items to let the window reset.
+// Without OAuth, Reddit allows 10 requests per minute on a rolling 10-minute
+// window. We target 8 req/min (7.5s delay) — 80% of the limit — which keeps
+// us safely clear without needing batch pauses at all. A steady drip is better
+// than bursts followed by long waits.
 //
-// 25 items × 3.5s = ~88 seconds of requests, then 180s rest.
-// Effective rate: 25 items per ~4.5 min = ~5.5 items/min sustained.
-// For 3000 items: ~9 hours total but uninterrupted.
+// At 7.5s per item: 3000 items ≈ 6.25 hours, uninterrupted.
 //
-// If we still get rate limited (429 or 3 consecutive nulls), we pause an
-// extra 5 minutes before resuming — no rewind, just wait and continue forward.
+// If we still somehow get rate limited (429 or 3 consecutive nulls), we pause
+// 5 minutes then continue forward — no rewind needed.
 
-const BASE_DELAY  = 3500;   // ms between individual requests (~17 req/min)
-const BATCH_SIZE  = 25;     // items per batch before a long pause
-const BATCH_PAUSE = 180000; // 3 minutes between batches
-const RATELIMIT_PAUSE = 300000; // 5 min extra pause if we still get rate limited
+const BASE_DELAY  = 7500;   // ms between requests — 8 req/min, under the 10/min limit
+const BATCH_SIZE  = 25;     // only used for progress display grouping, no pause
+const BATCH_PAUSE = 0;      // no batch pauses needed with controlled per-request rate
+const RATELIMIT_PAUSE = 300000; // 5 min pause if we still somehow get rate limited
 const MAX_ITEM_ATTEMPTS = 3;    // give up on an item after this many failures
 
 let enrichStopped = false;
@@ -544,15 +543,8 @@ async function enrichAllItems(retryFailed = false) {
       }
     }
 
-    // Between every item, base delay
+    // Steady delay between every request — keeps us at ~8 req/min
     await sleep(BASE_DELAY);
-
-    // Every BATCH_SIZE items, long pause to let Reddit's window reset
-    if ((i + 1) % BATCH_SIZE === 0 && i < toEnrich.length - 1) {
-      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'batch');
-      await sleep(BATCH_PAUSE);
-      consecutiveNulls = 0; // fresh batch, reset failure tracking
-    }
   }
 
   state.enriching = false;
@@ -584,7 +576,7 @@ function updateEnrichProgress(done, total, enriched, failed, status = '') {
   if (!el) return;
   const pct = Math.round((done / total) * 100);
   const remaining = total - done;
-  const minsLeft = Math.round((remaining * BASE_DELAY + Math.floor(remaining / BATCH_SIZE) * BATCH_PAUSE) / 60000);
+  const minsLeft = Math.round((remaining * BASE_DELAY) / 60000);
 
   let statusMsg = '';
   if (status === 'ratelimit') {
@@ -1180,10 +1172,10 @@ function renderImport() {
         </div>
         <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
           Fetches titles, subreddit names, authors, and post dates from Reddit's public API.
-          Processes <strong style="color:var(--text)">50 items at a time</strong> with a
-          15-second pause between batches, and backs off automatically if Reddit rate-limits us.
+          Runs at a steady <strong style="color:var(--text)">8 requests per minute</strong> —
+          just under Reddit's limit — so it can run uninterrupted without triggering rate limits.
           ${needsEnrich > 50 ? `<br><br><strong style="color:var(--text)">Estimated time for ${needsEnrich} items:</strong>
-          ~${Math.ceil(needsEnrich / 25 * 4.5)} minutes total (25 items fetched, 3 min pause, repeat).
+          ~${Math.ceil(needsEnrich * 7.5 / 60)} minutes total.
           Leave this tab open — it will run unattended.` : ''}
         </p>
         ${state.enriching ? `
