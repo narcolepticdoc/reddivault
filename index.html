@@ -294,7 +294,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.5.0';
+const APP_VERSION = '0.5.1';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -351,7 +351,8 @@ let state = {
   lastRunRateLimitHits: null,  // null = no run yet, 0 = clean last run, N = had issues
   recentSearches: [],    // last 20 unique queries, persisted
   favoriteSearches: [],  // user-starred queries, persisted
-  searchFocused: false,  // controls dropdown visibility
+  searchFocused: false,  // controls recents visibility
+  editingFavs: false,    // edit mode for favorites section
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -1102,35 +1103,70 @@ function renderHome() {
 }
 
 function renderBrowse() {
-  let items = filteredItems();
+  const items = filteredItems();
+  const favs = state.favoriteSearches;
+  const q = state.search.trim();
+  const isFav = favs.includes(q);
+  const deadCount = state.items.filter(i => i.enrichStatus === 'dead').length;
 
   return `
+    <!-- ── Favorite searches ─────────────────────────────────────────────── -->
+    ${favs.length > 0 ? `
+      <div style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <span style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em">★ SAVED SEARCHES</span>
+          ${state.editingFavs ? `
+            <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2)" onclick="state.editingFavs=false;render()">Done</button>
+          ` : `
+            <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text-muted)" onclick="state.editingFavs=true;render()">Edit</button>
+          `}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${favs.map(s => `
+            <div style="display:inline-flex;align-items:center;gap:4px;background:${q===s?'rgba(245,158,11,0.15)':'var(--surface)'};border:1px solid ${q===s?'rgba(245,158,11,0.5)':'var(--border)'};border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer"
+              onclick="applySearch(${JSON.stringify(s)})">
+              <span style="color:${q===s?'#f59e0b':'var(--text)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(s)}</span>
+              ${state.editingFavs ? `
+                <button style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:13px;padding:0 0 0 4px;line-height:1"
+                  onclick="event.stopPropagation();toggleFavoriteSearch(${JSON.stringify(s)})">✕</button>
+              ` : ''}
+            </div>`).join('')}
+        </div>
+      </div>
+    ` : ''}
+
+    <!-- ── Search input ──────────────────────────────────────────────────── -->
     <div class="search-wrap" style="position:relative">
       <span class="search-icon">🔍</span>
       <input class="input" id="search-input"
         placeholder='Search… e.g. big dog  r/aww  "exact phrase"  -exclude  u/name'
         value="${escHtml(state.search)}"
-        oninput="state.search=this.value;renderBrowseList();renderSearchDropdown()"
-        onfocus="state.searchFocused=true;renderSearchDropdown()"
-        onblur="setTimeout(()=>{state.searchFocused=false;renderSearchDropdown()},150)"
-        onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderSearchDropdown()}"
+        oninput="state.search=this.value;renderBrowseList();renderRecentSearches()"
+        onfocus="state.searchFocused=true;renderRecentSearches()"
+        onblur="setTimeout(()=>{state.searchFocused=false;renderRecentSearches()},200)"
+        onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderRecentSearches()}"
         style="padding-right:${state.search ? '36px' : '12px'}">
       ${state.search ? `
         <button style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1;padding:0"
           onclick="applySearch('')">✕</button>
       ` : ''}
-      <div id="search-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--card);border:1px solid var(--border);border-radius:12px;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div>
     </div>
-    <div id="search-result-info" style="display:flex;align-items:center;justify-content:space-between;margin:-8px 0 8px;padding:0 2px">
-      ${state.search.trim() ? `
-        <span style="font-size:12px;color:var(--text-muted)">${filteredItems().length.toLocaleString()} result${filteredItems().length!==1?'s':''}</span>
-        <button style="background:none;border:none;cursor:pointer;font-size:12px;color:${state.favoriteSearches.includes(state.search.trim())?'#f59e0b':'var(--text-muted)'};padding:2px 6px"
-          onclick="toggleFavoriteSearch(state.search.trim())"
-          title="${state.favoriteSearches.includes(state.search.trim())?'Remove from favorites':'Save as favorite'}">
-          ${state.favoriteSearches.includes(state.search.trim()) ? '★ Saved' : '☆ Save search'}
+
+    <!-- ── Recent searches (shown on focus when search is empty) ─────────── -->
+    <div id="recent-searches-row" style="display:none;margin:-4px 0 10px"></div>
+
+    <!-- ── Result count + save button ───────────────────────────────────── -->
+    <div id="search-result-info" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;min-height:24px">
+      ${q ? `
+        <span style="font-size:12px;color:var(--text-muted)">${items.length.toLocaleString()} result${items.length!==1?'s':''}</span>
+        <button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 6px"
+          onclick="toggleFavoriteSearch(state.search.trim())">
+          ${isFav ? '★ Saved' : '☆ Save search'}
         </button>
-      ` : ''}
+      ` : `<span style="font-size:12px;color:var(--text-muted)">${items.length.toLocaleString()} item${items.length!==1?'s':''}</span>`}
     </div>
+
+    <!-- ── Type + folder filters ─────────────────────────────────────────── -->
     <div class="filter-row">
       <button class="filter-pill ${state.filterType==='all'?'active':''}" onclick="setFilter('type','all')">All Types</button>
       <button class="filter-pill ${state.filterType==='post'?'active':''}" onclick="setFilter('type','post')">📝 Posts</button>
@@ -1141,20 +1177,17 @@ function renderBrowse() {
       <button class="filter-pill ${state.filterFolder==='__none__'?'active':''}" onclick="setFilter('folder','__none__')">📭 Unfiled</button>
       ${state.folders.map(f=>`<button class="filter-pill ${state.filterFolder===f.name?'active':''}" onclick="setFilter('folder','${escAttr(f.name)}')">${f.icon} ${escHtml(f.name)}</button>`).join('')}
     </div>
-    ${(() => {
-      const deadCount = state.items.filter(i => i.enrichStatus === 'dead').length;
-      return deadCount > 0 ? `
-        <div class="filter-row">
-          <button class="filter-pill ${state.showDead?'active':''}" onclick="setFilter('dead')"
-            style="${state.showDead?'':'opacity:0.6'}">
-            ⚰️ Show unavailable (${deadCount})
-          </button>
-        </div>` : '';
-    })()}
+    ${deadCount > 0 ? `
+      <div class="filter-row">
+        <button class="filter-pill ${state.showDead?'active':''}" onclick="setFilter('dead')" style="${state.showDead?'':'opacity:0.6'}">
+          ⚰️ Show unavailable (${deadCount})
+        </button>
+      </div>` : ''}
+
+    <!-- ── Results ───────────────────────────────────────────────────────── -->
     <div id="browse-list">
       ${renderBrowseItems(items)}
     </div>
-    <div style="text-align:center;padding:12px 0;font-size:13px;color:var(--text-muted)">${items.length.toLocaleString()} item${items.length!==1?'s':''}</div>
   `;
 }
 
@@ -1239,7 +1272,6 @@ function filteredItems() {
 async function commitSearch(query) {
   const q = query.trim();
   if (!q) return;
-  // Add to recents, deduplicate, cap at 20
   state.recentSearches = [q, ...state.recentSearches.filter(s => s !== q)].slice(0, 20);
   await db.config.put({ key: 'recentSearches', value: state.recentSearches });
 }
@@ -1252,62 +1284,49 @@ async function toggleFavoriteSearch(query) {
     state.favoriteSearches = state.favoriteSearches.filter(s => s !== q);
   } else {
     state.favoriteSearches = [q, ...state.favoriteSearches];
+    // Also add to recents so it appears in history
+    await commitSearch(q);
   }
   await db.config.put({ key: 'favoriteSearches', value: state.favoriteSearches });
-  renderSearchDropdown();
+  render();
 }
 
 async function removeRecentSearch(query) {
   state.recentSearches = state.recentSearches.filter(s => s !== query);
   await db.config.put({ key: 'recentSearches', value: state.recentSearches });
-  renderSearchDropdown();
+  renderRecentSearches();
 }
 
 function applySearch(query) {
   state.search = query;
   state.searchFocused = false;
   const el = document.getElementById('search-input');
-  if (el) { el.value = query; el.blur(); }
+  if (el) el.value = query;
   commitSearch(query);
   renderBrowseList();
-  renderSearchDropdown();
+  renderRecentSearches();
 }
 
-function renderSearchDropdown() {
-  const el = document.getElementById('search-dropdown');
+// Renders the recents row in-place (no full re-render needed)
+function renderRecentSearches() {
+  const el = document.getElementById('recent-searches-row');
   if (!el) return;
-
-  const q = state.search.trim();
-  const favs = state.favoriteSearches;
-  const recents = state.recentSearches.filter(s => !favs.includes(s));
-  const show = state.searchFocused && !q && (favs.length > 0 || recents.length > 0);
-
+  const favSet = new Set(state.favoriteSearches);
+  const recents = state.recentSearches.filter(s => !favSet.has(s));
+  const show = state.searchFocused && !state.search.trim() && recents.length > 0;
   if (!show) { el.style.display = 'none'; return; }
-
-  const pill = (label, query, isFav) => `
-    <div style="display:flex;align-items:center;gap:6px;padding:6px 4px;border-radius:6px;cursor:pointer"
-      onmousedown="event.preventDefault();applySearch(${JSON.stringify(query)})">
-      <span style="flex:1;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(query)}</span>
-      <button style="background:none;border:none;cursor:pointer;font-size:14px;padding:2px 4px;color:${isFav?'#f59e0b':'var(--text-muted)'};flex-shrink:0"
-        title="${isFav?'Remove from favorites':'Add to favorites'}"
-        onmousedown="event.preventDefault();event.stopPropagation();toggleFavoriteSearch(${JSON.stringify(query)})">★</button>
-      ${!isFav ? `<button style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 4px;color:var(--text-muted);flex-shrink:0"
-        title="Remove from history"
-        onmousedown="event.preventDefault();event.stopPropagation();removeRecentSearch(${JSON.stringify(query)})">✕</button>` : ''}
-    </div>`;
-
   el.style.display = 'block';
   el.innerHTML = `
-    <div style="padding:10px 12px;max-height:320px;overflow-y:auto">
-      ${favs.length > 0 ? `
-        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:4px">★ FAVORITES</div>
-        ${favs.map(s => pill(s, s, true)).join('')}
-        ${recents.length > 0 ? '<div style="border-top:1px solid var(--border);margin:8px 0"></div>' : ''}
-      ` : ''}
-      ${recents.length > 0 ? `
-        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:4px">RECENT</div>
-        ${recents.map(s => pill(s, s, false)).join('')}
-      ` : ''}
+    <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:6px">RECENT</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${recents.map(s => `
+        <div style="display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:4px 10px;font-size:12px;cursor:pointer;max-width:200px"
+          onmousedown="event.preventDefault();applySearch(${JSON.stringify(s)})">
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escHtml(s)}</span>
+          <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:0;line-height:1;flex-shrink:0"
+            title="Remove"
+            onmousedown="event.preventDefault();event.stopPropagation();removeRecentSearch(${JSON.stringify(s)})">✕</button>
+        </div>`).join('')}
     </div>`;
 }
 
@@ -1321,20 +1340,20 @@ function renderBrowseItems(items) {
 function renderBrowseList() {
   const el = document.getElementById('browse-list');
   if (!el) { render(); return; }
-  el.innerHTML = renderBrowseItems(filteredItems());
-  // Update the inline result count + save button without full re-render
+  const items = filteredItems();
+  el.innerHTML = renderBrowseItems(items);
+  // Update result count + save button in-place
   const countEl = document.getElementById('search-result-info');
   if (countEl) {
-    const n = filteredItems().length;
     const q = state.search.trim();
     const isFav = state.favoriteSearches.includes(q);
     countEl.innerHTML = q ? `
-      <span style="font-size:12px;color:var(--text-muted)">${n.toLocaleString()} result${n!==1?'s':''}</span>
+      <span style="font-size:12px;color:var(--text-muted)">${items.length.toLocaleString()} result${items.length!==1?'s':''}</span>
       <button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 6px"
-        onclick="toggleFavoriteSearch(state.search.trim())"
-        title="${isFav?'Remove from favorites':'Save as favorite'}">
+        onclick="toggleFavoriteSearch(state.search.trim())">
         ${isFav ? '★ Saved' : '☆ Save search'}
-      </button>` : '';
+      </button>`
+    : `<span style="font-size:12px;color:var(--text-muted)">${items.length.toLocaleString()} item${items.length!==1?'s':''}</span>`;
   }
 }
 
