@@ -294,7 +294,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.6.0';
+const APP_VERSION = '0.6.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -364,6 +364,10 @@ async function init() {
   await loadConfig();
   await loadData();
   render();
+  // Pull cloud preferences in background after initial render
+  if (state.supabaseUrl) {
+    pullPreferences().then(() => render());
+  }
 }
 
 async function loadConfig() {
@@ -725,6 +729,44 @@ async function saveEnrichSettings() {
   render();
 }
 
+// ─── PREFERENCES SYNC ────────────────────────────────────────────────────────
+
+async function pushPreference(key, value) {
+  if (!state.supabaseUrl) return;
+  try {
+    await supabaseFetch(
+      '/user_preferences?on_conflict=key',
+      'POST',
+      [{ key, value, updated_at: new Date().toISOString() }]
+    );
+  } catch(e) {
+    console.warn('Preference push failed:', e);
+  }
+}
+
+async function pullPreferences() {
+  if (!state.supabaseUrl) return;
+  try {
+    const rows = await supabaseFetch('/user_preferences?select=*');
+    for (const row of rows) {
+      if (row.key === 'favoriteSearches' && Array.isArray(row.value)) {
+        // Merge cloud favs with local — union of both, cloud wins on conflict
+        const merged = [...new Set([...row.value, ...state.favoriteSearches])];
+        state.favoriteSearches = merged;
+        await db.config.put({ key: 'favoriteSearches', value: merged });
+      }
+      if (row.key === 'recentSearches' && Array.isArray(row.value)) {
+        // Merge recents, deduplicate, cap at 20
+        const merged = [...new Set([...row.value, ...state.recentSearches])].slice(0, 20);
+        state.recentSearches = merged;
+        await db.config.put({ key: 'recentSearches', value: merged });
+      }
+    }
+  } catch(e) {
+    console.warn('Preference pull failed:', e);
+  }
+}
+
 async function syncFromSupabase() {
   state.syncStatus = 'syncing';
   renderHeaderActions();
@@ -811,6 +853,7 @@ async function syncFromSupabase() {
     state.lastSync = new Date().toISOString();
     state.syncStatus = 'connected';
     await loadData();
+    await pullPreferences();
     showToast(`Synced ${allRemoteItems.length} items from cloud ✓`, 'success');
     render();
   } catch(e) {
@@ -1510,6 +1553,7 @@ async function commitSearch(query) {
   if (!q) return;
   state.recentSearches = [q, ...state.recentSearches.filter(s => s !== q)].slice(0, 20);
   await db.config.put({ key: 'recentSearches', value: state.recentSearches });
+  await pushPreference('recentSearches', state.recentSearches);
 }
 
 async function toggleFavoriteSearch(query) {
@@ -1524,12 +1568,14 @@ async function toggleFavoriteSearch(query) {
     await commitSearch(q);
   }
   await db.config.put({ key: 'favoriteSearches', value: state.favoriteSearches });
+  await pushPreference('favoriteSearches', state.favoriteSearches);
   render();
 }
 
 async function removeRecentSearch(query) {
   state.recentSearches = state.recentSearches.filter(s => s !== query);
   await db.config.put({ key: 'recentSearches', value: state.recentSearches });
+  await pushPreference('recentSearches', state.recentSearches);
   renderRecentSearches();
 }
 
@@ -1638,13 +1684,17 @@ function renderBrowseList() {
   if (countEl) {
     const q = state.search.trim();
     const isFav = state.favoriteSearches.includes(q);
-    countEl.innerHTML = q ? `
-      <span style="font-size:12px;color:var(--text-muted)">${items.length.toLocaleString()} result${items.length!==1?'s':''}</span>
-      <button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 6px"
-        onclick="toggleFavoriteSearch(state.search.trim())">
-        ${isFav ? '★ Saved' : '☆ Save search'}
-      </button>`
-    : `<span style="font-size:12px;color:var(--text-muted)">${items.length.toLocaleString()} item${items.length!==1?'s':''}</span>`;
+    countEl.innerHTML = `
+      <span style="font-size:12px;color:var(--text-muted);flex-shrink:0">
+        ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
+      </span>
+      <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+        ${q ? `<button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 4px;white-space:nowrap"
+          onclick="toggleFavoriteSearch(state.search.trim())">
+          ${isFav ? '★ Saved' : '☆ Save'}
+        </button>` : ''}
+        ${renderSortControl()}
+      </div>`;
   }
 }
 
