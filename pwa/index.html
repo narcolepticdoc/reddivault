@@ -234,25 +234,6 @@
       border-top: 1px solid var(--border); display: flex; gap: 8px; flex-shrink: 0;
     }
 
-    /* In-app browser overlay */
-    .iab-overlay {
-      position: fixed; inset: 0; z-index: 300;
-      display: flex; flex-direction: column; background: var(--bg);
-    }
-    .iab-header {
-      padding: calc(var(--safe-top) + 10px) 16px 10px;
-      background: var(--surface); border-bottom: 1px solid var(--border);
-      display: flex; align-items: center; gap: 10px; flex-shrink: 0;
-    }
-    .iab-url {
-      flex: 1; font-size: 12px; color: var(--text-muted);
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    .iab-frame { flex: 1; border: none; width: 100%; }
-    .iab-fallback {
-      flex: 1; display: flex; flex-direction: column; align-items: center;
-      justify-content: center; gap: 16px; padding: 40px 20px; text-align: center;
-    }
 
     /* Toast */
     .toast-container { position: fixed; top: calc(var(--safe-top) + 80px); right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
@@ -360,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.0';
+const APP_VERSION = '0.7.1';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -423,7 +404,6 @@ let state = {
   filterFavourite: false, // show only favourited items
   sortBy: 'postCreatedAt', // savedAt | postCreatedAt | score | subreddit | title
   sortDir: 'desc',       // asc | desc
-  inAppBrowser: true,    // open links in-app with Safari fallback
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -457,10 +437,8 @@ async function loadConfig() {
     if (lastRunRL) state.lastRunRateLimitHits = lastRunRL.value;
     const recents = await db.config.get('recentSearches');
     const favs = await db.config.get('favoriteSearches');
-    const inApp = await db.config.get('inAppBrowser');
     if (recents) state.recentSearches = recents.value || [];
     if (favs) state.favoriteSearches = favs.value || [];
-    if (inApp !== undefined && inApp !== null) state.inAppBrowser = inApp.value !== false;
   } catch(e) {}
 }
 
@@ -1336,7 +1314,7 @@ function openLink(event, url) {
   event.preventDefault();
   if (!url) return;
 
-  // Check if it's a reddit post link we have locally
+  // Check if it's a reddit post link we have locally — open preview instead
   if (url.includes('reddit.com')) {
     const match = url.match(/comments\/([a-z0-9]+)/i);
     if (match) {
@@ -1354,74 +1332,8 @@ function openLink(event, url) {
     }
   }
 
-  if (state.inAppBrowser) {
-    openInAppBrowser(url);
-  } else {
-    window.location.href = url;
-  }
-}
-
-function openInAppBrowser(url) {
-  // Remove any existing IAB
-  document.getElementById('iab-overlay')?.remove();
-
-  const overlay = document.createElement('div');
-  overlay.className = 'iab-overlay';
-  overlay.id = 'iab-overlay';
-
-  const shortUrl = url.replace(/^https?:\/\//, '').substring(0, 60);
-
-  overlay.innerHTML = `
-    <div class="iab-header">
-      <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:22px;padding:0;line-height:1;flex-shrink:0"
-        onclick="closeInAppBrowser()">✕</button>
-      <span class="iab-url">${escHtml(shortUrl)}</span>
-      <button style="background:none;border:none;cursor:pointer;color:var(--accent2);font-size:13px;white-space:nowrap"
-        onclick="window.location.href='${url.replace(/'/g, "\'")}';closeInAppBrowser()">Safari ↗</button>
-    </div>
-    <div id="iab-content" style="flex:1;display:flex;flex-direction:column">
-      <div id="iab-loading" style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:14px">
-        Loading…
-      </div>
-      <iframe id="iab-frame" class="iab-frame" style="display:none"
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
-        src="${url.replace(/"/g, '&quot;')}"></iframe>
-    </div>`;
-
-  document.body.appendChild(overlay);
-
-  const frame = document.getElementById('iab-frame');
-  const loading = document.getElementById('iab-loading');
-
-  // Success — iframe loaded
-  frame.addEventListener('load', () => {
-    clearTimeout(iabTimeout);
-    loading.style.display = 'none';
-    frame.style.display = 'block';
-  });
-
-  // Timeout — assume blocked by X-Frame-Options
-  const iabTimeout = setTimeout(() => {
-    loading.style.display = 'none';
-    frame.style.display = 'none';
-    const content = document.getElementById('iab-content');
-    if (content) content.innerHTML = `
-      <div class="iab-fallback">
-        <div style="font-size:48px">🚫</div>
-        <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:18px">Can't display in-app</div>
-        <div style="font-size:14px;color:var(--text-muted);max-width:280px">
-          This page doesn't allow in-app display. Open it in Safari instead?
-        </div>
-        <button class="btn btn-primary" onclick="window.location.href='${url.replace(/'/g, "\'")}';closeInAppBrowser()">
-          Open in Safari ↗
-        </button>
-        <button class="btn btn-ghost" onclick="closeInAppBrowser()">Cancel</button>
-      </div>`;
-  }, 5000);
-}
-
-function closeInAppBrowser() {
-  document.getElementById('iab-overlay')?.remove();
+  // Let the OS handle it — on iOS standalone this opens the in-app Safari sheet
+  window.location.href = url;
 }
 
 // ─── POST PREVIEW ─────────────────────────────────────────────────────────────
@@ -2425,16 +2337,6 @@ function renderSettings() {
       </div>
       <button class="btn btn-primary" onclick="saveSupabaseConfig()" style="width:100%;justify-content:center">Save & Test Connection</button>
       ${state.supabaseUrl ? `
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:10px 0;border-top:1px solid var(--border)">
-          <div>
-            <div style="font-size:14px;font-weight:500">In-app browser</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:2px">Open links inside the app with Safari fallback</div>
-          </div>
-          <button style="background:${state.inAppBrowser?'var(--accent)':'var(--surface2)'};border:1px solid var(--border);border-radius:20px;padding:6px 16px;cursor:pointer;color:var(--text);font-size:13px"
-            onclick="state.inAppBrowser=!state.inAppBrowser;db.config.put({key:'inAppBrowser',value:state.inAppBrowser});render()">
-            ${state.inAppBrowser ? 'On' : 'Off'}
-          </button>
-        </div>
         <button class="btn btn-secondary" onclick="pushAllToSupabase()" style="width:100%;justify-content:center;margin-top:8px">
           ☁️ Push all local data to cloud
         </button>
