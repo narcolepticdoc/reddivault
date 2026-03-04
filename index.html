@@ -294,7 +294,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.4.2.2';
+const APP_VERSION = '0.4.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -826,6 +826,31 @@ async function pushFolderUpdate(itemId, folder) {
 }
 
 // ─── IMPORT ──────────────────────────────────────────────────────────────────
+async function repairItemTypes() {
+  // Items imported from CSV before the fix have wrong types because the detection
+  // logic didn't strip the domain from full URLs before counting path segments.
+  // Re-evaluate every item's type from its stored permalink.
+  const allItems = await db.items.toArray();
+  let fixed = 0;
+
+  for (const item of allItems) {
+    const permalink = item.permalink || item.url || '';
+    if (!permalink) continue;
+
+    const path = permalink.replace(/^https?:\/\/[^\/]+/, '');
+    const parts = path.split('/').filter(Boolean);
+    const correctType = parts.length > 5 ? 'comment' : 'post';
+
+    if (item.type !== correctType) {
+      await db.items.update(item.id, { type: correctType });
+      fixed++;
+    }
+  }
+
+  await loadData();
+  showToast(`Repaired ${fixed} item type${fixed !== 1 ? 's' : ''} ✓`, fixed > 0 ? 'success' : 'warning');
+  render();
+}
 async function handleCSVImport(file) {
   return new Promise((resolve) => {
     Papa.parse(file, {
@@ -847,8 +872,10 @@ async function handleCSVImport(file) {
 
           // Detect type from permalink path: /r/sub/comments/id/title/ = post
           // /r/sub/comments/id/title/commentid/ = comment
+          // Strip protocol + domain first since CSV exports use full URLs
           const permalink = row.permalink || '';
-          const isComment = permalink.split('/').filter(Boolean).length > 5;
+          const permalinkPath = permalink.replace(/^https?:\/\/[^\/]+/, '');
+          const isComment = permalinkPath.split('/').filter(Boolean).length > 5;
 
           // Determine if we have enough data already or need enrichment
           const hasTitle = !!(row.title && row.title.trim());
@@ -1559,6 +1586,10 @@ function renderSettings() {
           <span style="${state.items.filter(i=>i.enrichStatus==='dead').length>0?'color:var(--text-muted)':''}">${state.items.filter(i=>i.enrichStatus==='dead').length.toLocaleString()}</span>
         </div>
       </div>
+      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:12px"
+        onclick="repairItemTypes()" title="Re-evaluates post vs comment type for all items from their permalink">
+        🔧 Repair Post/Comment Types
+      </button>
     </div>
 
     <div class="config-section">
