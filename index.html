@@ -294,7 +294,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.5.4';
+const APP_VERSION = '0.5.5';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -774,16 +774,25 @@ async function syncFromSupabase() {
         });
         added++;
       } else {
-        const updates = { folder: item.folder };
-        if (!exists.enriched && item.title && item.subreddit) {
-          updates.title = item.title;
-          updates.subreddit = item.subreddit;
-          updates.author = item.author || exists.author;
-          updates.score = item.score ?? exists.score;
-          updates.postCreatedAt = item.post_created_at || exists.postCreatedAt;
-          updates.enriched = true;
-        }
-        await db.items.update(exists.id, updates);
+        // Full replacement from cloud — Supabase is the source of truth.
+        // We preserve local-only fields (enrichAttempts, syncedAt) but
+        // overwrite everything that the cloud owns.
+        await db.items.update(exists.id, {
+          type:          item.type,
+          subreddit:     item.subreddit || '',
+          title:         item.title || '',
+          url:           item.url || '',
+          permalink:     item.permalink || item.url || '',
+          body:          item.body || '',
+          author:        item.author || '',
+          score:         item.score ?? null,
+          folder:        item.folder || null,
+          savedAt:       item.saved_at,
+          postCreatedAt: item.post_created_at || null,
+          enriched:      !!(item.title && item.subreddit),
+          enrichStatus:  item.enrich_status || ((item.title && item.subreddit) ? 'enriched' : 'pending'),
+          syncedAt:      new Date().toISOString(),
+        });
         updated++;
       }
     }
