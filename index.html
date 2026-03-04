@@ -293,7 +293,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '3.0';
+const APP_VERSION = '3.1';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -605,11 +605,46 @@ async function supabaseFetch(path, method='GET', body=null) {
   return method === 'GET' ? res.json() : res;
 }
 
+// Fetches a specific row range using HTTP Range headers — the correct way to
+// paginate Supabase which otherwise hard-caps at 1000 rows per request
+async function supabaseFetchRange(path, from, to) {
+  if (!state.supabaseUrl || !state.supabaseKey) throw new Error('Supabase not configured');
+  const res = await fetch(`${state.supabaseUrl}/rest/v1${path}`, {
+    headers: {
+      'apikey': state.supabaseKey,
+      'Authorization': `Bearer ${state.supabaseKey}`,
+      'Range': `${from}-${to}`,
+      'Range-Unit': 'items',
+      'Prefer': 'count=none'
+    }
+  });
+  // 206 Partial Content = more pages exist, 200 = last page
+  if (res.status !== 200 && res.status !== 206) {
+    throw new Error(`Supabase range fetch error: ${res.status}`);
+  }
+  return res.json();
+}
+
 async function syncFromSupabase() {
   state.syncStatus = 'syncing';
   renderHeaderActions();
   try {
-    const remoteItems = await supabaseFetch('/reddit_saves?select=*&order=saved_at.desc&limit=5000');
+    // Supabase hard-caps responses at 1000 rows by default regardless of the
+    // limit parameter. We page through using Range headers until we have everything.
+    const PAGE_SIZE = 1000;
+    let allRemoteItems = [];
+    let offset = 0;
+    while (true) {
+      const page = await supabaseFetchRange(
+        '/reddit_saves?select=*&order=saved_at.desc',
+        offset, offset + PAGE_SIZE - 1
+      );
+      allRemoteItems = allRemoteItems.concat(page);
+      showToast(`Fetching from cloud... ${allRemoteItems.length} items`, 'success');
+      if (page.length < PAGE_SIZE) break; // last page
+      offset += PAGE_SIZE;
+    }
+
     const remoteFolders = await supabaseFetch('/reddit_folders?select=*');
 
     for (const f of remoteFolders) {
@@ -619,7 +654,8 @@ async function syncFromSupabase() {
       }
     }
 
-    for (const item of remoteItems) {
+    let added = 0, updated = 0;
+    for (const item of allRemoteItems) {
       const exists = await db.items.where('redditId').equals(item.reddit_id).first();
       if (!exists) {
         await db.items.add({
@@ -636,10 +672,11 @@ async function syncFromSupabase() {
           savedAt: item.saved_at,
           postCreatedAt: item.post_created_at || null,
           enriched: !!(item.title && item.subreddit),
+          enrichAttempts: 0,
           syncedAt: new Date().toISOString()
         });
+        added++;
       } else {
-        // Always update folder, and update enrichment data if remote has it and local doesn't
         const updates = { folder: item.folder };
         if (!exists.enriched && item.title && item.subreddit) {
           updates.title = item.title;
@@ -650,6 +687,7 @@ async function syncFromSupabase() {
           updates.enriched = true;
         }
         await db.items.update(exists.id, updates);
+        updated++;
       }
     }
 
@@ -657,7 +695,7 @@ async function syncFromSupabase() {
     state.lastSync = new Date().toISOString();
     state.syncStatus = 'connected';
     await loadData();
-    showToast('Synced from cloud ✓', 'success');
+    showToast(`Synced ${allRemoteItems.length} items from cloud ✓`, 'success');
     render();
   } catch(e) {
     state.syncStatus = 'disconnected';
