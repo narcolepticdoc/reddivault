@@ -293,7 +293,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '3.1';
+const APP_VERSION = '3.5';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -439,8 +439,9 @@ async function enrichItemFromReddit(item) {
 
 // How many consecutive failures before we take a long break
 const FAILURE_THRESHOLD = 5;
-// How long to pause after hitting the failure threshold (ms)
-const BACKOFF_PAUSE = 60000; // 1 minute
+// Exponential backoff settings
+const BACKOFF_BASE = 60000;   // 1 minute for first backoff
+const BACKOFF_MAX  = 300000;  // cap at 5 minutes regardless of how many retries
 // Base delay between requests (ms)
 const BASE_DELAY = 2000;
 // Batch size before a shorter mid-batch pause
@@ -482,6 +483,7 @@ async function enrichAllItems(retryFailed = false) {
   let enrichedCount = 0;
   let failedCount = 0;
   let consecutiveFails = 0;
+  let backoffCount = 0; // how many times we've backed off this run — used for exponential delay
 
   for (let i = 0; i < toEnrich.length; i++) {
     if (enrichStopped) {
@@ -496,48 +498,75 @@ async function enrichAllItems(retryFailed = false) {
     const result = await enrichItemFromReddit(item);
 
     if (result === 'rate_limited') {
-      // Reddit told us explicitly to slow down — long pause then retry same item
+      // Reddit sent explicit 429 — exponential backoff then retry the same item
       consecutiveFails++;
+      backoffCount++;
       state.enrichProgress.rateLimited++;
-      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, consecutiveFails, true);
-      await sleep(BACKOFF_PAUSE);
+      const pause429 = Math.min(BACKOFF_BASE * Math.pow(2, backoffCount - 1), BACKOFF_MAX);
+      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, consecutiveFails, true, false, pause429);
+      await sleep(pause429);
       i--; // retry this item
       continue;
 
     } else if (result === 'unavailable') {
-      // Deleted or private — mark done so we don't retry endlessly
+      // Deleted or private post — mark done so we don't retry endlessly
       await db.items.update(item.id, {
         enriched: true,
         enrichAttempts: (item.enrichAttempts || 0) + 1
       });
       failedCount++;
       consecutiveFails = 0;
+      backoffCount = 0; // permanent failure, not rate limiting — reset backoff
 
     } else if (result && typeof result === 'object') {
       // Success
       await db.items.update(item.id, result);
       enrichedCount++;
       consecutiveFails = 0;
+      backoffCount = 0; // successful fetch — reset backoff for next rate limit event
 
     } else {
-      // null = network error or unexpected response — could be rate limiting
-      consecutiveFails++;
-      await db.items.update(item.id, {
-        enrichAttempts: (item.enrichAttempts || 0) + 1
-        // Note: enriched stays false so it can be retried
-      });
+      // null = network error or no data — likely silent rate limiting,
+      // but could also be a genuinely broken item (malformed JSON, etc.)
+      const attempts = (item.enrichAttempts || 0) + 1;
+      await db.items.update(item.id, { enrichAttempts: attempts });
       failedCount++;
 
-      if (consecutiveFails >= FAILURE_THRESHOLD) {
-        // Too many consecutive failures — Reddit is probably throttling us.
-        // Take a long break before continuing.
-        updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, consecutiveFails, true);
-        await sleep(BACKOFF_PAUSE);
-        consecutiveFails = 0;
+      // Items that have failed MAX_ITEM_ATTEMPTS times are considered permanently
+      // broken — don't count them toward consecutiveFails or rewind for them,
+      // just mark done and move on. This prevents infinite loops on dead items.
+      const MAX_ITEM_ATTEMPTS = 3;
+      if (attempts >= MAX_ITEM_ATTEMPTS) {
+        await db.items.update(item.id, { enriched: true }); // give up on this one
+        consecutiveFails = 0; // doesn't count as a rate-limit signal
+        backoffCount = 0;     // nor does it count as a backoff-worthy event
+      } else {
+        consecutiveFails++;
+
+        if (consecutiveFails >= FAILURE_THRESHOLD) {
+          // Enough consecutive failures that it's almost certainly rate limiting,
+          // not dead items. Exponential backoff then rewind so they get retried.
+          backoffCount++;
+          const pauseMs = Math.min(BACKOFF_BASE * Math.pow(2, backoffCount - 1), BACKOFF_MAX);
+          updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, consecutiveFails, true, false, pauseMs);
+          await sleep(pauseMs);
+          consecutiveFails = 0;
+
+          // Find the rewind point: go back FAILURE_THRESHOLD positions,
+          // but skip past any items that have hit their attempt limit
+          let rewindTo = Math.max(-1, i - FAILURE_THRESHOLD);
+          while (rewindTo < i) {
+            const candidate = toEnrich[rewindTo + 1];
+            if (candidate && (candidate.enrichAttempts || 0) < MAX_ITEM_ATTEMPTS) break;
+            rewindTo++; // skip this one, it's already given up
+          }
+          i = rewindTo;
+          continue;
+        }
       }
     }
 
-    // Every BATCH_SIZE items, take a short break to let Reddit's rate limit window reset
+    // Every BATCH_SIZE items, take a short mid-run break
     if ((i + 1) % BATCH_SIZE === 0 && i < toEnrich.length - 1) {
       updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 0, false, true);
       await sleep(BATCH_PAUSE);
@@ -570,12 +599,13 @@ function stopEnrichment() {
   enrichStopped = true;
 }
 
-function updateEnrichProgress(done, total, enriched, failed, consecutiveFails, backingOff = false, batchPause = false) {
+function updateEnrichProgress(done, total, enriched, failed, consecutiveFails, backingOff = false, batchPause = false, pauseMs = 60000) {
   const el = document.getElementById('enrich-progress-details');
   if (!el) return;
   const pct = Math.round((done / total) * 100);
+  const pauseSecs = Math.round(pauseMs / 1000);
   let statusMsg = '';
-  if (backingOff) statusMsg = `<span style="color:var(--warning)">⏳ Rate limited — waiting 60s before continuing...</span>`;
+  if (backingOff) statusMsg = `<span style="color:var(--warning)">⏳ Rate limited — waiting ${pauseSecs}s before retrying...</span>`;
   else if (batchPause) statusMsg = `<span style="color:var(--accent2)">☕ Batch pause (15s) — letting Reddit's rate limit reset...</span>`;
   else if (consecutiveFails >= 3) statusMsg = `<span style="color:var(--warning)">⚠ ${consecutiveFails} consecutive failures — may be rate limited</span>`;
 
