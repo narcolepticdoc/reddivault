@@ -294,7 +294,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.5.3';
+const APP_VERSION = '0.5.4';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -768,7 +768,7 @@ async function syncFromSupabase() {
           savedAt: item.saved_at,
           postCreatedAt: item.post_created_at || null,
           enriched: !!(item.title && item.subreddit),
-          enrichStatus: (item.title && item.subreddit) ? 'enriched' : 'pending',
+          enrichStatus: item.enrich_status || ((item.title && item.subreddit) ? 'enriched' : 'pending'),
           enrichAttempts: 0,
           syncedAt: new Date().toISOString()
         });
@@ -816,6 +816,7 @@ async function pushToSupabase(items) {
     folder: i.folder || null,
     saved_at: i.savedAt,
     post_created_at: i.postCreatedAt || null,
+    enrich_status: i.enrichStatus || 'pending',
   }));
   try {
     await supabaseFetch('/reddit_saves?on_conflict=reddit_id', 'POST', payload);
@@ -834,6 +835,24 @@ async function pushFolderUpdate(itemId, folder) {
 }
 
 // ─── IMPORT ──────────────────────────────────────────────────────────────────
+async function pushAllToSupabase() {
+  if (!state.supabaseUrl || !state.supabaseKey) {
+    showToast('Supabase not configured', 'error');
+    return;
+  }
+  showToast('Pushing all local data to cloud…', 'info');
+  try {
+    const allItems = await db.items.toArray();
+    const BATCH = 200;
+    for (let i = 0; i < allItems.length; i += BATCH) {
+      await pushToSupabase(allItems.slice(i, i + BATCH));
+      showToast(`Pushing… ${Math.min(i + BATCH, allItems.length)} / ${allItems.length}`, 'info');
+    }
+    showToast(`✓ Pushed ${allItems.length.toLocaleString()} items to cloud`, 'success');
+  } catch(e) {
+    showToast('Push failed: ' + e.message, 'error');
+  }
+}
 async function repairItemTypes() {
   // Items imported from CSV before the fix have wrong types because the detection
   // logic didn't strip the domain from full URLs before counting path segments.
@@ -858,6 +877,15 @@ async function repairItemTypes() {
   await loadData();
   showToast(`Repaired ${fixed} item type${fixed !== 1 ? 's' : ''} ✓`, fixed > 0 ? 'success' : 'warning');
   render();
+  // Push repaired types to Supabase so other devices get the fix
+  if (fixed > 0 && state.supabaseUrl) {
+    showToast('Syncing repairs to cloud…', 'info');
+    const allItems = await db.items.toArray();
+    for (let i = 0; i < allItems.length; i += 200) {
+      await pushToSupabase(allItems.slice(i, i + 200));
+    }
+    showToast('✓ Repairs synced to cloud', 'success');
+  }
 }
 async function handleCSVImport(file) {
   return new Promise((resolve) => {
@@ -1815,6 +1843,11 @@ function renderSettings() {
         <input class="input" id="sb-key" type="password" placeholder="eyJhbGc..." value="${escHtml(state.supabaseKey)}">
       </div>
       <button class="btn btn-primary" onclick="saveSupabaseConfig()" style="width:100%;justify-content:center">Save & Test Connection</button>
+      ${state.supabaseUrl ? `
+        <button class="btn btn-secondary" onclick="pushAllToSupabase()" style="width:100%;justify-content:center;margin-top:8px">
+          ☁️ Push all local data to cloud
+        </button>
+      ` : ''}
     </div>
 
     <div class="config-section">
