@@ -294,7 +294,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.5.1';
+const APP_VERSION = '0.5.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1124,11 +1124,11 @@ function renderBrowse() {
         <div style="display:flex;flex-wrap:wrap;gap:6px">
           ${favs.map(s => `
             <div style="display:inline-flex;align-items:center;gap:4px;background:${q===s?'rgba(245,158,11,0.15)':'var(--surface)'};border:1px solid ${q===s?'rgba(245,158,11,0.5)':'var(--border)'};border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer"
-              onclick="applySearch(${JSON.stringify(s)})">
+              onmousedown="event.preventDefault();applySearch(${JSON.stringify(s)})">
               <span style="color:${q===s?'#f59e0b':'var(--text)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(s)}</span>
               ${state.editingFavs ? `
                 <button style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:13px;padding:0 0 0 4px;line-height:1"
-                  onclick="event.stopPropagation();toggleFavoriteSearch(${JSON.stringify(s)})">✕</button>
+                  onmousedown="event.preventDefault();event.stopPropagation();toggleFavoriteSearch(${JSON.stringify(s)})">✕</button>
               ` : ''}
             </div>`).join('')}
         </div>
@@ -1141,10 +1141,10 @@ function renderBrowse() {
       <input class="input" id="search-input"
         placeholder='Search… e.g. big dog  r/aww  "exact phrase"  -exclude  u/name'
         value="${escHtml(state.search)}"
-        oninput="state.search=this.value;renderBrowseList();renderRecentSearches()"
+        oninput="handleSearchInput(this.value)"
         onfocus="state.searchFocused=true;renderRecentSearches()"
-        onblur="setTimeout(()=>{state.searchFocused=false;renderRecentSearches()},200)"
-        onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderRecentSearches()}"
+        onblur="setTimeout(()=>{state.searchFocused=false;renderRecentSearches()},300)"
+        onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderBrowseList();renderRecentSearches()}"
         style="padding-right:${state.search ? '36px' : '12px'}">
       ${state.search ? `
         <button style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1;padding:0"
@@ -1300,14 +1300,51 @@ async function removeRecentSearch(query) {
 function applySearch(query) {
   state.search = query;
   state.searchFocused = false;
-  const el = document.getElementById('search-input');
-  if (el) el.value = query;
-  commitSearch(query);
-  renderBrowseList();
-  renderRecentSearches();
+  state.editingFavs = false;
+  if (query.trim()) commitSearch(query);
+  // Full re-render so favorites section updates (active highlight, save button)
+  render();
 }
 
 // Renders the recents row in-place (no full re-render needed)
+// ─── SEARCH DEBOUNCE ─────────────────────────────────────────────────────────
+// Only trigger a live search update when:
+//   - The query is empty (clear results immediately)
+//   - A space has been typed (first/next word is complete)
+//   - The current word being typed is >= 4 characters
+// This avoids hammering the filter on every keystroke for short words like
+// "b", "bi", "big" — the search fires when you type "big " or "bigg".
+
+let _searchDebounceTimer = null;
+
+function handleSearchInput(value) {
+  state.search = value;
+  renderRecentSearches();
+
+  // Always clear immediately
+  if (!value.trim()) {
+    renderBrowseList();
+    return;
+  }
+
+  // Check trigger conditions
+  const lastChar = value[value.length - 1];
+  const words = value.trim().split(/\s+/);
+  const currentWord = words[words.length - 1];
+  // Strip field prefixes and quotes for length check
+  const bareWord = currentWord.replace(/^[-"r\/u\:]*/,'').replace(/"/g,'');
+
+  const shouldTrigger =
+    lastChar === ' ' ||          // completed a word
+    bareWord.length >= 4;        // current word is long enough
+
+  clearTimeout(_searchDebounceTimer);
+  if (shouldTrigger) {
+    // Small debounce to batch rapid keystrokes
+    _searchDebounceTimer = setTimeout(() => renderBrowseList(), 120);
+  }
+}
+
 function renderRecentSearches() {
   const el = document.getElementById('recent-searches-row');
   if (!el) return;
