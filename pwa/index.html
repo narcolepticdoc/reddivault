@@ -294,7 +294,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.5.5';
+const APP_VERSION = '0.6.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -353,6 +353,10 @@ let state = {
   favoriteSearches: [],  // user-starred queries, persisted
   searchFocused: false,  // controls recents visibility
   editingFavs: false,    // edit mode for favorites section
+  showTrash: false,      // toggle trash view in browse
+  filterFavourite: false, // show only favourited items
+  sortBy: 'savedAt',     // savedAt | postCreatedAt | score | subreddit | title
+  sortDir: 'desc',       // asc | desc
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -769,6 +773,9 @@ async function syncFromSupabase() {
           postCreatedAt: item.post_created_at || null,
           enriched: !!(item.title && item.subreddit),
           enrichStatus: item.enrich_status || ((item.title && item.subreddit) ? 'enriched' : 'pending'),
+          isFavourite:  item.is_favourite || false,
+          rating:       item.rating || null,
+          isDisliked:   item.is_disliked || false,
           enrichAttempts: 0,
           syncedAt: new Date().toISOString()
         });
@@ -791,6 +798,9 @@ async function syncFromSupabase() {
           postCreatedAt: item.post_created_at || null,
           enriched:      !!(item.title && item.subreddit),
           enrichStatus:  item.enrich_status || ((item.title && item.subreddit) ? 'enriched' : 'pending'),
+          isFavourite:   item.is_favourite || false,
+          rating:        item.rating || null,
+          isDisliked:    item.is_disliked || false,
           syncedAt:      new Date().toISOString(),
         });
         updated++;
@@ -826,6 +836,9 @@ async function pushToSupabase(items) {
     saved_at: i.savedAt,
     post_created_at: i.postCreatedAt || null,
     enrich_status: i.enrichStatus || 'pending',
+    is_favourite: i.isFavourite || false,
+    rating: i.rating || null,
+    is_disliked: i.isDisliked || false,
   }));
   try {
     await supabaseFetch('/reddit_saves?on_conflict=reddit_id', 'POST', payload);
@@ -1139,13 +1152,164 @@ function renderHome() {
   `;
 }
 
+// ─── ITEM ACTIONS ────────────────────────────────────────────────────────────
+
+async function toggleFavourite(id) {
+  const item = await db.items.get(id);
+  if (!item) return;
+  const val = !item.isFavourite;
+  await db.items.update(id, { isFavourite: val });
+  await pushItemUpdate(id, { is_favourite: val });
+  await loadData();
+  renderBrowseList();
+}
+
+async function setRating(id, rating) {
+  const item = await db.items.get(id);
+  if (!item) return;
+  // Clicking the same rating again clears it
+  const val = item.rating === rating ? null : rating;
+  await db.items.update(id, { rating: val });
+  await pushItemUpdate(id, { rating: val });
+  await loadData();
+  renderBrowseList();
+}
+
+async function dislikeItem(id) {
+  await db.items.update(id, { isDisliked: true, isFavourite: false, rating: null });
+  await pushItemUpdate(id, { is_disliked: true, is_favourite: false, rating: null });
+  await loadData();
+  renderBrowseList();
+}
+
+async function restoreItem(id) {
+  await db.items.update(id, { isDisliked: false });
+  await pushItemUpdate(id, { is_disliked: false });
+  await loadData();
+  renderBrowseList();
+}
+
+async function deleteItemPermanently(id) {
+  const item = await db.items.get(id);
+  if (!item) return;
+  await db.items.delete(id);
+  if (state.supabaseUrl && item.redditId) {
+    try {
+      await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'DELETE', null);
+    } catch(e) {}
+  }
+  await loadData();
+  renderBrowseList();
+}
+
+async function deleteAllDisliked() {
+  const disliked = state.items.filter(i => i.isDisliked);
+  if (!disliked.length) return;
+  if (!confirm(`Permanently delete ${disliked.length} item${disliked.length!==1?'s':''} from your library and cloud? This cannot be undone.`)) return;
+  for (const item of disliked) {
+    await db.items.delete(item.id);
+    if (state.supabaseUrl && item.redditId) {
+      try { await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'DELETE', null); } catch(e) {}
+    }
+  }
+  await loadData();
+  render();
+}
+
+async function pushItemUpdate(id, fields) {
+  const item = await db.items.get(id);
+  if (!item || !state.supabaseUrl) return;
+  try {
+    await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', fields);
+  } catch(e) {}
+}
+
+function setSort(by) {
+  if (state.sortBy === by) {
+    state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    state.sortBy = by;
+    state.sortDir = by === 'title' || by === 'subreddit' ? 'asc' : 'desc';
+  }
+  renderBrowseList();
+  // Re-render the sort control too
+  const sc = document.getElementById('sort-control');
+  if (sc) sc.outerHTML = renderSortControl();
+}
+
+function renderSortControl() {
+  const opts = [
+    { key: 'savedAt', label: 'Date saved' },
+    { key: 'postCreatedAt', label: 'Date posted' },
+    { key: 'score', label: 'Score' },
+    { key: 'rating', label: 'Rating' },
+    { key: 'subreddit', label: 'Subreddit' },
+    { key: 'title', label: 'Title' },
+  ];
+  const cur = opts.find(o => o.key === state.sortBy);
+  const arrow = state.sortDir === 'desc' ? '↓' : '↑';
+  const optHtml = opts.map(o =>
+    `<option value="${o.key}" ${o.key === state.sortBy ? 'selected' : ''}>${o.label}</option>`
+  ).join('');
+  return `<div id="sort-control" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted)">
+    <span>Sort:</span>
+    <select style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:2px 6px;cursor:pointer"
+      onchange="state.sortBy=this.value;state.sortDir=(this.value==='title'||this.value==='subreddit')?'asc':'desc';renderBrowseList();this.closest('#sort-control').outerHTML=renderSortControl()">
+      ${optHtml}
+    </select>
+    <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:14px;padding:0 2px"
+      onclick="state.sortDir=state.sortDir==='desc'?'asc':'desc';renderBrowseList();this.closest('#sort-control').outerHTML=renderSortControl()"
+      title="Toggle direction">${arrow}</button>
+  </div>`;
+}
+
+function renderTrashView() {
+  const items = filteredItems(); // already filtered to disliked when showTrash=true
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-family:'Syne',sans-serif;font-weight:600">🗑️ Trash (${items.length})</div>
+      <div style="display:flex;gap:8px">
+        ${items.length > 0 ? `<button class="btn btn-danger btn-sm" onclick="deleteAllDisliked()">Delete all</button>` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="state.showTrash=false;render()">← Back</button>
+      </div>
+    </div>
+    ${items.length === 0 ? `
+      <div class="empty"><div class="empty-icon">🗑️</div><h3>Trash is empty</h3><p>Items you dislike will appear here.</p></div>
+    ` : items.map(item => {
+      const openUrl = (item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '#';
+      return `
+        <div class="card" style="border-color:rgba(239,68,68,0.2)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+            <span class="badge ${item.type==='comment'?'badge-comment':'badge-post'}">${item.type==='comment'?'💬 Comment':'📝 Post'}</span>
+            ${item.subreddit ? `<span class="subreddit-tag">r/${escHtml(item.subreddit)}</span>` : ''}
+            ${item.author ? `<span style="font-size:11px;color:var(--text-muted)">u/${escHtml(item.author)}</span>` : ''}
+          </div>
+          <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px;color:var(--text);line-height:1.3;margin-bottom:8px">
+            ${escHtml(item.title || 'Untitled')}
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn btn-ghost btn-sm" onclick="restoreItem(${item.id})">↩ Restore</button>
+            <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">↗ Open</a>
+            <button class="btn btn-danger btn-sm" onclick="if(confirm('Permanently delete this item?'))deleteItemPermanently(${item.id})">🗑 Delete</button>
+          </div>
+        </div>`;
+    }).join('')}
+  `;
+}
+
 function renderBrowse() {
   _searchLookup = []; // reset lookup table for this render
+
+  // Trash view takes over the whole browse area
+  if (state.showTrash) return renderTrashView();
+
   const items = filteredItems();
   const favs = state.favoriteSearches;
   const q = state.search.trim();
   const isFav = favs.includes(q);
   const deadCount = state.items.filter(i => i.enrichStatus === 'dead').length;
+  const trashCount = state.items.filter(i => i.isDisliked).length;
+  const favCount = state.items.filter(i => i.isFavourite).length;
 
   return `
     <!-- ── Favorite searches ─────────────────────────────────────────────── -->
@@ -1193,15 +1357,19 @@ function renderBrowse() {
     <!-- ── Recent searches (shown on focus when search is empty) ─────────── -->
     <div id="recent-searches-row" style="display:none;margin:-4px 0 10px"></div>
 
-    <!-- ── Result count + save button ───────────────────────────────────── -->
-    <div id="search-result-info" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;min-height:24px">
-      ${q ? `
-        <span style="font-size:12px;color:var(--text-muted)">${items.length.toLocaleString()} result${items.length!==1?'s':''}</span>
-        <button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 6px"
-          onclick="toggleFavoriteSearch(state.search.trim())">
-          ${isFav ? '★ Saved' : '☆ Save search'}
-        </button>
-      ` : `<span style="font-size:12px;color:var(--text-muted)">${items.length.toLocaleString()} item${items.length!==1?'s':''}</span>`}
+    <!-- ── Result count + save search + sort ───────────────────────────── -->
+    <div id="search-result-info" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;min-height:24px;gap:8px">
+      <span style="font-size:12px;color:var(--text-muted);flex-shrink:0">
+        ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
+      </span>
+      <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+        ${q ? `
+          <button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 4px;white-space:nowrap"
+            onclick="toggleFavoriteSearch(state.search.trim())">
+            ${isFav ? '★ Saved' : '☆ Save'}
+          </button>` : ''}
+        ${renderSortControl()}
+      </div>
     </div>
 
     <!-- ── Type + folder filters ─────────────────────────────────────────── -->
@@ -1209,18 +1377,17 @@ function renderBrowse() {
       <button class="filter-pill ${state.filterType==='all'?'active':''}" onclick="setFilter('type','all')">All Types</button>
       <button class="filter-pill ${state.filterType==='post'?'active':''}" onclick="setFilter('type','post')">📝 Posts</button>
       <button class="filter-pill ${state.filterType==='comment'?'active':''}" onclick="setFilter('type','comment')">💬 Comments</button>
+      ${favCount > 0 ? `<button class="filter-pill ${state.filterFavourite?'active':''}" onclick="setFilter('favourite')" style="color:#f59e0b">⭐ Favourites${state.filterFavourite?'':' ('+favCount+')'}</button>` : ''}
     </div>
     <div class="filter-row">
       <button class="filter-pill ${state.filterFolder==='all'?'active':''}" onclick="setFilter('folder','all')">All Folders</button>
       <button class="filter-pill ${state.filterFolder==='__none__'?'active':''}" onclick="setFilter('folder','__none__')">📭 Unfiled</button>
       ${state.folders.map(f=>`<button class="filter-pill ${state.filterFolder===f.name?'active':''}" onclick="setFilter('folder','${escAttr(f.name)}')">${f.icon} ${escHtml(f.name)}</button>`).join('')}
     </div>
-    ${deadCount > 0 ? `
-      <div class="filter-row">
-        <button class="filter-pill ${state.showDead?'active':''}" onclick="setFilter('dead')" style="${state.showDead?'':'opacity:0.6'}">
-          ⚰️ Show unavailable (${deadCount})
-        </button>
-      </div>` : ''}
+    <div class="filter-row">
+      ${deadCount > 0 ? `<button class="filter-pill ${state.showDead?'active':''}" onclick="setFilter('dead')" style="${state.showDead?'':'opacity:0.6'}">⚰️ Unavailable (${deadCount})</button>` : ''}
+      ${trashCount > 0 ? `<button class="filter-pill" onclick="state.showTrash=true;render()" style="opacity:0.7">🗑️ Trash (${trashCount})</button>` : ''}
+    </div>
 
     <!-- ── Results ───────────────────────────────────────────────────────── -->
     <div id="browse-list">
@@ -1282,13 +1449,43 @@ function itemMatchesTokens(item, tokens) {
   return true;
 }
 
+function sortItems(items) {
+  const dir = state.sortDir === 'asc' ? 1 : -1;
+  return [...items].sort((a, b) => {
+    switch (state.sortBy) {
+      case 'postCreatedAt':
+        return dir * ((new Date(a.postCreatedAt||0)) - (new Date(b.postCreatedAt||0)));
+      case 'score':
+        return dir * ((a.score||0) - (b.score||0));
+      case 'subreddit':
+        return dir * (a.subreddit||'').localeCompare(b.subreddit||'');
+      case 'title':
+        return dir * (a.title||'').localeCompare(b.title||'');
+      case 'rating':
+        return dir * ((a.rating||0) - (b.rating||0));
+      default: // savedAt
+        return dir * ((new Date(a.savedAt||0)) - (new Date(b.savedAt||0)));
+    }
+  });
+}
+
 function filteredItems() {
   let items = state.items;
+
+  // Trash view — only disliked items
+  if (state.showTrash) {
+    return sortItems(items.filter(i => i.isDisliked));
+  }
+
+  // Normal browse — exclude disliked and dead unless toggled
+  items = items.filter(i => !i.isDisliked);
   if (!state.showDead) items = items.filter(i => i.enrichStatus !== 'dead');
+
+  // Favourite filter
+  if (state.filterFavourite) items = items.filter(i => i.isFavourite);
 
   if (state.search.trim()) {
     const tokens = parseSearchQuery(state.search);
-    // Apply type tokens from query (overrides pill filter)
     const typeToken = tokens.find(t => t.type === 'type' && !t.negate);
     if (typeToken) {
       items = items.filter(i => i.type === typeToken.value);
@@ -1302,7 +1499,8 @@ function filteredItems() {
 
   if (state.filterFolder === '__none__') items = items.filter(i => !i.folder);
   else if (state.filterFolder !== 'all') items = items.filter(i => i.folder === state.filterFolder);
-  return items;
+
+  return sortItems(items);
 }
 
 // ─── SEARCH HISTORY ──────────────────────────────────────────────────────────
@@ -1454,6 +1652,7 @@ function setFilter(type, value) {
   if (type === 'type') state.filterType = value;
   if (type === 'folder') state.filterFolder = value;
   if (type === 'dead') state.showDead = !state.showDead;
+  if (type === 'favourite') state.filterFavourite = !state.filterFavourite;
   render();
 }
 
@@ -1485,8 +1684,17 @@ function renderItemCard(item, showActions) {
   const openUrl = (item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '#';
   const permalinkUrl = item.permalink || item.url || '#';
 
+  // Star rating display (1-5)
+  const ratingHtml = showActions ? `
+    <div style="display:flex;align-items:center;gap:2px">
+      ${[1,2,3,4,5].map(n => `
+        <button style="background:none;border:none;cursor:pointer;font-size:14px;padding:1px;line-height:1;color:${(item.rating||0)>=n?'#f59e0b':'var(--border)'}"
+          onclick="setRating(${item.id},${n})" title="${n} star${n!==1?'s':''}">★</button>
+      `).join('')}
+    </div>` : (item.rating ? `<span style="font-size:12px;color:#f59e0b">${'★'.repeat(item.rating)}${'☆'.repeat(5-item.rating)}</span>` : '');
+
   return `
-    <div class="card ${needsEnrich ? 'needs-enrichment' : ''}">
+    <div class="card ${needsEnrich ? 'needs-enrichment' : ''}" style="${item.isFavourite?'border-color:rgba(245,158,11,0.35)':''}">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
         <span class="badge ${badgeClass}">${badgeLabel}</span>
         ${subredditDisplay}
@@ -1508,12 +1716,17 @@ function renderItemCard(item, showActions) {
 
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
         ${folder}
-        <div style="margin-left:auto;display:flex;gap:6px">
+        ${ratingHtml}
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
           ${showActions ? `
+            <button style="background:none;border:none;cursor:pointer;font-size:16px;padding:2px;line-height:1;color:${item.isFavourite?'#f59e0b':'var(--text-muted)'}"
+              onclick="toggleFavourite(${item.id})" title="${item.isFavourite?'Remove from favourites':'Add to favourites'}">
+              ${item.isFavourite ? '⭐' : '☆'}
+            </button>
             <button class="btn btn-ghost btn-sm" onclick="showFolderMenu(${item.id})" title="Move to folder">📁</button>
             <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener" title="Open">↗</a>
             ${item.type !== 'comment' && permalinkUrl !== openUrl ? `<a class="btn btn-ghost btn-sm" href="${escHtml(permalinkUrl)}" target="_blank" rel="noopener" title="Reddit thread">💬</a>` : ''}
-            <button class="btn btn-danger btn-sm" onclick="if(confirm('Remove this item?'))deleteItem(${item.id})" title="Delete">🗑</button>
+            <button class="btn btn-ghost btn-sm" onclick="dislikeItem(${item.id})" title="Dislike — move to trash" style="color:var(--danger)">👎</button>
           ` : `
             <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">Open →</a>
           `}
