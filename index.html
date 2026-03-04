@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="RedditVault" />
   <meta name="theme-color" content="#1a0a2e" />
@@ -293,7 +294,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.4.2';
+const APP_VERSION = '0.4.2.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1262,8 +1263,8 @@ function renderImport() {
   const hasRunBefore = state.lastRunRateLimitHits !== null;
 
   // Use actual queue size for estimates, fall back to 1000 if no items yet
-  const normalQueue = needsEnrich || 1000;
-  const retryQueue  = retryable  || 1000;
+  const normalQueue = needsEnrich  || 1000;
+  const retryQueue  = attemptedCount || 1000;
 
   const normalDelaySecs  = Math.round(60 / state.enrichReqPerMin);
   const retryDelaySecs   = Math.round(60 / state.enrichRetryReqPerMin);
@@ -1370,18 +1371,18 @@ function renderImport() {
     ` : ''}
 
     <!-- ── Retry enrichment ────────────────────────────────────────────────── -->
-    ${retryable > 0 && !state.enriching ? `
+    ${attemptedCount > 0 && !state.enriching ? `
       <div class="card" style="border-color:rgba(99,102,241,0.3)">
         <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px;color:var(--accent2,#818cf8)">
-          🔄 Retry Run — ${retryable} item${retryable !== 1 ? 's' : ''}
+          🔄 Retry Run — ${attemptedCount} item${attemptedCount !== 1 ? 's' : ''}
         </div>
         <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
-          These items didn't return data on the initial run — mostly deleted posts, private
+          These items didn't return data on a previous run — possibly deleted posts, private
           subreddits, or items that were rate-limited. Running slower at
           <strong style="color:var(--text)">${state.enrichRetryReqPerMin} req/min</strong>
-          (1 request every ${retryDelaySecs}s) to reduce false rate-limit signals from dead posts —
+          (1 request every ${retryDelaySecs}s) to reduce false rate-limit signals —
           estimated <strong style="color:var(--text)">${enrichTimeEstimate(retryQueue, state.enrichRetryReqPerMin)}</strong>
-          for ${retryable > 0 ? retryable.toLocaleString() + ' items' : '1000 items'}.
+          for ${attemptedCount.toLocaleString()} items.
         </p>
         <button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="enrichAllItems(true)">
           🔄 Start Retry Run
@@ -1396,7 +1397,7 @@ function renderImport() {
           ⚰️ ${deadCount.toLocaleString()} Unavailable Item${deadCount !== 1 ? 's' : ''}
         </div>
         <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:0">
-          These items returned no data after ${MAX_ITEM_ATTEMPTS} attempts — deleted posts, private
+          These items returned no data after multiple attempts — deleted posts, private
           subreddits, or removed content. They are hidden from your library but remain in the
           database. Toggle them visible in Browse using the ⚰️ filter.
         </p>
