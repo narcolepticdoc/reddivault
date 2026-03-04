@@ -2,7 +2,7 @@
 // INCREMENT THIS every time you deploy a new version of the app.
 // Changing this string is what tells browsers to throw away the old cache
 // and fetch everything fresh. Matches APP_VERSION in index.html.
-const VERSION = '3.7';
+const VERSION = '3.8';
 const CACHE = `reddivault-${VERSION}`;
 
 const ASSETS = [

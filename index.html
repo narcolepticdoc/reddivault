@@ -293,7 +293,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '3.7';
+const APP_VERSION = '3.8';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -334,6 +334,10 @@ let state = {
   syncStatus: 'disconnected',
   enriching: false,
   enrichProgress: { done: 0, total: 0 },
+  // User-adjustable enrichment settings (persisted to IndexedDB config)
+  enrichReqPerMin: 8,       // default: 8 req/min for normal runs
+  enrichRetryReqPerMin: 4,  // default: 4 req/min for retry runs (mostly dead posts)
+  enrichRateLimitPause: 5,  // minutes to pause when rate limited
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -348,9 +352,15 @@ async function loadConfig() {
     const url = await db.config.get('supabaseUrl');
     const key = await db.config.get('supabaseKey');
     const lastSync = await db.config.get('lastSync');
+    const enrichRpm = await db.config.get('enrichReqPerMin');
+    const retryRpm = await db.config.get('enrichRetryReqPerMin');
+    const rlPause = await db.config.get('enrichRateLimitPause');
     if (url) state.supabaseUrl = url.value;
     if (key) state.supabaseKey = key.value;
     if (lastSync) state.lastSync = lastSync.value;
+    if (enrichRpm) state.enrichReqPerMin = enrichRpm.value;
+    if (retryRpm) state.enrichRetryReqPerMin = retryRpm.value;
+    if (rlPause) state.enrichRateLimitPause = rlPause.value;
   } catch(e) {}
 }
 
@@ -438,24 +448,25 @@ async function enrichItemFromReddit(item) {
 }
 
 // ── Proactive rate-limit avoidance ───────────────────────────────────────────
-// Strategy: stay well under Reddit's limit by design rather than reacting to
-// rate limit errors after the fact.
-//
 // Without OAuth, Reddit allows 10 requests per minute on a rolling 10-minute
-// window. We target 8 req/min (7.5s delay) — 80% of the limit — which keeps
-// us safely clear without needing batch pauses at all. A steady drip is better
-// than bursts followed by long waits.
+// window. We target 8 req/min by default — 80% of the limit — which keeps
+// us safely clear. A steady drip is better than bursts followed by long waits.
 //
-// At 7.5s per item: 3000 items ≈ 6.25 hours, uninterrupted.
+// Retry runs default to 4 req/min since the pool is mostly dead/private posts
+// and there is no urgency — slower = fewer false rate limit signals.
 //
-// If we still somehow get rate limited (429 or 3 consecutive nulls), we pause
-// 5 minutes then continue forward — no rewind needed.
+// All settings are user-adjustable within sane bounds and persisted to config.
 
-const BASE_DELAY  = 7500;   // ms between requests — 8 req/min, under the 10/min limit
-const BATCH_SIZE  = 25;     // only used for progress display grouping, no pause
-const BATCH_PAUSE = 0;      // no batch pauses needed with controlled per-request rate
-const RATELIMIT_PAUSE = 300000; // 5 min pause if we still somehow get rate limited
-const MAX_ITEM_ATTEMPTS = 3;    // give up on an item after this many failures
+const MAX_ITEM_ATTEMPTS = 3; // give up on an item after this many null responses
+
+// Derive timing from state settings at runtime (not hardcoded constants)
+function getEnrichDelay(isRetry) {
+  const rpm = isRetry ? state.enrichRetryReqPerMin : state.enrichReqPerMin;
+  return Math.round(60000 / rpm); // ms per request
+}
+function getRateLimitPause() {
+  return state.enrichRateLimitPause * 60000; // convert minutes to ms
+}
 
 let enrichStopped = false;
 
@@ -481,13 +492,18 @@ async function enrichAllItems(retryFailed = false) {
     return;
   }
 
+  const delay = getEnrichDelay(retryFailed);
+  const rlPause = getRateLimitPause();
+  const rpm = retryFailed ? state.enrichRetryReqPerMin : state.enrichReqPerMin;
+
   state.enriching = true;
-  state.enrichProgress = { done: 0, total: toEnrich.length, enriched: 0, failed: 0 };
+  state.enrichProgress = { done: 0, total: toEnrich.length, enriched: 0, failed: 0, rateLimitHits: 0 };
   render();
 
   let enrichedCount = 0;
   let failedCount = 0;
-  let consecutiveNulls = 0; // track silent failures within a batch
+  let rateLimitHits = 0;    // total rate limit events this run
+  let consecutiveNulls = 0; // track silent failures in a row
 
   for (let i = 0; i < toEnrich.length; i++) {
     if (enrichStopped) {
@@ -502,8 +518,10 @@ async function enrichAllItems(retryFailed = false) {
 
     if (result === 'rate_limited') {
       // Explicit 429 — take a long pause then continue forward (no rewind)
-      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'ratelimit');
-      await sleep(RATELIMIT_PAUSE);
+      rateLimitHits++;
+      state.enrichProgress.rateLimitHits = rateLimitHits;
+      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'ratelimit', rlPause);
+      await sleep(rlPause);
       consecutiveNulls = 0;
       i--; // retry this one item then carry on
       continue;
@@ -534,17 +552,19 @@ async function enrichAllItems(retryFailed = false) {
 
         if (consecutiveNulls >= 3) {
           // 3 nulls in a row = likely silent rate limiting — take the long pause
-          updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'ratelimit');
-          await sleep(RATELIMIT_PAUSE);
+          rateLimitHits++;
+          state.enrichProgress.rateLimitHits = rateLimitHits;
+          updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'ratelimit', rlPause);
+          await sleep(rlPause);
           consecutiveNulls = 0;
-          // Don't rewind — just continue forward. Items already have enrichAttempts
-          // incremented so the Retry Failed button will catch them at the end.
+          // Don't rewind — just continue forward. Items with enrichAttempts < MAX
+          // will show up in Retry Failed at the end.
         }
       }
     }
 
-    // Steady delay between every request — keeps us at ~8 req/min
-    await sleep(BASE_DELAY);
+    // Steady delay between every request
+    await sleep(delay);
   }
 
   state.enriching = false;
@@ -560,9 +580,10 @@ async function enrichAllItems(retryFailed = false) {
   }
 
   const remaining = (await db.items.filter(i => !i.enriched).count());
+  const rlMsg = rateLimitHits > 0 ? ` · ⚠ ${rateLimitHits} rate limit${rateLimitHits > 1 ? 's' : ''} hit` : '';
   showToast(
-    `✓ Enriched ${enrichedCount} items · ${failedCount} unavailable${remaining > 0 ? ` · ${remaining} remaining` : ''}`,
-    enrichedCount > 0 ? 'success' : 'warning'
+    `✓ Enriched ${enrichedCount} · ${failedCount} unavailable${remaining > 0 ? ` · ${remaining} remaining` : ''}${rlMsg}`,
+    rateLimitHits > 0 ? 'warning' : enrichedCount > 0 ? 'success' : 'warning'
   );
   render();
 }
@@ -571,25 +592,27 @@ function stopEnrichment() {
   enrichStopped = true;
 }
 
-function updateEnrichProgress(done, total, enriched, failed, status = '') {
+function updateEnrichProgress(done, total, enriched, failed, status = '', rlPauseMs = 300000) {
   const el = document.getElementById('enrich-progress-details');
   if (!el) return;
   const pct = Math.round((done / total) * 100);
   const remaining = total - done;
-  const minsLeft = Math.round((remaining * BASE_DELAY) / 60000);
+  const delay = getEnrichDelay(false); // use current run delay for estimate
+  const minsLeft = Math.round((remaining * delay) / 60000);
+  const rlHits = state.enrichProgress.rateLimitHits || 0;
+  const rlPauseMins = Math.round(rlPauseMs / 60000);
 
   let statusMsg = '';
   if (status === 'ratelimit') {
-    statusMsg = `<span style="color:var(--warning)">⏳ Rate limited — pausing 5 min before continuing...</span>`;
-  } else if (status === 'batch') {
-    statusMsg = `<span style="color:var(--accent2)">☕ Batch complete — 3 min pause to reset Reddit rate limit...</span>`;
+    statusMsg = `<span style="color:var(--warning)">⏳ Rate limited — pausing ${rlPauseMins} min before continuing...</span>`;
   }
 
   el.innerHTML = `
     <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
     <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">
       ${done} / ${total} processed &nbsp;·&nbsp; ${enriched} enriched &nbsp;·&nbsp; ${failed} unavailable
-      ${!status && minsLeft > 1 ? `&nbsp;·&nbsp; ~${minsLeft} min remaining` : ''}
+      ${rlHits > 0 ? `&nbsp;·&nbsp; <span style="color:var(--warning)">⚠ ${rlHits} rate limit${rlHits > 1 ? 's' : ''}</span>` : ''}
+      ${!status && minsLeft > 1 ? `&nbsp;·&nbsp; ~${minsLeft} min left` : ''}
     </div>
     ${statusMsg ? `<div style="font-size:12px;text-align:center;margin-top:6px">${statusMsg}</div>` : ''}
   `;
@@ -630,6 +653,28 @@ async function supabaseFetchRange(path, from, to) {
     throw new Error(`Supabase range fetch error: ${res.status}`);
   }
   return res.json();
+}
+
+async function saveEnrichSettings() {
+  const rpm = parseInt(document.getElementById('enrich-rpm')?.value);
+  const retryRpm = parseInt(document.getElementById('enrich-retry-rpm')?.value);
+  const rlPause = parseInt(document.getElementById('enrich-rl-pause')?.value);
+
+  // Validate within sane bounds
+  const validRpm = Math.min(10, Math.max(1, rpm || 8));
+  const validRetryRpm = Math.min(10, Math.max(1, retryRpm || 4));
+  const validRlPause = Math.min(30, Math.max(1, rlPause || 5));
+
+  state.enrichReqPerMin = validRpm;
+  state.enrichRetryReqPerMin = validRetryRpm;
+  state.enrichRateLimitPause = validRlPause;
+
+  await db.config.put({ key: 'enrichReqPerMin', value: validRpm });
+  await db.config.put({ key: 'enrichRetryReqPerMin', value: validRetryRpm });
+  await db.config.put({ key: 'enrichRateLimitPause', value: validRlPause });
+
+  showToast('Enrichment settings saved ✓', 'success');
+  render();
 }
 
 async function syncFromSupabase() {
@@ -1282,6 +1327,38 @@ function renderSettings() {
           <span style="${unenriched>0?'color:var(--warning)':''}">${unenriched}</span>
         </div>
       </div>
+    </div>
+
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">⚙️ Enrichment Speed</div>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6">
+        Reddit allows 10 requests/min without OAuth. Stay at or below that to avoid rate limits.
+        Retry runs default slower since most items in that pool are dead posts.
+      </p>
+      <div class="form-group">
+        <label>Normal run speed (req/min, 1–10)</label>
+        <input class="input" id="enrich-rpm" type="number" min="1" max="10" value="${state.enrichReqPerMin}"
+          style="width:80px">
+        <span style="font-size:12px;color:var(--text-muted);margin-left:8px">
+          = 1 request every ${Math.round(60 / state.enrichReqPerMin)}s
+          &nbsp;·&nbsp; ~${Math.round(3000 * (60 / state.enrichReqPerMin) / 60)} min per 3000 items
+        </span>
+      </div>
+      <div class="form-group">
+        <label>Retry run speed (req/min, 1–10)</label>
+        <input class="input" id="enrich-retry-rpm" type="number" min="1" max="10" value="${state.enrichRetryReqPerMin}"
+          style="width:80px">
+        <span style="font-size:12px;color:var(--text-muted);margin-left:8px">
+          = 1 request every ${Math.round(60 / state.enrichRetryReqPerMin)}s
+        </span>
+      </div>
+      <div class="form-group">
+        <label>Rate limit pause (minutes, 1–30)</label>
+        <input class="input" id="enrich-rl-pause" type="number" min="1" max="30" value="${state.enrichRateLimitPause}"
+          style="width:80px">
+        <span style="font-size:12px;color:var(--text-muted);margin-left:8px">pause when a rate limit is hit</span>
+      </div>
+      <button class="btn btn-secondary" onclick="saveEnrichSettings()" style="width:100%;justify-content:center">Save Enrichment Settings</button>
     </div>
 
     <div class="config-section">
