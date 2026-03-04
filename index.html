@@ -293,7 +293,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.3.9';
+const APP_VERSION = '0.4.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -302,21 +302,28 @@ db.version(3).stores({
   folders: '++id, name, icon, createdAt',
   config: 'key'
 });
-// Version 4: adds enrichAttempts so failed fetches can be retried separately
-// from successful enrichments, and resets incorrectly-stamped failed items
 db.version(4).stores({
   items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichAttempts, syncedAt',
   folders: '++id, name, icon, createdAt',
   config: 'key'
+});
+// Version 5: adds enrichStatus field — 'pending' | 'enriched' | 'dead'
+// 'dead' items failed MAX_ITEM_ATTEMPTS times and are hidden from browse by default.
+// This replaces the overloaded enriched boolean for clearer state management.
+db.version(5).stores({
+  items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt',
+  folders: '++id, name, icon, createdAt',
+  config: 'key'
 }).upgrade(tx => {
+  // Clean-slate migration: only items with BOTH a title and subreddit are
+  // considered definitively enriched. Everything else goes back to pending
+  // with a fresh attempt counter, since previous runs may have left the
+  // data in an inconsistent state.
   return tx.table('items').toCollection().modify(item => {
-    if (item.enrichAttempts === undefined) item.enrichAttempts = 0;
-    // Items stamped enriched:true but with no title/subreddit were rate-limited
-    // failures that got incorrectly marked done — reset them so they will retry
-    if (item.enriched && !item.title && !item.subreddit) {
-      item.enriched = false;
-      item.enrichAttempts = 1;
-    }
+    const definitelyEnriched = !!(item.title && item.title.trim() && item.subreddit && item.subreddit.trim());
+    item.enrichStatus   = definitelyEnriched ? 'enriched' : 'pending';
+    item.enriched       = definitelyEnriched;
+    item.enrichAttempts = 0; // reset all counters — fresh start
   });
 });
 
@@ -328,6 +335,7 @@ let state = {
   search: '',
   filterType: 'all',
   filterFolder: 'all',
+  showDead: false,
   supabaseUrl: '',
   supabaseKey: '',
   lastSync: null,
@@ -335,9 +343,11 @@ let state = {
   enriching: false,
   enrichProgress: { done: 0, total: 0 },
   // User-adjustable enrichment settings (persisted to IndexedDB config)
-  enrichReqPerMin: 8,       // default: 8 req/min for normal runs
-  enrichRetryReqPerMin: 4,  // default: 4 req/min for retry runs (mostly dead posts)
-  enrichRateLimitPause: 5,  // minutes to pause when rate limited
+  enrichReqPerMin: 8,          // default: 8 req/min for normal runs
+  enrichRetryReqPerMin: 4,     // default: 4 req/min for retry runs (mostly dead posts)
+  enrichRateLimitPause: 5,     // minutes to pause when rate limited
+  enrichMaxAttempts: 3,        // attempts before user can bulk-mark as dead
+  lastRunRateLimitHits: null,  // null = no run yet, 0 = clean last run, N = had issues
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -358,9 +368,13 @@ async function loadConfig() {
     if (url) state.supabaseUrl = url.value;
     if (key) state.supabaseKey = key.value;
     if (lastSync) state.lastSync = lastSync.value;
+    const maxAttempts = await db.config.get('enrichMaxAttempts');
+    const lastRunRL = await db.config.get('lastRunRateLimitHits');
     if (enrichRpm) state.enrichReqPerMin = enrichRpm.value;
     if (retryRpm) state.enrichRetryReqPerMin = retryRpm.value;
     if (rlPause) state.enrichRateLimitPause = rlPause.value;
+    if (maxAttempts) state.enrichMaxAttempts = maxAttempts.value;
+    if (lastRunRL) state.lastRunRateLimitHits = lastRunRL.value;
   } catch(e) {}
 }
 
@@ -457,7 +471,7 @@ async function enrichItemFromReddit(item) {
 //
 // All settings are user-adjustable within sane bounds and persisted to config.
 
-const MAX_ITEM_ATTEMPTS = 3; // give up on an item after this many null responses
+// Max attempts before bulk-dead action is enabled — controlled via state.enrichMaxAttempts
 
 // Derive timing from state settings at runtime (not hardcoded constants)
 function getEnrichDelay(isRetry) {
@@ -475,9 +489,11 @@ async function enrichAllItems(retryFailed = false) {
   enrichStopped = false;
 
   if (retryFailed) {
+    // Reset items that had attempts but no data and aren't dead — give them another shot
     await db.items.toCollection().modify(item => {
-      if (item.enriched && !item.title && !item.subreddit) {
+      if (item.enrichStatus !== 'dead' && !item.title && !item.subreddit) {
         item.enriched = false;
+        item.enrichStatus = 'pending';
         item.enrichAttempts = 0;
       }
     });
@@ -485,7 +501,7 @@ async function enrichAllItems(retryFailed = false) {
   }
 
   const allItems = await db.items.toArray();
-  const toEnrich = allItems.filter(i => !i.enriched);
+  const toEnrich = allItems.filter(i => i.enrichStatus === 'pending');
 
   if (toEnrich.length === 0) {
     showToast('All items already enriched ✓', 'success');
@@ -527,39 +543,31 @@ async function enrichAllItems(retryFailed = false) {
       continue;
 
     } else if (result === 'unavailable') {
-      await db.items.update(item.id, { enriched: true, enrichAttempts: (item.enrichAttempts || 0) + 1 });
+      await db.items.update(item.id, { enriched: true, enrichStatus: 'dead', enrichAttempts: (item.enrichAttempts || 0) + 1 });
       failedCount++;
       consecutiveNulls = 0;
 
     } else if (result && typeof result === 'object') {
-      await db.items.update(item.id, result);
+      await db.items.update(item.id, { ...result, enrichStatus: 'enriched' });
       enrichedCount++;
       consecutiveNulls = 0;
 
     } else {
-      // null — could be a dead item or silent rate limiting
+      // null — no data returned. Could be silent rate limiting or a broken/missing
+      // post. We never auto-mark dead on null — only explicit 404/403 does that.
+      // Just increment attempts and leave as pending so the user can decide.
       const attempts = (item.enrichAttempts || 0) + 1;
+      await db.items.update(item.id, { enrichAttempts: attempts });
+      failedCount++;
       consecutiveNulls++;
 
-      if (attempts >= MAX_ITEM_ATTEMPTS) {
-        // Tried enough times — give up and move on
-        await db.items.update(item.id, { enriched: true, enrichAttempts: attempts });
-        failedCount++;
+      if (consecutiveNulls >= 3) {
+        // 3 consecutive nulls = likely silent rate limiting — take the long pause
+        rateLimitHits++;
+        state.enrichProgress.rateLimitHits = rateLimitHits;
+        updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'ratelimit', rlPause);
+        await sleep(rlPause);
         consecutiveNulls = 0;
-      } else {
-        await db.items.update(item.id, { enrichAttempts: attempts });
-        failedCount++;
-
-        if (consecutiveNulls >= 3) {
-          // 3 nulls in a row = likely silent rate limiting — take the long pause
-          rateLimitHits++;
-          state.enrichProgress.rateLimitHits = rateLimitHits;
-          updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'ratelimit', rlPause);
-          await sleep(rlPause);
-          consecutiveNulls = 0;
-          // Don't rewind — just continue forward. Items with enrichAttempts < MAX
-          // will show up in Retry Failed at the end.
-        }
       }
     }
 
@@ -568,7 +576,10 @@ async function enrichAllItems(retryFailed = false) {
   }
 
   state.enriching = false;
-  state.enrichProgress = { done: 0, total: 0, enriched: 0, failed: 0, rateLimited: 0 };
+  state.enrichProgress = { done: 0, total: 0, enriched: 0, failed: 0, rateLimitHits: 0 };
+  // Persist last run rate limit count so the "mark dead" action knows if run was clean
+  state.lastRunRateLimitHits = rateLimitHits;
+  await db.config.put({ key: 'lastRunRateLimitHits', value: rateLimitHits });
   await loadData();
 
   // Push enriched data to Supabase in batches
@@ -585,6 +596,25 @@ async function enrichAllItems(retryFailed = false) {
     `✓ Enriched ${enrichedCount} · ${failedCount} unavailable${remaining > 0 ? ` · ${remaining} remaining` : ''}${rlMsg}`,
     rateLimitHits > 0 ? 'warning' : enrichedCount > 0 ? 'success' : 'warning'
   );
+  render();
+}
+
+async function markAttemptedAsDead() {
+  const maxAttempts = state.enrichMaxAttempts;
+  const candidates = state.items.filter(i =>
+    i.enrichStatus === 'pending' && (i.enrichAttempts || 0) >= maxAttempts
+  );
+  if (candidates.length === 0) {
+    showToast('No items meet the threshold', 'warning');
+    return;
+  }
+  if (!confirm(`Mark ${candidates.length} item${candidates.length !== 1 ? 's' : ''} with ${maxAttempts}+ failed attempts as dead? They will be hidden from your library.`)) return;
+
+  for (const item of candidates) {
+    await db.items.update(item.id, { enriched: true, enrichStatus: 'dead' });
+  }
+  await loadData();
+  showToast(`Marked ${candidates.length} items as dead`, 'success');
   render();
 }
 
@@ -665,13 +695,18 @@ async function saveEnrichSettings() {
   const validRetryRpm = Math.min(10, Math.max(1, retryRpm || 4));
   const validRlPause = Math.min(30, Math.max(1, rlPause || 5));
 
+  const maxAtt = parseInt(document.getElementById('enrich-max-attempts')?.value);
+  const validMaxAtt = Math.min(20, Math.max(1, maxAtt || 3));
+
   state.enrichReqPerMin = validRpm;
   state.enrichRetryReqPerMin = validRetryRpm;
   state.enrichRateLimitPause = validRlPause;
+  state.enrichMaxAttempts = validMaxAtt;
 
   await db.config.put({ key: 'enrichReqPerMin', value: validRpm });
   await db.config.put({ key: 'enrichRetryReqPerMin', value: validRetryRpm });
   await db.config.put({ key: 'enrichRateLimitPause', value: validRlPause });
+  await db.config.put({ key: 'enrichMaxAttempts', value: validMaxAtt });
 
   showToast('Enrichment settings saved ✓', 'success');
   render();
@@ -724,6 +759,7 @@ async function syncFromSupabase() {
           savedAt: item.saved_at,
           postCreatedAt: item.post_created_at || null,
           enriched: !!(item.title && item.subreddit),
+          enrichStatus: (item.title && item.subreddit) ? 'enriched' : 'pending',
           enrichAttempts: 0,
           syncedAt: new Date().toISOString()
         });
@@ -850,7 +886,8 @@ async function handleCSVImport(file) {
             score: null,
             savedAt: new Date().toISOString(), // CSV doesn't include save time
             postCreatedAt,
-            enriched: hasEnoughData, // Mark for enrichment if missing title/subreddit
+            enriched: hasEnoughData,
+            enrichStatus: hasEnoughData ? 'enriched' : 'pending',
             syncedAt: null,
             folder: null
           });
@@ -886,6 +923,7 @@ async function handleJSONImport(data) {
       ...item,
       postCreatedAt: item.postCreatedAt || null,
       enriched: item.enriched ?? !!(item.title && item.subreddit),
+      enrichStatus: item.enrichStatus || (item.title && item.subreddit ? 'enriched' : 'pending'),
       permalink: item.permalink || item.url || '',
       author: item.author || '',
       score: item.score ?? null,
@@ -990,7 +1028,7 @@ function renderHeaderActions() {
 function renderHome() {
   const total = state.items.length;
   const posts = state.items.filter(i => i.type === 'post').length;
-  const needsEnrich = state.items.filter(i => !i.enriched).length;
+  const needsEnrich = state.items.filter(i => i.enrichStatus === 'pending').length;
   const recent = state.items.slice(0, 5);
 
   return `
@@ -1046,6 +1084,16 @@ function renderBrowse() {
       <button class="filter-pill ${state.filterFolder==='__none__'?'active':''}" onclick="setFilter('folder','__none__')">📭 Unfiled</button>
       ${state.folders.map(f=>`<button class="filter-pill ${state.filterFolder===f.name?'active':''}" onclick="setFilter('folder','${escAttr(f.name)}')">${f.icon} ${escHtml(f.name)}</button>`).join('')}
     </div>
+    ${(() => {
+      const deadCount = state.items.filter(i => i.enrichStatus === 'dead').length;
+      return deadCount > 0 ? `
+        <div class="filter-row">
+          <button class="filter-pill ${state.showDead?'active':''}" onclick="setFilter('dead')"
+            style="${state.showDead?'':'opacity:0.6'}">
+            ⚰️ Show unavailable (${deadCount})
+          </button>
+        </div>` : '';
+    })()}
     <div id="browse-list">
       ${renderBrowseItems(items)}
     </div>
@@ -1055,6 +1103,8 @@ function renderBrowse() {
 
 function filteredItems() {
   let items = state.items;
+  // Exclude dead items unless the user has toggled them on
+  if (!state.showDead) items = items.filter(i => i.enrichStatus !== 'dead');
   if (state.search) {
     const q = state.search.toLowerCase();
     items = items.filter(i =>
@@ -1086,6 +1136,7 @@ function renderBrowseList() {
 function setFilter(type, value) {
   if (type === 'type') state.filterType = value;
   if (type === 'folder') state.filterFolder = value;
+  if (type === 'dead') state.showDead = !state.showDead;
   render();
 }
 
@@ -1199,9 +1250,16 @@ function enrichTimeEstimate(itemCount, rpm) {
 }
 
 function renderImport() {
-  const needsEnrich = state.items.filter(i => !i.enriched).length;
-  const retryable = state.items.filter(i => i.enriched && !i.title && !i.subreddit).length +
-                    state.items.filter(i => !i.enriched && (i.enrichAttempts || 0) > 0).length;
+  const enrichedCount = state.items.filter(i => i.enrichStatus === 'enriched').length;
+  const pendingCount  = state.items.filter(i => i.enrichStatus === 'pending').length;
+  const deadCount     = state.items.filter(i => i.enrichStatus === 'dead').length;
+  // Pending items that have been attempted at least once
+  const attemptedCount = state.items.filter(i => i.enrichStatus === 'pending' && (i.enrichAttempts || 0) > 0).length;
+  // Pending items that have hit the maxAttempts threshold
+  const thresholdCount = state.items.filter(i => i.enrichStatus === 'pending' && (i.enrichAttempts || 0) >= state.enrichMaxAttempts).length;
+  const needsEnrich = pendingCount;
+  const lastRunClean = state.lastRunRateLimitHits === 0;
+  const hasRunBefore = state.lastRunRateLimitHits !== null;
 
   // Use actual queue size for estimates, fall back to 1000 if no items yet
   const normalQueue = needsEnrich || 1000;
@@ -1215,6 +1273,55 @@ function renderImport() {
     <div class="section-header">
       <div class="section-title">Import & Enrich</div>
     </div>
+
+    <!-- ── Enrichment status overview ───────────────────────────────────── -->
+    ${state.items.length > 0 ? `
+      <div class="card" style="padding:14px 16px">
+        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:10px;font-size:13px">Enrichment Status</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(52,211,153,0.08);border-radius:6px">
+            <span style="color:var(--text-muted)">✓ Enriched</span>
+            <strong style="color:var(--success)">${enrichedCount.toLocaleString()}</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(251,191,36,0.08);border-radius:6px">
+            <span style="color:var(--text-muted)">⏳ Pending</span>
+            <strong style="color:var(--warning)">${pendingCount.toLocaleString()}</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(156,163,175,0.08);border-radius:6px">
+            <span style="color:var(--text-muted)">⚰️ Dead</span>
+            <strong style="color:var(--text-muted)">${deadCount.toLocaleString()}</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(99,102,241,0.08);border-radius:6px">
+            <span style="color:var(--text-muted)">🔄 Attempted</span>
+            <strong style="color:var(--accent2,#818cf8)">${attemptedCount.toLocaleString()}</strong>
+          </div>
+        </div>
+        ${attemptedCount > 0 ? `
+          <div style="margin-top:10px;font-size:12px;color:var(--text-muted);line-height:1.6">
+            ${thresholdCount > 0 ? `
+              <strong style="color:var(--text)">${thresholdCount.toLocaleString()}</strong> pending item${thresholdCount !== 1 ? 's have' : ' has'}
+              reached the ${state.enrichMaxAttempts}-attempt threshold.
+            ` : `
+              ${attemptedCount.toLocaleString()} pending item${attemptedCount !== 1 ? 's have' : ' has'} been attempted at least once.
+              None have yet reached the ${state.enrichMaxAttempts}-attempt threshold.
+            `}
+            ${hasRunBefore ? (lastRunClean
+              ? `<span style="color:var(--success)">✓ Last run was clean (no rate limits).</span>`
+              : `<span style="color:var(--warning)">⚠ Last run hit ${state.lastRunRateLimitHits} rate limit${state.lastRunRateLimitHits !== 1 ? 's' : ''} — attempted items may be rate-limited, not dead.</span>`
+            ) : ''}
+          </div>
+          ${thresholdCount > 0 ? `
+            <button class="btn ${lastRunClean ? 'btn-danger' : 'btn-ghost'} btn-sm"
+              style="margin-top:10px;width:100%;justify-content:center"
+              onclick="markAttemptedAsDead()"
+              ${!lastRunClean ? 'title="Last run had rate limits — confirm items are truly dead before marking"' : ''}>
+              ⚰️ Mark ${thresholdCount} item${thresholdCount !== 1 ? 's' : ''} as dead
+              ${!lastRunClean ? '(last run had rate limits)' : ''}
+            </button>
+          ` : ''}
+        ` : ''}
+      </div>
+    ` : ''}
 
     <!-- CSV import drop zone -->
     <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()">
@@ -1282,6 +1389,20 @@ function renderImport() {
       </div>
     ` : ''}
 
+    <!-- ── Dead items summary ────────────────────────────────────────────── -->
+    ${deadCount > 0 ? `
+      <div class="card" style="border-color:rgba(156,163,175,0.3)">
+        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px;color:var(--text-muted)">
+          ⚰️ ${deadCount.toLocaleString()} Unavailable Item${deadCount !== 1 ? 's' : ''}
+        </div>
+        <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:0">
+          These items returned no data after ${MAX_ITEM_ATTEMPTS} attempts — deleted posts, private
+          subreddits, or removed content. They are hidden from your library but remain in the
+          database. Toggle them visible in Browse using the ⚰️ filter.
+        </p>
+      </div>
+    ` : ''}
+
     <!-- ── Enrichment speed settings ──────────────────────────────────────── -->
     <div class="card">
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px">⚙️ Enrichment Speed</div>
@@ -1327,6 +1448,19 @@ function renderImport() {
             <input class="input" id="enrich-rl-pause" type="number" min="1" max="30"
               value="${state.enrichRateLimitPause}" style="width:70px">
             <span style="font-size:12px;color:var(--text-muted)">pause when a rate limit is detected</span>
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
+            Attempts before eligible for bulk-dead (1–20)
+          </label>
+          <div style="display:flex;align-items:center;gap:10px">
+            <input class="input" id="enrich-max-attempts" type="number" min="1" max="20"
+              value="${state.enrichMaxAttempts}" style="width:70px">
+            <span style="font-size:12px;color:var(--text-muted)">
+              items with this many failed attempts can be bulk-marked dead after a clean run
+            </span>
           </div>
         </div>
       </div>
@@ -1380,7 +1514,7 @@ function updateSpeedHints() {
 
 function renderSettings() {
   const lastSyncStr = state.lastSync ? new Date(state.lastSync).toLocaleString() : 'Never';
-  const unenriched = state.items.filter(i => !i.enriched).length;
+  const unenriched = state.items.filter(i => i.enrichStatus === 'pending').length;
 
   return `
     <div class="section-title" style="margin-bottom:16px">Settings</div>
@@ -1419,6 +1553,9 @@ function renderSettings() {
         <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unfiled</span><span>${state.items.filter(i=>!i.folder).length}</span></div>
         <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Need enrichment</span>
           <span style="${unenriched>0?'color:var(--warning)':''}">${unenriched}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unavailable (dead)</span>
+          <span style="${state.items.filter(i=>i.enrichStatus==='dead').length>0?'color:var(--text-muted)':''}">${state.items.filter(i=>i.enrichStatus==='dead').length.toLocaleString()}</span>
         </div>
       </div>
     </div>
