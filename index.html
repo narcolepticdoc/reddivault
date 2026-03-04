@@ -294,7 +294,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.4.3';
+const APP_VERSION = '0.5.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -349,6 +349,9 @@ let state = {
   enrichRateLimitPause: 5,     // minutes to pause when rate limited
   enrichMaxAttempts: 3,        // attempts before user can bulk-mark as dead
   lastRunRateLimitHits: null,  // null = no run yet, 0 = clean last run, N = had issues
+  recentSearches: [],    // last 20 unique queries, persisted
+  favoriteSearches: [],  // user-starred queries, persisted
+  searchFocused: false,  // controls dropdown visibility
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -376,6 +379,10 @@ async function loadConfig() {
     if (rlPause) state.enrichRateLimitPause = rlPause.value;
     if (maxAttempts) state.enrichMaxAttempts = maxAttempts.value;
     if (lastRunRL) state.lastRunRateLimitHits = lastRunRL.value;
+    const recents = await db.config.get('recentSearches');
+    const favs = await db.config.get('favoriteSearches');
+    if (recents) state.recentSearches = recents.value || [];
+    if (favs) state.favoriteSearches = favs.value || [];
   } catch(e) {}
 }
 
@@ -1098,9 +1105,31 @@ function renderBrowse() {
   let items = filteredItems();
 
   return `
-    <div class="search-wrap">
+    <div class="search-wrap" style="position:relative">
       <span class="search-icon">🔍</span>
-      <input class="input" id="search-input" placeholder="Search titles, subreddits, authors..." value="${escHtml(state.search)}" oninput="state.search=this.value;renderBrowseList()">
+      <input class="input" id="search-input"
+        placeholder='Search… e.g. big dog  r/aww  "exact phrase"  -exclude  u/name'
+        value="${escHtml(state.search)}"
+        oninput="state.search=this.value;renderBrowseList();renderSearchDropdown()"
+        onfocus="state.searchFocused=true;renderSearchDropdown()"
+        onblur="setTimeout(()=>{state.searchFocused=false;renderSearchDropdown()},150)"
+        onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderSearchDropdown()}"
+        style="padding-right:${state.search ? '36px' : '12px'}">
+      ${state.search ? `
+        <button style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1;padding:0"
+          onclick="applySearch('')">✕</button>
+      ` : ''}
+      <div id="search-dropdown" style="display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--card);border:1px solid var(--border);border-radius:12px;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,0.4)"></div>
+    </div>
+    <div id="search-result-info" style="display:flex;align-items:center;justify-content:space-between;margin:-8px 0 8px;padding:0 2px">
+      ${state.search.trim() ? `
+        <span style="font-size:12px;color:var(--text-muted)">${filteredItems().length.toLocaleString()} result${filteredItems().length!==1?'s':''}</span>
+        <button style="background:none;border:none;cursor:pointer;font-size:12px;color:${state.favoriteSearches.includes(state.search.trim())?'#f59e0b':'var(--text-muted)'};padding:2px 6px"
+          onclick="toggleFavoriteSearch(state.search.trim())"
+          title="${state.favoriteSearches.includes(state.search.trim())?'Remove from favorites':'Save as favorite'}">
+          ${state.favoriteSearches.includes(state.search.trim()) ? '★ Saved' : '☆ Save search'}
+        </button>
+      ` : ''}
     </div>
     <div class="filter-row">
       <button class="filter-pill ${state.filterType==='all'?'active':''}" onclick="setFilter('type','all')">All Types</button>
@@ -1125,27 +1154,161 @@ function renderBrowse() {
     <div id="browse-list">
       ${renderBrowseItems(items)}
     </div>
-    <div style="text-align:center;padding:12px 0;font-size:13px;color:var(--text-muted)">${items.length} item${items.length!==1?'s':''}</div>
+    <div style="text-align:center;padding:12px 0;font-size:13px;color:var(--text-muted)">${items.length.toLocaleString()} item${items.length!==1?'s':''}</div>
   `;
+}
+
+// ─── SEARCH PARSER ───────────────────────────────────────────────────────────
+// Supports:
+//   bare words      → all must appear somewhere in the item (AND logic)
+//   "quoted phrase" → exact substring match
+//   -word / -"phrase" → exclusion
+//   r/subreddit     → subreddit field only
+//   u/username      → author field only
+//   type:post / type:comment → type override (added to tokens, applied in filteredItems)
+
+function parseSearchQuery(raw) {
+  const tokens = [];
+  // Tokenise: quoted strings, field prefixes, bare words
+  const re = /(-?)(?:(r|u|type):(\S+)|"([^"]+)"|(\S+))/g;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    const negate  = m[1] === '-';
+    if (m[2] && m[2] === 'r')    { tokens.push({ type: 'field', field: 'subreddit', value: m[3].toLowerCase(), negate }); continue; }
+    if (m[2] && m[2] === 'u')    { tokens.push({ type: 'field', field: 'author',    value: m[3].toLowerCase(), negate }); continue; }
+    if (m[2] && m[2] === 'type') { tokens.push({ type: 'type',  value: m[3].toLowerCase(), negate }); continue; }
+    const phrase = m[4] || m[5];
+    if (phrase) tokens.push({ type: 'text', value: phrase.toLowerCase(), negate });
+  }
+  return tokens;
+}
+
+function itemMatchesTokens(item, tokens) {
+  const title     = (item.title     || '').toLowerCase();
+  const subreddit = (item.subreddit || '').toLowerCase();
+  const author    = (item.author    || '').toLowerCase();
+  const body      = (item.body      || '').toLowerCase();
+
+  for (const t of tokens) {
+    let match = false;
+
+    if (t.type === 'field') {
+      if (t.field === 'subreddit') match = subreddit.includes(t.value);
+      if (t.field === 'author')    match = author.includes(t.value);
+    } else if (t.type === 'type') {
+      match = item.type === t.value;
+    } else {
+      // text token — check all fields
+      match = title.includes(t.value) || subreddit.includes(t.value) ||
+              author.includes(t.value) || body.includes(t.value);
+    }
+
+    // AND logic: if a required token doesn't match, item is excluded
+    // Negation: if an excluded token matches, item is excluded
+    if (t.negate && match)  return false;
+    if (!t.negate && !match) return false;
+  }
+  return true;
 }
 
 function filteredItems() {
   let items = state.items;
-  // Exclude dead items unless the user has toggled them on
   if (!state.showDead) items = items.filter(i => i.enrichStatus !== 'dead');
-  if (state.search) {
-    const q = state.search.toLowerCase();
-    items = items.filter(i =>
-      i.title?.toLowerCase().includes(q) ||
-      i.subreddit?.toLowerCase().includes(q) ||
-      i.author?.toLowerCase().includes(q) ||
-      i.body?.toLowerCase().includes(q)
-    );
+
+  if (state.search.trim()) {
+    const tokens = parseSearchQuery(state.search);
+    // Apply type tokens from query (overrides pill filter)
+    const typeToken = tokens.find(t => t.type === 'type' && !t.negate);
+    if (typeToken) {
+      items = items.filter(i => i.type === typeToken.value);
+    } else if (state.filterType !== 'all') {
+      items = items.filter(i => i.type === state.filterType);
+    }
+    items = items.filter(i => itemMatchesTokens(i, tokens.filter(t => t.type !== 'type' || t.negate)));
+  } else {
+    if (state.filterType !== 'all') items = items.filter(i => i.type === state.filterType);
   }
-  if (state.filterType !== 'all') items = items.filter(i => i.type === state.filterType);
+
   if (state.filterFolder === '__none__') items = items.filter(i => !i.folder);
   else if (state.filterFolder !== 'all') items = items.filter(i => i.folder === state.filterFolder);
   return items;
+}
+
+// ─── SEARCH HISTORY ──────────────────────────────────────────────────────────
+
+async function commitSearch(query) {
+  const q = query.trim();
+  if (!q) return;
+  // Add to recents, deduplicate, cap at 20
+  state.recentSearches = [q, ...state.recentSearches.filter(s => s !== q)].slice(0, 20);
+  await db.config.put({ key: 'recentSearches', value: state.recentSearches });
+}
+
+async function toggleFavoriteSearch(query) {
+  const q = query.trim();
+  if (!q) return;
+  const isFav = state.favoriteSearches.includes(q);
+  if (isFav) {
+    state.favoriteSearches = state.favoriteSearches.filter(s => s !== q);
+  } else {
+    state.favoriteSearches = [q, ...state.favoriteSearches];
+  }
+  await db.config.put({ key: 'favoriteSearches', value: state.favoriteSearches });
+  renderSearchDropdown();
+}
+
+async function removeRecentSearch(query) {
+  state.recentSearches = state.recentSearches.filter(s => s !== query);
+  await db.config.put({ key: 'recentSearches', value: state.recentSearches });
+  renderSearchDropdown();
+}
+
+function applySearch(query) {
+  state.search = query;
+  state.searchFocused = false;
+  const el = document.getElementById('search-input');
+  if (el) { el.value = query; el.blur(); }
+  commitSearch(query);
+  renderBrowseList();
+  renderSearchDropdown();
+}
+
+function renderSearchDropdown() {
+  const el = document.getElementById('search-dropdown');
+  if (!el) return;
+
+  const q = state.search.trim();
+  const favs = state.favoriteSearches;
+  const recents = state.recentSearches.filter(s => !favs.includes(s));
+  const show = state.searchFocused && !q && (favs.length > 0 || recents.length > 0);
+
+  if (!show) { el.style.display = 'none'; return; }
+
+  const pill = (label, query, isFav) => `
+    <div style="display:flex;align-items:center;gap:6px;padding:6px 4px;border-radius:6px;cursor:pointer"
+      onmousedown="event.preventDefault();applySearch(${JSON.stringify(query)})">
+      <span style="flex:1;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(query)}</span>
+      <button style="background:none;border:none;cursor:pointer;font-size:14px;padding:2px 4px;color:${isFav?'#f59e0b':'var(--text-muted)'};flex-shrink:0"
+        title="${isFav?'Remove from favorites':'Add to favorites'}"
+        onmousedown="event.preventDefault();event.stopPropagation();toggleFavoriteSearch(${JSON.stringify(query)})">★</button>
+      ${!isFav ? `<button style="background:none;border:none;cursor:pointer;font-size:12px;padding:2px 4px;color:var(--text-muted);flex-shrink:0"
+        title="Remove from history"
+        onmousedown="event.preventDefault();event.stopPropagation();removeRecentSearch(${JSON.stringify(query)})">✕</button>` : ''}
+    </div>`;
+
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div style="padding:10px 12px;max-height:320px;overflow-y:auto">
+      ${favs.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:4px">★ FAVORITES</div>
+        ${favs.map(s => pill(s, s, true)).join('')}
+        ${recents.length > 0 ? '<div style="border-top:1px solid var(--border);margin:8px 0"></div>' : ''}
+      ` : ''}
+      ${recents.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:4px">RECENT</div>
+        ${recents.map(s => pill(s, s, false)).join('')}
+      ` : ''}
+    </div>`;
 }
 
 function renderBrowseItems(items) {
@@ -1159,6 +1322,20 @@ function renderBrowseList() {
   const el = document.getElementById('browse-list');
   if (!el) { render(); return; }
   el.innerHTML = renderBrowseItems(filteredItems());
+  // Update the inline result count + save button without full re-render
+  const countEl = document.getElementById('search-result-info');
+  if (countEl) {
+    const n = filteredItems().length;
+    const q = state.search.trim();
+    const isFav = state.favoriteSearches.includes(q);
+    countEl.innerHTML = q ? `
+      <span style="font-size:12px;color:var(--text-muted)">${n.toLocaleString()} result${n!==1?'s':''}</span>
+      <button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 6px"
+        onclick="toggleFavoriteSearch(state.search.trim())"
+        title="${isFav?'Remove from favorites':'Save as favorite'}">
+        ${isFav ? '★ Saved' : '☆ Save search'}
+      </button>` : '';
+  }
 }
 
 function setFilter(type, value) {
