@@ -294,7 +294,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.5.2';
+const APP_VERSION = '0.5.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1103,6 +1103,7 @@ function renderHome() {
 }
 
 function renderBrowse() {
+  _searchLookup = []; // reset lookup table for this render
   const items = filteredItems();
   const favs = state.favoriteSearches;
   const q = state.search.trim();
@@ -1122,15 +1123,15 @@ function renderBrowse() {
           `}
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:6px">
-          ${favs.map(s => `
+          ${favs.map(s => { const i = _sl(s); return `
             <div style="display:inline-flex;align-items:center;gap:4px;background:${q===s?'rgba(245,158,11,0.15)':'var(--surface)'};border:1px solid ${q===s?'rgba(245,158,11,0.5)':'var(--border)'};border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer"
-              onmousedown="event.preventDefault();applySearch(${JSON.stringify(s)})">
+              onmousedown="event.preventDefault();runSavedSearch(${i})">
               <span style="color:${q===s?'#f59e0b':'var(--text)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(s)}</span>
               ${state.editingFavs ? `
                 <button style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:13px;padding:0 0 0 4px;line-height:1"
-                  onmousedown="event.preventDefault();event.stopPropagation();toggleFavoriteSearch(${JSON.stringify(s)})">✕</button>
+                  onmousedown="event.preventDefault();event.stopPropagation();toggleFavByIndex(${i})">✕</button>
               ` : ''}
-            </div>`).join('')}
+            </div>`; }).join('')}
         </div>
       </div>
     ` : ''}
@@ -1307,6 +1308,24 @@ function applySearch(query) {
 }
 
 // Renders the recents row in-place (no full re-render needed)
+// Search string lookup — avoids embedding quoted strings in HTML attributes
+// Populated before each render, referenced by index from onclick handlers
+let _searchLookup = [];
+function _sl(s) {
+  const i = _searchLookup.length;
+  _searchLookup.push(s);
+  return i;
+}
+function runSavedSearch(i) {
+  applySearch(_searchLookup[i] || '');
+}
+function removeSavedSearchByIndex(i) {
+  removeRecentSearch(_searchLookup[i] || '');
+}
+function toggleFavByIndex(i) {
+  toggleFavoriteSearch(_searchLookup[i] || '');
+}
+
 // ─── SEARCH DEBOUNCE ─────────────────────────────────────────────────────────
 // Only trigger a live search update when:
 //   - The query is empty (clear results immediately)
@@ -1356,14 +1375,14 @@ function renderRecentSearches() {
   el.innerHTML = `
     <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:6px">RECENT</div>
     <div style="display:flex;flex-wrap:wrap;gap:6px">
-      ${recents.map(s => `
+      ${recents.map(s => { const i = _sl(s); return `
         <div style="display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:4px 10px;font-size:12px;cursor:pointer;max-width:200px"
-          onmousedown="event.preventDefault();applySearch(${JSON.stringify(s)})">
+          onmousedown="event.preventDefault();runSavedSearch(${i})">
           <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escHtml(s)}</span>
           <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:0;line-height:1;flex-shrink:0"
             title="Remove"
-            onmousedown="event.preventDefault();event.stopPropagation();removeRecentSearch(${JSON.stringify(s)})">✕</button>
-        </div>`).join('')}
+            onmousedown="event.preventDefault();event.stopPropagation();removeSavedSearchByIndex(${i})">✕</button>
+        </div>`; }).join('')}
     </div>`;
 }
 
