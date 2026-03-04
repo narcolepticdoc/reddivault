@@ -188,6 +188,72 @@
       border-radius: 2px; margin: 0 auto 20px; }
     .modal-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 18px; margin-bottom: 16px; }
 
+    /* Preview modal — full height sheet */
+    .preview-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+      display: flex; align-items: flex-end; z-index: 200;
+      backdrop-filter: blur(4px);
+    }
+    .preview-sheet {
+      background: var(--bg); border-radius: 20px 20px 0 0;
+      width: 100%; height: 92vh;
+      display: flex; flex-direction: column;
+      border-top: 1px solid var(--border);
+    }
+    .preview-header {
+      padding: 16px 20px 12px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: flex-start; gap: 12px; flex-shrink: 0;
+    }
+    .preview-body {
+      flex: 1; overflow-y: auto; padding: 20px;
+      font-size: 15px; line-height: 1.7; color: var(--text);
+    }
+    .preview-body h1,.preview-body h2,.preview-body h3 {
+      font-family:'Syne',sans-serif; margin: 16px 0 8px; color: var(--text);
+    }
+    .preview-body p { margin-bottom: 12px; }
+    .preview-body a { color: var(--accent2); text-decoration: underline; word-break: break-all; }
+    .preview-body code {
+      background: var(--surface2); padding: 2px 6px; border-radius: 4px;
+      font-family: monospace; font-size: 13px;
+    }
+    .preview-body pre {
+      background: var(--surface2); padding: 12px; border-radius: 8px;
+      overflow-x: auto; margin-bottom: 12px;
+    }
+    .preview-body pre code { background: none; padding: 0; }
+    .preview-body blockquote {
+      border-left: 3px solid var(--border); padding-left: 12px;
+      color: var(--text-muted); margin-bottom: 12px;
+    }
+    .preview-body ul,.preview-body ol { padding-left: 20px; margin-bottom: 12px; }
+    .preview-body li { margin-bottom: 4px; }
+    .preview-body hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+    .preview-footer {
+      padding: 12px 20px calc(var(--safe-bottom) + 12px);
+      border-top: 1px solid var(--border); display: flex; gap: 8px; flex-shrink: 0;
+    }
+
+    /* In-app browser overlay */
+    .iab-overlay {
+      position: fixed; inset: 0; z-index: 300;
+      display: flex; flex-direction: column; background: var(--bg);
+    }
+    .iab-header {
+      padding: calc(var(--safe-top) + 10px) 16px 10px;
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    }
+    .iab-url {
+      flex: 1; font-size: 12px; color: var(--text-muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .iab-frame { flex: 1; border: none; width: 100%; }
+    .iab-fallback {
+      flex: 1; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 16px; padding: 40px 20px; text-align: center;
+    }
+
     /* Toast */
     .toast-container { position: fixed; top: calc(var(--safe-top) + 80px); right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
     .toast {
@@ -294,7 +360,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.6.2';
+const APP_VERSION = '0.7.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -355,8 +421,9 @@ let state = {
   editingFavs: false,    // edit mode for favorites section
   showTrash: false,      // toggle trash view in browse
   filterFavourite: false, // show only favourited items
-  sortBy: 'savedAt',     // savedAt | postCreatedAt | score | subreddit | title
+  sortBy: 'postCreatedAt', // savedAt | postCreatedAt | score | subreddit | title
   sortDir: 'desc',       // asc | desc
+  inAppBrowser: true,    // open links in-app with Safari fallback
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -390,8 +457,10 @@ async function loadConfig() {
     if (lastRunRL) state.lastRunRateLimitHits = lastRunRL.value;
     const recents = await db.config.get('recentSearches');
     const favs = await db.config.get('favoriteSearches');
+    const inApp = await db.config.get('inAppBrowser');
     if (recents) state.recentSearches = recents.value || [];
     if (favs) state.favoriteSearches = favs.value || [];
+    if (inApp !== undefined && inApp !== null) state.inAppBrowser = inApp.value !== false;
   } catch(e) {}
 }
 
@@ -1195,6 +1264,245 @@ function renderHome() {
   `;
 }
 
+// ─── MARKDOWN RENDERER ───────────────────────────────────────────────────────
+// Renders Reddit's markdown subset to safe HTML.
+// Handles: headers, bold, italic, code blocks, inline code, blockquotes,
+//          ordered/unordered lists, horizontal rules, links, and paragraphs.
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  let html = escHtml(text);
+
+  // Code blocks (``` ... ```) — must come before inline code
+  html = html.replace(/```([\s\S]*?)```/g, (_, code) =>
+    `<pre><code>${code.trim()}</code></pre>`);
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Bold and italic
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/_(.+?)_/g, '<em>$1</em>');
+
+  // Horizontal rule
+  html = html.replace(/^(-{3,}|\*{3,})$/gm, '<hr>');
+
+  // Blockquotes
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Unordered lists
+  html = html.replace(/(^[*\-] .+$(\n[*\-] .+$)*)/gm, match => {
+    const items = match.split('\n').map(l => `<li>${l.replace(/^[*\-] /, '')}</li>`).join('');
+    return `<ul>${items}</ul>`;
+  });
+
+  // Ordered lists
+  html = html.replace(/(^\d+\. .+$(\n\d+\. .+$)*)/gm, match => {
+    const items = match.split('\n').map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`).join('');
+    return `<ol>${items}</ol>`;
+  });
+
+  // Links [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
+    const safe = url.replace(/"/g, '%22');
+    return `<a href="${safe}" onclick="openLink(event,'${safe}')">${text}</a>`;
+  });
+
+  // Auto-links (bare URLs)
+  html = html.replace(/(https?:\/\/[^\s<>"]+)/g, url =>
+    `<a href="${url}" onclick="openLink(event,'${url}')">${url}</a>`);
+
+  // Paragraphs — wrap double-newline separated blocks
+  html = html.split(/\n\n+/).map(block => {
+    block = block.trim();
+    if (!block) return '';
+    if (/^<(h[1-3]|ul|ol|pre|blockquote|hr)/.test(block)) return block;
+    return `<p>${block.replace(/\n/g, '<br>')}</p>`;
+  }).join('\n');
+
+  return html;
+}
+
+// ─── LINK HANDLER ────────────────────────────────────────────────────────────
+
+function openLink(event, url) {
+  event.preventDefault();
+  if (!url) return;
+
+  // Check if it's a reddit post link we have locally
+  if (url.includes('reddit.com')) {
+    const match = url.match(/comments\/([a-z0-9]+)/i);
+    if (match) {
+      const redditId = match[1];
+      const localItem = state.items.find(i =>
+        i.redditId === redditId ||
+        i.redditId === 't3_' + redditId ||
+        i.redditId === 't1_' + redditId ||
+        (i.permalink || '').includes('/' + redditId + '/')
+      );
+      if (localItem) {
+        showPreview(localItem.id);
+        return;
+      }
+    }
+  }
+
+  if (state.inAppBrowser) {
+    openInAppBrowser(url);
+  } else {
+    window.location.href = url;
+  }
+}
+
+function openInAppBrowser(url) {
+  // Remove any existing IAB
+  document.getElementById('iab-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'iab-overlay';
+  overlay.id = 'iab-overlay';
+
+  const shortUrl = url.replace(/^https?:\/\//, '').substring(0, 60);
+
+  overlay.innerHTML = `
+    <div class="iab-header">
+      <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:22px;padding:0;line-height:1;flex-shrink:0"
+        onclick="closeInAppBrowser()">✕</button>
+      <span class="iab-url">${escHtml(shortUrl)}</span>
+      <button style="background:none;border:none;cursor:pointer;color:var(--accent2);font-size:13px;white-space:nowrap"
+        onclick="window.location.href='${url.replace(/'/g, "\'")}';closeInAppBrowser()">Safari ↗</button>
+    </div>
+    <div id="iab-content" style="flex:1;display:flex;flex-direction:column">
+      <div id="iab-loading" style="flex:1;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:14px">
+        Loading…
+      </div>
+      <iframe id="iab-frame" class="iab-frame" style="display:none"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        src="${url.replace(/"/g, '&quot;')}"></iframe>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  const frame = document.getElementById('iab-frame');
+  const loading = document.getElementById('iab-loading');
+
+  // Success — iframe loaded
+  frame.addEventListener('load', () => {
+    clearTimeout(iabTimeout);
+    loading.style.display = 'none';
+    frame.style.display = 'block';
+  });
+
+  // Timeout — assume blocked by X-Frame-Options
+  const iabTimeout = setTimeout(() => {
+    loading.style.display = 'none';
+    frame.style.display = 'none';
+    const content = document.getElementById('iab-content');
+    if (content) content.innerHTML = `
+      <div class="iab-fallback">
+        <div style="font-size:48px">🚫</div>
+        <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:18px">Can't display in-app</div>
+        <div style="font-size:14px;color:var(--text-muted);max-width:280px">
+          This page doesn't allow in-app display. Open it in Safari instead?
+        </div>
+        <button class="btn btn-primary" onclick="window.location.href='${url.replace(/'/g, "\'")}';closeInAppBrowser()">
+          Open in Safari ↗
+        </button>
+        <button class="btn btn-ghost" onclick="closeInAppBrowser()">Cancel</button>
+      </div>`;
+  }, 5000);
+}
+
+function closeInAppBrowser() {
+  document.getElementById('iab-overlay')?.remove();
+}
+
+// ─── POST PREVIEW ─────────────────────────────────────────────────────────────
+
+async function showPreview(itemId) {
+  const item = await db.items.get(itemId);
+  if (!item) return;
+
+  document.getElementById('preview-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'preview-overlay';
+  overlay.id = 'preview-overlay';
+  overlay.addEventListener('click', e => { if (e.target === overlay) closePreview(); });
+
+  const openUrl = (item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '';
+  const permalinkUrl = item.permalink || item.url || '';
+  const hasBody = !!(item.body && item.body.trim());
+  const isLinkPost = !hasBody && item.url && !item.url.includes('reddit.com');
+
+  const metaHtml = `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <span class="badge ${item.type==='comment'?'badge-comment':'badge-post'}">${item.type==='comment'?'💬 Comment':'📝 Post'}</span>
+      ${item.subreddit ? `<span class="subreddit-tag" style="cursor:pointer" onclick="closePreview();applySearch('r/${escHtml(item.subreddit)}')">r/${escHtml(item.subreddit)}</span>` : ''}
+      ${item.isFavourite ? '<span style="color:#f59e0b">⭐</span>' : ''}
+    </div>
+    <div style="display:flex;gap:12px;font-size:12px;color:var(--text-muted);flex-wrap:wrap">
+      ${item.author ? `<span>u/${escHtml(item.author)}</span>` : ''}
+      ${item.postCreatedAt ? `<span>📅 ${fmtDate(item.postCreatedAt)}</span>` : ''}
+      ${item.score != null ? `<span>⬆ ${item.score.toLocaleString()}</span>` : ''}
+      ${item.rating ? `<span style="color:#f59e0b">${'★'.repeat(item.rating)}${'☆'.repeat(5-item.rating)}</span>` : ''}
+    </div>`;
+
+  const bodyHtml = hasBody
+    ? renderMarkdown(item.body)
+    : isLinkPost
+      ? `<div style="text-align:center;padding:40px 20px">
+           <div style="font-size:48px;margin-bottom:16px">🔗</div>
+           <div style="font-size:14px;color:var(--text-muted);margin-bottom:20px;word-break:break-all">${escHtml(item.url)}</div>
+           <button class="btn btn-primary" onclick="openLink(event,'${item.url.replace(/'/g,"\'")}')">Open link</button>
+         </div>`
+      : `<div style="text-align:center;padding:40px 20px;color:var(--text-muted)">
+           <div style="font-size:48px;margin-bottom:12px">📄</div>
+           No local content — open on Reddit to read.
+         </div>`;
+
+  overlay.innerHTML = `
+    <div class="preview-sheet">
+      <div class="preview-header">
+        <div style="flex:1;min-width:0">
+          ${metaHtml}
+        </div>
+        <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:22px;padding:0;line-height:1;flex-shrink:0;align-self:flex-start"
+          onclick="closePreview()">✕</button>
+      </div>
+      <div class="preview-body">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:19px;line-height:1.3;margin-bottom:16px;color:var(--text)">
+          ${escHtml(item.title || 'Untitled')}
+        </div>
+        ${bodyHtml}
+      </div>
+      <div class="preview-footer">
+        ${openUrl ? `<button class="btn btn-primary" style="flex:1;justify-content:center"
+          onclick="openLink(event,'${openUrl.replace(/'/g,"\'")}')">
+          ${item.type==='comment' ? '💬 Open thread' : isLinkPost ? '🔗 Open link' : '📖 Open on Reddit'} ↗
+        </button>` : ''}
+        ${item.type !== 'comment' && permalinkUrl !== openUrl ? `
+          <button class="btn btn-ghost" style="justify-content:center"
+            onclick="openLink(event,'${permalinkUrl.replace(/'/g,"\'")}')">💬 Thread</button>
+        ` : ''}
+        <button class="btn btn-ghost" onclick="closePreview()">Close</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+}
+
+function closePreview() {
+  document.getElementById('preview-overlay')?.remove();
+}
+
 // ─── ITEM ACTIONS ────────────────────────────────────────────────────────────
 
 async function toggleFavourite(id) {
@@ -1752,7 +2060,8 @@ function renderItemCard(item, showActions) {
         ${item.author ? `<span style="font-size:11px;color:var(--text-muted)">u/${escHtml(item.author)}</span>` : ''}
       </div>
 
-      <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px;color:var(--text);line-height:1.3;margin-bottom:6px">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px;color:var(--text);line-height:1.3;margin-bottom:6px;cursor:pointer"
+        onclick="showPreview(${item.id})" title="Preview">
         ${titleDisplay}
       </div>
 
@@ -2116,6 +2425,16 @@ function renderSettings() {
       </div>
       <button class="btn btn-primary" onclick="saveSupabaseConfig()" style="width:100%;justify-content:center">Save & Test Connection</button>
       ${state.supabaseUrl ? `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px;padding:10px 0;border-top:1px solid var(--border)">
+          <div>
+            <div style="font-size:14px;font-weight:500">In-app browser</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:2px">Open links inside the app with Safari fallback</div>
+          </div>
+          <button style="background:${state.inAppBrowser?'var(--accent)':'var(--surface2)'};border:1px solid var(--border);border-radius:20px;padding:6px 16px;cursor:pointer;color:var(--text);font-size:13px"
+            onclick="state.inAppBrowser=!state.inAppBrowser;db.config.put({key:'inAppBrowser',value:state.inAppBrowser});render()">
+            ${state.inAppBrowser ? 'On' : 'Off'}
+          </button>
+        </div>
         <button class="btn btn-secondary" onclick="pushAllToSupabase()" style="width:100%;justify-content:center;margin-top:8px">
           ☁️ Push all local data to cloud
         </button>
