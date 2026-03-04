@@ -289,6 +289,9 @@
 </div>
 
 <script>
+// ─── VERSION ─────────────────────────────────────────────────────────────────
+const APP_VERSION = '3.0';
+
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
 db.version(3).stores({
@@ -1232,6 +1235,10 @@ function renderSettings() {
     <div class="config-section">
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px;color:var(--danger)">⚠️ Danger Zone</div>
       <button class="btn btn-danger" style="width:100%;justify-content:center" onclick="if(confirm('Delete ALL local data? Make sure you have a backup first!'))clearAllData()">Clear All Local Data</button>
+    </div>
+
+    <div style="text-align:center;padding:16px 0 4px;font-size:12px;color:var(--border)">
+      RedditVault v${APP_VERSION} &nbsp;·&nbsp; DB schema v${db.verno}
     </div>
   `;
 }
