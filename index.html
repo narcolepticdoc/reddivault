@@ -580,7 +580,9 @@ function updateEnrichProgress(done, total, enriched, failed, consecutiveFails, b
     </div>
     ${statusMsg ? `<div style="font-size:12px;text-align:center;margin-top:6px">${statusMsg}</div>` : ''}
   `;
-}PABASE ────────────────────────────────────────────────────────────────
+}
+
+// ─── SUPABASE ────────────────────────────────────────────────────────────────
 async function supabaseFetch(path, method='GET', body=null) {
   if (!state.supabaseUrl || !state.supabaseKey) throw new Error('Supabase not configured');
   const res = await fetch(`${state.supabaseUrl}/rest/v1${path}`, {
