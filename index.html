@@ -293,7 +293,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '3.5';
+const APP_VERSION = '3.6';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -437,16 +437,26 @@ async function enrichItemFromReddit(item) {
   }
 }
 
-// How many consecutive failures before we take a long break
-const FAILURE_THRESHOLD = 5;
-// Exponential backoff settings
-const BACKOFF_BASE = 60000;   // 1 minute for first backoff
-const BACKOFF_MAX  = 300000;  // cap at 5 minutes regardless of how many retries
-// Base delay between requests (ms)
-const BASE_DELAY = 2000;
-// Batch size before a shorter mid-batch pause
-const BATCH_SIZE = 50;
-const BATCH_PAUSE = 15000; // 15 seconds between batches
+// ── Proactive rate-limit avoidance ───────────────────────────────────────────
+// Strategy: stay well under Reddit's limit by design rather than reacting to
+// rate limit errors after the fact.
+//
+// Reddit's public JSON API allows roughly 100 requests per 10 minutes.
+// We target ~17 req/min (3.5s delay) = ~170 req/10min when running freely,
+// BUT we pause for 3 minutes every 25 items to let the window reset.
+//
+// 25 items × 3.5s = ~88 seconds of requests, then 180s rest.
+// Effective rate: 25 items per ~4.5 min = ~5.5 items/min sustained.
+// For 3000 items: ~9 hours total but uninterrupted.
+//
+// If we still get rate limited (429 or 3 consecutive nulls), we pause an
+// extra 5 minutes before resuming — no rewind, just wait and continue forward.
+
+const BASE_DELAY  = 3500;   // ms between individual requests (~17 req/min)
+const BATCH_SIZE  = 25;     // items per batch before a long pause
+const BATCH_PAUSE = 180000; // 3 minutes between batches
+const RATELIMIT_PAUSE = 300000; // 5 min extra pause if we still get rate limited
+const MAX_ITEM_ATTEMPTS = 3;    // give up on an item after this many failures
 
 let enrichStopped = false;
 
@@ -454,22 +464,18 @@ async function enrichAllItems(retryFailed = false) {
   if (state.enriching) return;
   enrichStopped = false;
 
-  // Decide which items to process:
-  // Normal run: items where enriched is falsy
-  // Retry run: items that were attempted (enrichAttempts > 0) but still have no title
-  let toEnrich;
   if (retryFailed) {
-    // Reset items that were previously stamped as done but have no useful data
     await db.items.toCollection().modify(item => {
       if (item.enriched && !item.title && !item.subreddit) {
         item.enriched = false;
+        item.enrichAttempts = 0;
       }
     });
     await loadData();
   }
 
   const allItems = await db.items.toArray();
-  toEnrich = allItems.filter(i => !i.enriched);
+  const toEnrich = allItems.filter(i => !i.enriched);
 
   if (toEnrich.length === 0) {
     showToast('All items already enriched ✓', 'success');
@@ -477,13 +483,12 @@ async function enrichAllItems(retryFailed = false) {
   }
 
   state.enriching = true;
-  state.enrichProgress = { done: 0, total: toEnrich.length, enriched: 0, failed: 0, rateLimited: 0 };
+  state.enrichProgress = { done: 0, total: toEnrich.length, enriched: 0, failed: 0 };
   render();
 
   let enrichedCount = 0;
   let failedCount = 0;
-  let consecutiveFails = 0;
-  let backoffCount = 0; // how many times we've backed off this run — used for exponential delay
+  let consecutiveNulls = 0; // track silent failures within a batch
 
   for (let i = 0; i < toEnrich.length; i++) {
     if (enrichStopped) {
@@ -492,86 +497,61 @@ async function enrichAllItems(retryFailed = false) {
     }
 
     const item = toEnrich[i];
-    state.enrichProgress.done = i + 1;
-    updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, consecutiveFails);
+    updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount);
 
     const result = await enrichItemFromReddit(item);
 
     if (result === 'rate_limited') {
-      // Reddit sent explicit 429 — exponential backoff then retry the same item
-      consecutiveFails++;
-      backoffCount++;
-      state.enrichProgress.rateLimited++;
-      const pause429 = Math.min(BACKOFF_BASE * Math.pow(2, backoffCount - 1), BACKOFF_MAX);
-      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, consecutiveFails, true, false, pause429);
-      await sleep(pause429);
-      i--; // retry this item
+      // Explicit 429 — take a long pause then continue forward (no rewind)
+      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'ratelimit');
+      await sleep(RATELIMIT_PAUSE);
+      consecutiveNulls = 0;
+      i--; // retry this one item then carry on
       continue;
 
     } else if (result === 'unavailable') {
-      // Deleted or private post — mark done so we don't retry endlessly
-      await db.items.update(item.id, {
-        enriched: true,
-        enrichAttempts: (item.enrichAttempts || 0) + 1
-      });
+      await db.items.update(item.id, { enriched: true, enrichAttempts: (item.enrichAttempts || 0) + 1 });
       failedCount++;
-      consecutiveFails = 0;
-      backoffCount = 0; // permanent failure, not rate limiting — reset backoff
+      consecutiveNulls = 0;
 
     } else if (result && typeof result === 'object') {
-      // Success
       await db.items.update(item.id, result);
       enrichedCount++;
-      consecutiveFails = 0;
-      backoffCount = 0; // successful fetch — reset backoff for next rate limit event
+      consecutiveNulls = 0;
 
     } else {
-      // null = network error or no data — likely silent rate limiting,
-      // but could also be a genuinely broken item (malformed JSON, etc.)
+      // null — could be a dead item or silent rate limiting
       const attempts = (item.enrichAttempts || 0) + 1;
-      await db.items.update(item.id, { enrichAttempts: attempts });
-      failedCount++;
+      consecutiveNulls++;
 
-      // Items that have failed MAX_ITEM_ATTEMPTS times are considered permanently
-      // broken — don't count them toward consecutiveFails or rewind for them,
-      // just mark done and move on. This prevents infinite loops on dead items.
-      const MAX_ITEM_ATTEMPTS = 3;
       if (attempts >= MAX_ITEM_ATTEMPTS) {
-        await db.items.update(item.id, { enriched: true }); // give up on this one
-        consecutiveFails = 0; // doesn't count as a rate-limit signal
-        backoffCount = 0;     // nor does it count as a backoff-worthy event
+        // Tried enough times — give up and move on
+        await db.items.update(item.id, { enriched: true, enrichAttempts: attempts });
+        failedCount++;
+        consecutiveNulls = 0;
       } else {
-        consecutiveFails++;
+        await db.items.update(item.id, { enrichAttempts: attempts });
+        failedCount++;
 
-        if (consecutiveFails >= FAILURE_THRESHOLD) {
-          // Enough consecutive failures that it's almost certainly rate limiting,
-          // not dead items. Exponential backoff then rewind so they get retried.
-          backoffCount++;
-          const pauseMs = Math.min(BACKOFF_BASE * Math.pow(2, backoffCount - 1), BACKOFF_MAX);
-          updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, consecutiveFails, true, false, pauseMs);
-          await sleep(pauseMs);
-          consecutiveFails = 0;
-
-          // Find the rewind point: go back FAILURE_THRESHOLD positions,
-          // but skip past any items that have hit their attempt limit
-          let rewindTo = Math.max(-1, i - FAILURE_THRESHOLD);
-          while (rewindTo < i) {
-            const candidate = toEnrich[rewindTo + 1];
-            if (candidate && (candidate.enrichAttempts || 0) < MAX_ITEM_ATTEMPTS) break;
-            rewindTo++; // skip this one, it's already given up
-          }
-          i = rewindTo;
-          continue;
+        if (consecutiveNulls >= 3) {
+          // 3 nulls in a row = likely silent rate limiting — take the long pause
+          updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'ratelimit');
+          await sleep(RATELIMIT_PAUSE);
+          consecutiveNulls = 0;
+          // Don't rewind — just continue forward. Items already have enrichAttempts
+          // incremented so the Retry Failed button will catch them at the end.
         }
       }
     }
 
-    // Every BATCH_SIZE items, take a short mid-run break
+    // Between every item, base delay
+    await sleep(BASE_DELAY);
+
+    // Every BATCH_SIZE items, long pause to let Reddit's window reset
     if ((i + 1) % BATCH_SIZE === 0 && i < toEnrich.length - 1) {
-      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 0, false, true);
+      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'batch');
       await sleep(BATCH_PAUSE);
-    } else {
-      await sleep(BASE_DELAY);
+      consecutiveNulls = 0; // fresh batch, reset failure tracking
     }
   }
 
@@ -599,20 +579,25 @@ function stopEnrichment() {
   enrichStopped = true;
 }
 
-function updateEnrichProgress(done, total, enriched, failed, consecutiveFails, backingOff = false, batchPause = false, pauseMs = 60000) {
+function updateEnrichProgress(done, total, enriched, failed, status = '') {
   const el = document.getElementById('enrich-progress-details');
   if (!el) return;
   const pct = Math.round((done / total) * 100);
-  const pauseSecs = Math.round(pauseMs / 1000);
+  const remaining = total - done;
+  const minsLeft = Math.round((remaining * BASE_DELAY + Math.floor(remaining / BATCH_SIZE) * BATCH_PAUSE) / 60000);
+
   let statusMsg = '';
-  if (backingOff) statusMsg = `<span style="color:var(--warning)">⏳ Rate limited — waiting ${pauseSecs}s before retrying...</span>`;
-  else if (batchPause) statusMsg = `<span style="color:var(--accent2)">☕ Batch pause (15s) — letting Reddit's rate limit reset...</span>`;
-  else if (consecutiveFails >= 3) statusMsg = `<span style="color:var(--warning)">⚠ ${consecutiveFails} consecutive failures — may be rate limited</span>`;
+  if (status === 'ratelimit') {
+    statusMsg = `<span style="color:var(--warning)">⏳ Rate limited — pausing 5 min before continuing...</span>`;
+  } else if (status === 'batch') {
+    statusMsg = `<span style="color:var(--accent2)">☕ Batch complete — 3 min pause to reset Reddit rate limit...</span>`;
+  }
 
   el.innerHTML = `
     <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
     <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">
       ${done} / ${total} processed &nbsp;·&nbsp; ${enriched} enriched &nbsp;·&nbsp; ${failed} unavailable
+      ${!status && minsLeft > 1 ? `&nbsp;·&nbsp; ~${minsLeft} min remaining` : ''}
     </div>
     ${statusMsg ? `<div style="font-size:12px;text-align:center;margin-top:6px">${statusMsg}</div>` : ''}
   `;
@@ -1197,9 +1182,9 @@ function renderImport() {
           Fetches titles, subreddit names, authors, and post dates from Reddit's public API.
           Processes <strong style="color:var(--text)">50 items at a time</strong> with a
           15-second pause between batches, and backs off automatically if Reddit rate-limits us.
-          ${needsEnrich > 200 ? `<br><br><strong style="color:var(--text)">Estimated time for ${needsEnrich} items:</strong>
-          ~${Math.ceil(needsEnrich / 50 * 0.75)} minutes (including batch pauses).
-          You can leave this tab open in the background.` : ''}
+          ${needsEnrich > 50 ? `<br><br><strong style="color:var(--text)">Estimated time for ${needsEnrich} items:</strong>
+          ~${Math.ceil(needsEnrich / 25 * 4.5)} minutes total (25 items fetched, 3 min pause, repeat).
+          Leave this tab open — it will run unattended.` : ''}
         </p>
         ${state.enriching ? `
           <div id="enrich-progress-details">
