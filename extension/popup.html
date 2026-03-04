@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, 'Segoe UI', sans-serif;
+      background: #0d0618; color: #e2d9f3;
+      width: 340px; min-height: 200px;
+    }
+    .header {
+      background: linear-gradient(135deg, #1a0a2e, #0d0618);
+      padding: 16px 18px; border-bottom: 1px solid #2d1f55;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .logo { font-size: 18px; font-weight: 800; }
+    .logo span { color: #a855f7; }
+    .version { font-size: 11px; color: #8b7aaa; margin-left: auto; }
+    .body { padding: 16px 18px; }
+    .status-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px; background: #160d2a; border-radius: 8px;
+      border: 1px solid #2d1f55; margin-bottom: 14px; font-size: 13px;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .dot.green { background: #34d399; box-shadow: 0 0 6px #34d399; }
+    .dot.red { background: #f87171; }
+    .dot.yellow { background: #fbbf24; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 14px; }
+    .stat { background: #160d2a; border: 1px solid #2d1f55; border-radius: 8px; padding: 10px; text-align: center; }
+    .stat-num { font-size: 20px; font-weight: 700; color: #a855f7; }
+    .stat-label { font-size: 10px; color: #8b7aaa; margin-top: 2px; }
+    .btn {
+      width: 100%; padding: 10px; border-radius: 8px; border: none;
+      font-size: 13px; font-weight: 500; cursor: pointer; margin-bottom: 8px;
+      display: flex; align-items: center; justify-content: center; gap: 6px;
+      transition: all 0.2s;
+    }
+    .btn-primary { background: #7c3aed; color: white; }
+    .btn-primary:hover { background: #a855f7; }
+    .btn-primary:disabled { background: #2d1f55; color: #8b7aaa; cursor: not-allowed; }
+    .btn-secondary { background: #1f1340; color: #e2d9f3; border: 1px solid #2d1f55; }
+    .btn-secondary:hover { background: #2d1f55; }
+    .input { width: 100%; padding: 9px 12px; background: #1f1340; border: 1px solid #2d1f55;
+      border-radius: 8px; color: #e2d9f3; font-size: 13px; outline: none; margin-bottom: 8px; }
+    .input:focus { border-color: #a855f7; }
+    .input::placeholder { color: #8b7aaa; }
+    label { font-size: 11px; color: #8b7aaa; display: block; margin-bottom: 4px; }
+    .section-title { font-size: 12px; font-weight: 600; color: #8b7aaa; text-transform: uppercase;
+      letter-spacing: 0.5px; margin-bottom: 10px; }
+    .log { background: #160d2a; border: 1px solid #2d1f55; border-radius: 8px;
+      padding: 10px; font-size: 11px; color: #8b7aaa; max-height: 100px; overflow-y: auto;
+      font-family: monospace; line-height: 1.6; margin-bottom: 14px; }
+    .log-entry { margin-bottom: 2px; }
+    .log-entry.success { color: #34d399; }
+    .log-entry.error { color: #f87171; }
+    .log-entry.info { color: #a855f7; }
+    .divider { height: 1px; background: #2d1f55; margin: 14px 0; }
+    .progress { height: 4px; background: #2d1f55; border-radius: 2px; margin-bottom: 12px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #7c3aed, #f472b6);
+      border-radius: 2px; transition: width 0.4s; }
+    .warning { background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.3);
+      border-radius: 8px; padding: 10px; font-size: 12px; color: #fbbf24; margin-bottom: 12px; line-height: 1.5; }
+    #setup-section { display: none; }
+    #main-section { display: none; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">Reddit<span>Vault</span> Sync</div>
+    <div class="version">v1.0.0</div>
+  </div>
+  <div class="body">
+
+    <!-- SETUP SECTION -->
+    <div id="setup-section">
+      <div class="section-title">⚙️ First-Time Setup</div>
+      <div class="warning">⚠️ You must be logged into Reddit in Chrome for syncing to work.</div>
+      <div>
+        <label>Supabase Project URL</label>
+        <input class="input" id="setup-url" placeholder="https://xxxx.supabase.co">
+      </div>
+      <div>
+        <label>Supabase Anon Key</label>
+        <input class="input" id="setup-key" type="password" placeholder="eyJhbGc...">
+      </div>
+      <button class="btn btn-primary" id="save-config-btn">Save Configuration</button>
+    </div>
+
+    <!-- MAIN SECTION -->
+    <div id="main-section">
+      <div class="status-row">
+        <div class="dot" id="status-dot"></div>
+        <span id="status-text">Checking...</span>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat">
+          <div class="stat-num" id="stat-fetched">—</div>
+          <div class="stat-label">Fetched This Session</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num" id="stat-new">—</div>
+          <div class="stat-label">New to Supabase</div>
+        </div>
+      </div>
+
+      <div class="progress" id="progress-wrap" style="display:none">
+        <div class="progress-fill" id="progress-fill" style="width:0%"></div>
+      </div>
+
+      <button class="btn btn-primary" id="sync-btn">🔄 Sync Saved Items Now</button>
+      <button class="btn btn-secondary" id="config-btn">⚙️ Change Settings</button>
+
+      <div class="divider"></div>
+      <div class="section-title">📋 Activity Log</div>
+      <div class="log" id="log">
+        <div class="log-entry info">Ready. Click "Sync" to start.</div>
+      </div>
+    </div>
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
