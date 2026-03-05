@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.10';
+const APP_VERSION = '0.7.11';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2842,8 +2842,10 @@ async function syncFromFeed() {
 
   try {
     while (pages < MAX_PAGES) {
-      // Build URL — append after param for pagination
-      let url = state.redditFeedUrl;
+      // Build URL — rewrite to www.reddit.com for CORS compatibility (old.reddit.com blocks cross-origin fetches)
+      let url = state.redditFeedUrl
+        .replace('old.reddit.com', 'www.reddit.com')
+        .replace('https://reddit.com/', 'https://www.reddit.com/');
       url += (url.includes('?') ? '&' : '?') + 'limit=25';
       if (after) url += `&after=${encodeURIComponent(after)}`;
 
