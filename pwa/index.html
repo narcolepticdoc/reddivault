@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.2';
+const APP_VERSION = '0.7.4';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -447,12 +447,12 @@ async function loadConfig() {
 async function loadData() {
   state.items = await db.items.orderBy('savedAt').reverse().toArray();
   state.folders = await db.folders.toArray();
-  // Build author frequency map — excludes deleted/unknown authors
+  // Build author frequency map — only visible items (not disliked or dead)
   state.authorFreq = {};
   for (const item of state.items) {
-    if (item.author && item.author !== '[deleted]' && item.author !== 'AutoModerator') {
-      state.authorFreq[item.author] = (state.authorFreq[item.author] || 0) + 1;
-    }
+    if (!item.author || item.author === '[deleted]' || item.author === 'AutoModerator') continue;
+    if (item.isDisliked || item.enrichStatus === 'dead') continue;
+    state.authorFreq[item.author] = (state.authorFreq[item.author] || 0) + 1;
   }
 }
 
@@ -495,13 +495,38 @@ async function enrichItemFromReddit(item) {
     const postData = postChildren[0].data;
     if (!postData) return null;
 
+    // Re-derive type from permalink — don't trust stored type which may be wrong
+    // from old CSV import bugs. A comment permalink has 6+ path segments;
+    // a post permalink has exactly 5.
+    const permalinkPath = (item.permalink || item.url || '').replace(/^https?:\/\/[^/]+/, '');
+    const derivedType = permalinkPath.split('/').filter(Boolean).length > 5 ? 'comment' : 'post';
+
     let commentData = null;
-    if (item.type === 'comment' && data.length > 1) {
+    if (derivedType === 'comment' && data.length > 1) {
+      // We need to find the SPECIFIC saved comment, not just the first in the thread.
+      // The comment's bare ID is the last non-empty path segment of the permalink,
+      // or we can strip the t1_ prefix from redditId.
+      const bareId = (item.redditId || '').replace(/^t1_/, '');
+      // Reddit returns a nested comment tree — walk it to find our comment
+      function findComment(children) {
+        for (const child of (children || [])) {
+          if (!child.data) continue;
+          if (child.data.id === bareId) return child.data;
+          // Comments can be nested — recurse into replies
+          const nested = child.data.replies?.data?.children;
+          if (nested) {
+            const found = findComment(nested);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
       const cc = data[1]?.data?.children;
-      if (cc?.length) commentData = cc[0].data;
+      commentData = bareId ? findComment(cc) : (cc?.[0]?.data || null);
     }
 
     const enriched = {
+      type: derivedType,   // store corrected type in case it was wrong
       subreddit: postData.subreddit || item.subreddit || '',
       postCreatedAt: postData.created_utc
         ? new Date(postData.created_utc * 1000).toISOString()
@@ -510,7 +535,7 @@ async function enrichItemFromReddit(item) {
       enrichAttempts: (item.enrichAttempts || 0) + 1,
     };
 
-    if (item.type === 'comment') {
+    if (derivedType === 'comment') {
       enriched.title = postData.title || item.title || 'Saved Comment';
       enriched.author = commentData?.author || item.author || '';
       enriched.body = commentData?.body || item.body || '';
@@ -974,6 +999,101 @@ async function pushAllToSupabase() {
     showToast('Push failed: ' + e.message, 'error');
   }
 }
+async function resetAllEnrichment() {
+  const allItems = await db.items.toArray();
+  for (const item of allItems) {
+    await db.items.update(item.id, {
+      enriched: false,
+      enrichStatus: 'pending',
+      enrichAttempts: 0,
+    });
+  }
+  await loadData();
+  showToast(`${allItems.length.toLocaleString()} items queued for re-enrichment`, 'success');
+  render();
+}
+
+async function repairCSVDuplicates() {
+  // CSV items have bare IDs (abc123); extension items have prefixed IDs (t3_abc123).
+  // This finds pairs where one is a duplicate of the other, keeps the prefixed
+  // (extension) version which has correct data, deletes the bare-ID (CSV) version,
+  // then marks all remaining bare-ID items for re-enrichment with corrected IDs.
+
+  const allItems = await db.items.toArray();
+  let merged = 0, renumbered = 0, markedForReenrich = 0;
+
+  // Build a map of bare-id -> prefixed item (extension version)
+  const prefixedById = {};
+  for (const item of allItems) {
+    const id = item.redditId || '';
+    if (id.startsWith('t3_') || id.startsWith('t1_')) {
+      prefixedById[id.replace(/^t[13]_/, '')] = item;
+    }
+  }
+
+  for (const item of allItems) {
+    const id = item.redditId || '';
+    if (id.startsWith('t3_') || id.startsWith('t1_')) continue; // already prefixed
+
+    const bareId = id;
+    const prefixedItem = prefixedById[bareId];
+
+    if (prefixedItem) {
+      // Duplicate — a prefixed version exists from the extension.
+      // Preserve folder/favourite/rating from CSV item if the prefixed one lacks them,
+      // then delete the bare-ID duplicate.
+      const updates = {};
+      if (!prefixedItem.folder && item.folder) updates.folder = item.folder;
+      if (!prefixedItem.isFavourite && item.isFavourite) updates.isFavourite = item.isFavourite;
+      if (!prefixedItem.rating && item.rating) updates.rating = item.rating;
+      if (Object.keys(updates).length) await db.items.update(prefixedItem.id, updates);
+      await db.items.delete(item.id);
+      // Also delete from Supabase
+      if (state.supabaseUrl) {
+        try { await supabaseFetch('/reddit_saves?reddit_id=eq.' + bareId, 'DELETE', null); } catch(e) {}
+      }
+      merged++;
+    } else {
+      // No duplicate — just needs its ID normalised and re-enrichment triggered
+      const permalink = item.permalink || item.url || '';
+      const permalinkPath = permalink.replace(/^https?:\/\/[^\/]+/, '');
+      const isComment = permalinkPath.split('/').filter(Boolean).length > 5;
+      const newId = (isComment ? 't1_' : 't3_') + bareId;
+
+      await db.items.update(item.id, {
+        redditId: newId,
+        enriched: false,
+        enrichStatus: 'pending',
+        enrichAttempts: 0,
+      });
+      // Update Supabase — delete old bare-id row, the next push will create the correct one
+      if (state.supabaseUrl) {
+        try { await supabaseFetch('/reddit_saves?reddit_id=eq.' + bareId, 'DELETE', null); } catch(e) {}
+      }
+      renumbered++;
+      markedForReenrich++;
+    }
+  }
+
+  await loadData();
+  const msg = [
+    merged > 0 ? `${merged} duplicate${merged!==1?'s':''} merged` : '',
+    renumbered > 0 ? `${renumbered} ID${renumbered!==1?'s':''} normalised` : '',
+    markedForReenrich > 0 ? `${markedForReenrich} queued for re-enrichment` : '',
+  ].filter(Boolean).join(', ');
+
+  showToast(msg || 'Nothing to repair', merged + renumbered > 0 ? 'success' : 'warning');
+  render();
+
+  // Push corrected items to Supabase
+  if ((merged + renumbered) > 0 && state.supabaseUrl) {
+    showToast('Syncing repairs to cloud…', 'info');
+    const fixed = await db.items.toArray();
+    for (let i = 0; i < fixed.length; i += 200) await pushToSupabase(fixed.slice(i, i + 200));
+    showToast('✓ Repairs synced to cloud', 'success');
+  }
+}
+
 async function repairItemTypes() {
   // Items imported from CSV before the fix have wrong types because the detection
   // logic didn't strip the domain from full URLs before counting path segments.
@@ -1021,18 +1141,26 @@ async function handleCSVImport(file) {
           // Reddit's data export CSV has these columns:
           // id, permalink, url, title, body, created_utc, subreddit, type
           // However the "saved items" export often only has: id, permalink, url
-          const redditId = row.id || '';
-          if (!redditId) continue;
+          const rawId = (row.id || '').trim();
+          if (!rawId) continue;
 
-          const exists = await db.items.where('redditId').equals(redditId).first();
-          if (exists) { dupes++; continue; }
-
-          // Detect type from permalink path: /r/sub/comments/id/title/ = post
-          // /r/sub/comments/id/title/commentid/ = comment
-          // Strip protocol + domain first since CSV exports use full URLs
+          // Detect type first so we can normalise the ID with the correct prefix
           const permalink = row.permalink || '';
           const permalinkPath = permalink.replace(/^https?:\/\/[^\/]+/, '');
           const isComment = permalinkPath.split('/').filter(Boolean).length > 5;
+
+          // Normalise to Reddit fullname format (t1_ = comment, t3_ = post).
+          // CSV exports give bare IDs; the extension gives prefixed ones.
+          // Consistent storage prevents duplicates when both sources have same item.
+          const prefix = isComment ? 't1_' : 't3_';
+          const redditId = (rawId.startsWith('t1_') || rawId.startsWith('t3_'))
+            ? rawId
+            : prefix + rawId;
+
+          // Check for existing item under either the normalised OR bare ID
+          const exists = await db.items.where('redditId').equals(redditId).first()
+            || await db.items.where('redditId').equals(rawId).first();
+          if (exists) { dupes++; continue; }
 
           // Determine if we have enough data already or need enrichment
           const hasTitle = !!(row.title && row.title.trim());
@@ -1753,8 +1881,8 @@ function itemMatchesTokens(item, tokens) {
     let match = false;
 
     if (t.type === 'field') {
-      if (t.field === 'subreddit') match = subreddit.includes(t.value);
-      if (t.field === 'author')    match = author.includes(t.value);
+      if (t.field === 'subreddit') match = subreddit === t.value || subreddit.includes(t.value);
+      if (t.field === 'author')    match = author === t.value; // exact match only
     } else if (t.type === 'type') {
       match = item.type === t.value;
     } else {
@@ -2446,6 +2574,16 @@ function renderSettings() {
       <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:12px"
         onclick="repairItemTypes()" title="Re-evaluates post vs comment type for all items from their permalink">
         🔧 Repair Post/Comment Types
+      </button>
+      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:8px"
+        onclick="if(confirm('This will normalise CSV item IDs, merge duplicates with extension items, and queue affected items for re-enrichment. Continue?'))repairCSVDuplicates()"
+        title="Fix duplicate items caused by CSV imports having bare IDs vs extension t3_/t1_ prefixed IDs">
+        🔧 Repair CSV Duplicates & Re-enrich
+      </button>
+      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:8px"
+        onclick="if(confirm('Reset ALL items to pending enrichment so they are re-fetched from Reddit with corrected type detection. This will queue everything — only do this if your enriched data looks wrong.'))resetAllEnrichment()"
+        title="Re-queue all items for enrichment">
+        🔄 Re-enrich Entire Library
       </button>
     </div>
 
