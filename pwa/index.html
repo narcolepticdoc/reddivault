@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.14';
+const APP_VERSION = '0.7.15';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2862,6 +2862,7 @@ async function syncFromFeed() {
       // Route through proxy (required — Reddit blocks direct cross-origin fetches)
       const proxyBase = state.feedProxyUrl || '/api/reddit-feed';
       const url = `${proxyBase}?url=${encodeURIComponent(feedUrl)}`;
+      const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status} — check your feed URL is correct`);
       const json = await res.json();
 
