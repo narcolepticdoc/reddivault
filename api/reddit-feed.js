@@ -31,7 +31,11 @@ export default async function handler(req, res) {
   }
 
   try {
-    const response = await fetch(url, {
+    // Always use old.reddit.com — that's where the feed tokens are issued
+    const fetchUrl = url.includes('old.reddit.com') ? url : url.replace('reddit.com', 'old.reddit.com');
+    console.log('[proxy] fetching:', fetchUrl);
+
+    const response = await fetch(fetchUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
@@ -40,8 +44,11 @@ export default async function handler(req, res) {
       }
     });
 
+    console.log('[proxy] response status:', response.status, 'url:', fetchUrl);
+
     if (!response.ok) {
       const body = await response.text().catch(() => '');
+      console.log('[proxy] error body:', body.slice(0, 500));
       return res.status(response.status).json({ error: `Reddit returned ${response.status}`, detail: body.slice(0, 200) });
     }
 
