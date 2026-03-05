@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.5';
+const APP_VERSION = '0.7.7';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2810,9 +2810,9 @@ async function saveFeedUrl() {
   if (!raw) { showToast('Please paste your Reddit feed URL', 'error'); return; }
   // Accept full URL or just the feed=...&user=... params
   let feedUrl = raw;
-  // Normalise: ensure it ends with .json and has correct base
-  if (!feedUrl.includes('saved.json')) {
-    showToast('URL should contain "saved.json" — copy it from old.reddit.com/prefs/feeds/', 'error');
+  // Validate: must contain a feed= param and be a reddit URL
+  if (!feedUrl.includes('feed=') || !feedUrl.includes('reddit.com')) {
+    showToast('URL should be from reddit.com and contain a feed= parameter — copy it from old.reddit.com/prefs/feeds/', 'error');
     return;
   }
   await db.config.put({ key: 'redditFeedUrl', value: feedUrl });
