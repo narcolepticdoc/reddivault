@@ -329,9 +329,6 @@
     <button class="nav-item" onclick="showPage('folders')" id="nav-folders">
       <span class="nav-icon">📁</span><span>Folders</span>
     </button>
-    <button class="nav-item" onclick="showPage('import')" id="nav-import">
-      <span class="nav-icon">⬆️</span><span>Import</span>
-    </button>
     <button class="nav-item" onclick="showPage('settings')" id="nav-settings">
       <span class="nav-icon">⚙️</span><span>Settings</span>
     </button>
@@ -1348,7 +1345,6 @@ function render() {
     case 'home':     content.innerHTML = renderHome(); break;
     case 'browse':   content.innerHTML = renderBrowse(); break;
     case 'folders':  content.innerHTML = renderFolders(); break;
-    case 'import':   content.innerHTML = renderImport(); break;
     case 'settings': content.innerHTML = renderSettings(); break;
   }
   attachEventListeners();
@@ -1388,7 +1384,7 @@ function renderHome() {
           <strong>⚡ ${needsEnrich} items need enrichment</strong>
           <span>Missing titles, subreddits, or post dates from CSV import</span>
         </div>
-        <button class="btn btn-warning btn-sm" onclick="showPage('import')" style="white-space:nowrap">Enrich Now</button>
+        <button class="btn btn-warning btn-sm" onclick="showPage('settings')" style="white-space:nowrap">Enrich Now</button>
       </div>
     ` : ''}
 
@@ -1398,7 +1394,7 @@ function renderHome() {
         <h3>No saved items yet</h3>
         <p>Import your Reddit saved posts CSV or sync from the cloud to get started.</p>
         <br>
-        <button class="btn btn-primary" onclick="showPage('import')">Import CSV</button>
+        <button class="btn btn-primary" onclick="showPage('settings')">Import CSV</button>
       </div>
     ` : `
       <div class="section-header">
@@ -2304,253 +2300,6 @@ function enrichTimeEstimate(itemCount, rpm) {
   return mins > 0 ? `~${hrs}h ${mins}m` : `~${hrs}h`;
 }
 
-function renderImport() {
-  const enrichedCount = state.items.filter(i => i.enrichStatus === 'enriched').length;
-  const pendingCount  = state.items.filter(i => i.enrichStatus === 'pending').length;
-  const deadCount     = state.items.filter(i => i.enrichStatus === 'dead').length;
-  // Pending items that have been attempted at least once
-  const attemptedCount = state.items.filter(i => i.enrichStatus === 'pending' && (i.enrichAttempts || 0) > 0).length;
-  // Pending items that have hit the maxAttempts threshold
-  const thresholdCount = state.items.filter(i => i.enrichStatus === 'pending' && (i.enrichAttempts || 0) >= state.enrichMaxAttempts).length;
-  const needsEnrich = pendingCount;
-  const lastRunClean = state.lastRunRateLimitHits === 0;
-  const hasRunBefore = state.lastRunRateLimitHits !== null;
-
-  // Use actual queue size for estimates, fall back to 1000 if no items yet
-  const normalQueue = needsEnrich  || 1000;
-  const retryQueue  = attemptedCount || 1000;
-
-  const normalDelaySecs  = Math.round(60 / state.enrichReqPerMin);
-  const retryDelaySecs   = Math.round(60 / state.enrichRetryReqPerMin);
-  const rlPauseMins      = state.enrichRateLimitPause;
-
-  return `
-    <div class="section-header">
-      <div class="section-title">Import & Enrich</div>
-    </div>
-
-    <!-- ── Enrichment status overview ───────────────────────────────────── -->
-    ${state.items.length > 0 ? `
-      <div class="card" style="padding:14px 16px">
-        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:10px;font-size:13px">Enrichment Status</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
-          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(52,211,153,0.08);border-radius:6px">
-            <span style="color:var(--text-muted)">✓ Enriched</span>
-            <strong style="color:var(--success)">${enrichedCount.toLocaleString()}</strong>
-          </div>
-          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(251,191,36,0.08);border-radius:6px">
-            <span style="color:var(--text-muted)">⏳ Pending</span>
-            <strong style="color:var(--warning)">${pendingCount.toLocaleString()}</strong>
-          </div>
-          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(156,163,175,0.08);border-radius:6px">
-            <span style="color:var(--text-muted)">⚰️ Dead</span>
-            <strong style="color:var(--text-muted)">${deadCount.toLocaleString()}</strong>
-          </div>
-          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(99,102,241,0.08);border-radius:6px">
-            <span style="color:var(--text-muted)">🔄 Attempted</span>
-            <strong style="color:var(--accent2,#818cf8)">${attemptedCount.toLocaleString()}</strong>
-          </div>
-        </div>
-        ${attemptedCount > 0 ? `
-          <div style="margin-top:10px;font-size:12px;color:var(--text-muted);line-height:1.6">
-            ${thresholdCount > 0 ? `
-              <strong style="color:var(--text)">${thresholdCount.toLocaleString()}</strong> pending item${thresholdCount !== 1 ? 's have' : ' has'}
-              reached the ${state.enrichMaxAttempts}-attempt threshold.
-            ` : `
-              ${attemptedCount.toLocaleString()} pending item${attemptedCount !== 1 ? 's have' : ' has'} been attempted at least once.
-              None have yet reached the ${state.enrichMaxAttempts}-attempt threshold.
-            `}
-            ${hasRunBefore ? (lastRunClean
-              ? `<span style="color:var(--success)">✓ Last run was clean (no rate limits).</span>`
-              : `<span style="color:var(--warning)">⚠ Last run hit ${state.lastRunRateLimitHits} rate limit${state.lastRunRateLimitHits !== 1 ? 's' : ''} — attempted items may be rate-limited, not dead.</span>`
-            ) : ''}
-          </div>
-          ${thresholdCount > 0 ? `
-            <button class="btn ${lastRunClean ? 'btn-danger' : 'btn-ghost'} btn-sm"
-              style="margin-top:10px;width:100%;justify-content:center"
-              onclick="markAttemptedAsDead()"
-              ${!lastRunClean ? 'title="Last run had rate limits — confirm items are truly dead before marking"' : ''}>
-              ⚰️ Mark ${thresholdCount} item${thresholdCount !== 1 ? 's' : ''} as dead
-              ${!lastRunClean ? '(last run had rate limits)' : ''}
-            </button>
-          ` : ''}
-        ` : ''}
-      </div>
-    ` : ''}
-
-    <!-- CSV import drop zone -->
-    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()">
-      <div class="drop-zone-icon">📥</div>
-      <h3>Import Reddit CSV</h3>
-      <p>Tap to select your saved_posts.csv file<br>or drag and drop here</p>
-      <input type="file" id="csv-file" accept=".csv,.json" style="display:none">
-    </div>
-
-    <!-- ── Normal enrichment ───────────────────────────────────────────────── -->
-    ${needsEnrich > 0 || state.enriching ? `
-      <div class="card" style="border-color:rgba(251,191,36,0.3)">
-        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px;color:var(--warning)">
-          ⚡ Initial Enrichment — ${needsEnrich} item${needsEnrich !== 1 ? 's' : ''}
-        </div>
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
-          Fetches titles, subreddits, authors, and post dates from Reddit's public API.
-          Running at <strong style="color:var(--text)">${state.enrichReqPerMin} req/min</strong>
-          (1 request every ${normalDelaySecs}s) —
-          estimated <strong style="color:var(--text)">${enrichTimeEstimate(normalQueue, state.enrichReqPerMin)}</strong>
-          for ${needsEnrich > 0 ? needsEnrich.toLocaleString() + ' items' : '1000 items'}.
-          Leave this tab open and it will run unattended.
-        </p>
-        ${state.enriching ? `
-          <div id="enrich-progress-details">
-            <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
-            <div style="font-size:12px;color:var(--text-muted);text-align:center">Starting...</div>
-          </div>
-          <button class="btn btn-danger" style="width:100%;justify-content:center;margin-top:10px" onclick="stopEnrichment()">
-            ⏹ Pause
-          </button>
-          <p style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:6px">
-            Progress is saved after each item — safe to pause and resume.
-          </p>
-        ` : `
-          <button class="btn btn-warning" style="width:100%;justify-content:center" onclick="enrichAllItems(false)">
-            ⚡ Start Enrichment
-          </button>
-        `}
-      </div>
-    ` : state.items.length > 0 ? `
-      <div class="card" style="border-color:rgba(52,211,153,0.3)">
-        <div style="color:var(--success);font-weight:600;margin-bottom:4px">✓ Initial enrichment complete</div>
-        <div style="font-size:13px;color:var(--text-muted)">All items have been through the enrichment process.</div>
-      </div>
-    ` : ''}
-
-    <!-- ── Retry enrichment ────────────────────────────────────────────────── -->
-    ${attemptedCount > 0 && !state.enriching ? `
-      <div class="card" style="border-color:rgba(99,102,241,0.3)">
-        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px;color:var(--accent2,#818cf8)">
-          🔄 Retry Run — ${attemptedCount} item${attemptedCount !== 1 ? 's' : ''}
-        </div>
-        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
-          These items didn't return data on a previous run — possibly deleted posts, private
-          subreddits, or items that were rate-limited. Running slower at
-          <strong style="color:var(--text)">${state.enrichRetryReqPerMin} req/min</strong>
-          (1 request every ${retryDelaySecs}s) to reduce false rate-limit signals —
-          estimated <strong style="color:var(--text)">${enrichTimeEstimate(retryQueue, state.enrichRetryReqPerMin)}</strong>
-          for ${attemptedCount.toLocaleString()} items.
-        </p>
-        <button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="enrichAllItems(true)">
-          🔄 Start Retry Run
-        </button>
-      </div>
-    ` : ''}
-
-    <!-- ── Dead items summary ────────────────────────────────────────────── -->
-    ${deadCount > 0 ? `
-      <div class="card" style="border-color:rgba(156,163,175,0.3)">
-        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px;color:var(--text-muted)">
-          ⚰️ ${deadCount.toLocaleString()} Unavailable Item${deadCount !== 1 ? 's' : ''}
-        </div>
-        <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:0">
-          These items returned no data after multiple attempts — deleted posts, private
-          subreddits, or removed content. They are hidden from your library but remain in the
-          database. Toggle them visible in Browse using the ⚰️ filter.
-        </p>
-      </div>
-    ` : ''}
-
-    <!-- ── Enrichment speed settings ──────────────────────────────────────── -->
-    <div class="card">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px">⚙️ Enrichment Speed</div>
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6">
-        Reddit allows 10 req/min without OAuth. Max 10 recommended.
-        If you keep hitting rate limits, reduce these values.
-      </p>
-
-      <div style="display:grid;gap:12px">
-        <div>
-          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
-            Initial run speed (req/min, 1–10)
-          </label>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <input class="input" id="enrich-rpm" type="number" min="1" max="10"
-              value="${state.enrichReqPerMin}" style="width:70px"
-              oninput="updateSpeedHints()">
-            <span id="hint-normal" style="font-size:12px;color:var(--text-muted)">
-              every ${normalDelaySecs}s · ${enrichTimeEstimate(normalQueue, state.enrichReqPerMin)} for ${normalQueue.toLocaleString()} items
-            </span>
-          </div>
-        </div>
-
-        <div>
-          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
-            Retry run speed (req/min, 1–10)
-          </label>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <input class="input" id="enrich-retry-rpm" type="number" min="1" max="10"
-              value="${state.enrichRetryReqPerMin}" style="width:70px"
-              oninput="updateSpeedHints()">
-            <span id="hint-retry" style="font-size:12px;color:var(--text-muted)">
-              every ${retryDelaySecs}s · ${enrichTimeEstimate(retryQueue, state.enrichRetryReqPerMin)} for ${retryQueue.toLocaleString()} items
-            </span>
-          </div>
-        </div>
-
-        <div>
-          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
-            Rate limit pause (minutes, 1–30)
-          </label>
-          <div style="display:flex;align-items:center;gap:10px">
-            <input class="input" id="enrich-rl-pause" type="number" min="1" max="30"
-              value="${state.enrichRateLimitPause}" style="width:70px">
-            <span style="font-size:12px;color:var(--text-muted)">pause when a rate limit is detected</span>
-          </div>
-        </div>
-
-        <div>
-          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
-            Attempts before eligible for bulk-dead (1–20)
-          </label>
-          <div style="display:flex;align-items:center;gap:10px">
-            <input class="input" id="enrich-max-attempts" type="number" min="1" max="20"
-              value="${state.enrichMaxAttempts}" style="width:70px">
-            <span style="font-size:12px;color:var(--text-muted)">
-              items with this many failed attempts can be bulk-marked dead after a clean run
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <button class="btn btn-secondary" onclick="saveEnrichSettings()" style="width:100%;justify-content:center;margin-top:14px">
-        Save Settings
-      </button>
-    </div>
-
-    <!-- How to get Reddit data -->
-    <div class="card">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:10px">📋 How to get your Reddit data</div>
-      <ol style="font-size:13px;color:var(--text-muted);line-height:2.2;padding-left:18px">
-        <li>Go to <strong style="color:var(--text)">reddit.com/settings</strong></li>
-        <li>Click <strong style="color:var(--text)">"Data Request"</strong> or <strong style="color:var(--text)">"Request data archive"</strong></li>
-        <li>Wait for an email (a few hours to 24h)</li>
-        <li>Download and unzip the file</li>
-        <li>Find <strong style="color:var(--text)">saved_posts.csv</strong> inside</li>
-        <li>Import it above, then run <strong style="color:var(--text)">Initial Enrichment</strong></li>
-      </ol>
-    </div>
-
-    <!-- Backup restore -->
-    <div class="card">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:10px">🔄 Restore from Backup</div>
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Import a previously exported RedditVault .json backup file.</p>
-      <button class="btn btn-secondary" onclick="document.getElementById('csv-file').click()">Select .json Backup</button>
-    </div>
-
-    <div id="import-progress" style="display:none">
-      <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
-      <div style="font-size:13px;color:var(--text-muted);text-align:center" id="progress-label">Processing...</div>
-    </div>
-  `;
-}
 
 function updateSpeedHints() {
   const normalRpm  = Math.min(10, Math.max(1, parseInt(document.getElementById('enrich-rpm')?.value) || 8));
@@ -2635,7 +2384,111 @@ function renderSettings() {
           <span style="color:var(--text-muted)">${deadCount.toLocaleString()}</span>
         </div>
       </div>
-      <button class="btn btn-secondary" onclick="exportJSON()" style="width:100%;justify-content:center;margin-top:12px">⬇️ Export Local Backup</button>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-secondary" onclick="exportJSON()" style="flex:1;justify-content:center">⬇️ Export Backup</button>
+        <button class="btn btn-secondary" onclick="document.getElementById('csv-file').click()" style="flex:1;justify-content:center">⬆️ Restore Backup</button>
+      </div>
+      <input type="file" id="csv-file" accept=".csv,.json" style="display:none">
+    </div>
+
+    <!-- ── 4. IMPORT & ENRICH ────────────────────────────────────────────────── -->
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:4px">📥 Import & Enrich</div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
+        Import your Reddit saved posts from a CSV export, then enrich items with full metadata.
+        <span style="display:block;margin-top:4px">To get your CSV: go to <strong style="color:var(--text)">reddit.com/settings</strong> → Data Request → download and find <strong style="color:var(--text)">saved_posts.csv</strong>.</span>
+      </p>
+
+      <!-- Drop zone -->
+      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()" style="margin-bottom:12px">
+        <div class="drop-zone-icon">📥</div>
+        <h3>Import Reddit CSV</h3>
+        <p>Tap to select your saved_posts.csv file<br>or drag and drop here</p>
+      </div>
+
+      <!-- Enrichment status & run buttons — only shown when relevant -->
+      ${(() => {
+        const pendingCount   = state.items.filter(i => i.enrichStatus === 'pending').length;
+        const attemptedCount = state.items.filter(i => i.enrichStatus === 'pending' && (i.enrichAttempts || 0) > 0).length;
+        const thresholdCount = state.items.filter(i => i.enrichStatus === 'pending' && (i.enrichAttempts || 0) >= state.enrichMaxAttempts).length;
+        const lastRunClean   = state.lastRunRateLimitHits === 0;
+        const hasRunBefore   = state.lastRunRateLimitHits !== null;
+        const normalDelaySecs = Math.round(60 / state.enrichReqPerMin);
+        const retryDelaySecs  = Math.round(60 / state.enrichRetryReqPerMin);
+
+        if (pendingCount === 0 && !state.enriching) return `
+          <div style="font-size:13px;color:var(--success);padding:8px 0">✓ All items enriched</div>`;
+
+        return `
+          ${pendingCount > 0 || state.enriching ? `
+            <div style="background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.3);border-radius:10px;padding:12px;margin-bottom:10px">
+              <div style="font-weight:600;color:var(--warning);margin-bottom:6px;font-size:13px">⚡ ${pendingCount} item${pendingCount !== 1 ? 's' : ''} need enrichment</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+                ${state.enrichReqPerMin} req/min · 1 every ${normalDelaySecs}s · ~${enrichTimeEstimate(pendingCount || 1000, state.enrichReqPerMin)}
+              </div>
+              ${state.enriching ? `
+                <div id="enrich-progress-details">
+                  <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
+                  <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">Starting...</div>
+                </div>
+                <button class="btn btn-danger" style="width:100%;justify-content:center;margin-top:10px" onclick="stopEnrichment()">⏹ Pause</button>
+              ` : `
+                <button class="btn btn-warning" style="width:100%;justify-content:center" onclick="enrichAllItems(false)">⚡ Start Enrichment</button>
+              `}
+            </div>
+          ` : ''}
+          ${attemptedCount > 0 && !state.enriching ? `
+            <div style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.3);border-radius:10px;padding:12px;margin-bottom:10px">
+              <div style="font-weight:600;color:var(--accent2,#818cf8);margin-bottom:6px;font-size:13px">🔄 ${attemptedCount} item${attemptedCount !== 1 ? 's' : ''} to retry</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+                ${state.enrichRetryReqPerMin} req/min · 1 every ${retryDelaySecs}s · ~${enrichTimeEstimate(attemptedCount, state.enrichRetryReqPerMin)}
+                ${hasRunBefore ? (lastRunClean
+                  ? ' · <span style="color:var(--success)">Last run clean</span>'
+                  : ` · <span style="color:var(--warning)">Last run: ${state.lastRunRateLimitHits} rate limit${state.lastRunRateLimitHits !== 1 ? 's' : ''}</span>`) : ''}
+              </div>
+              <button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="enrichAllItems(true)">🔄 Start Retry Run</button>
+              ${thresholdCount > 0 ? `
+                <button class="btn ${lastRunClean ? 'btn-danger' : 'btn-ghost'} btn-sm" style="width:100%;justify-content:center;margin-top:8px" onclick="markAttemptedAsDead()">
+                  ⚰️ Mark ${thresholdCount} as dead ${!lastRunClean ? '(last run had rate limits)' : ''}
+                </button>` : ''}
+            </div>
+          ` : ''}`;
+      })()}
+
+      <!-- Enrichment speed settings -->
+      <details style="margin-top:4px">
+        <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:4px 0">⚙️ Enrichment speed settings</summary>
+        <div style="margin-top:10px;display:grid;gap:10px">
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Initial run (req/min, 1–10)</label>
+            <div style="display:flex;align-items:center;gap:10px">
+              <input class="input" id="enrich-rpm" type="number" min="1" max="10" value="${state.enrichReqPerMin}" style="width:70px" oninput="updateSpeedHints()">
+              <span id="hint-normal" style="font-size:12px;color:var(--text-muted)">every ${Math.round(60/state.enrichReqPerMin)}s</span>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Retry run (req/min, 1–10)</label>
+            <div style="display:flex;align-items:center;gap:10px">
+              <input class="input" id="enrich-retry-rpm" type="number" min="1" max="10" value="${state.enrichRetryReqPerMin}" style="width:70px" oninput="updateSpeedHints()">
+              <span id="hint-retry" style="font-size:12px;color:var(--text-muted)">every ${Math.round(60/state.enrichRetryReqPerMin)}s</span>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Rate limit pause (minutes)</label>
+            <input class="input" id="enrich-rl-pause" type="number" min="1" max="30" value="${state.enrichRateLimitPause}" style="width:70px">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Attempts before bulk-dead</label>
+            <input class="input" id="enrich-max-attempts" type="number" min="1" max="20" value="${state.enrichMaxAttempts}" style="width:70px">
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="saveEnrichSettings()" style="width:100%;justify-content:center">Save Speed Settings</button>
+        </div>
+      </details>
+
+      <div id="import-progress" style="display:none;margin-top:10px">
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+        <div style="font-size:13px;color:var(--text-muted);text-align:center" id="progress-label">Processing...</div>
+      </div>
     </div>
 
     <!-- ── 4. CONNECTION SETTINGS ─────────────────────────────────────────── -->
