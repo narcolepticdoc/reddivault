@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.11';
+const APP_VERSION = '0.7.12';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2842,12 +2842,11 @@ async function syncFromFeed() {
 
   try {
     while (pages < MAX_PAGES) {
-      // Build URL — rewrite to www.reddit.com for CORS compatibility (old.reddit.com blocks cross-origin fetches)
-      let url = state.redditFeedUrl
-        .replace('old.reddit.com', 'www.reddit.com')
-        .replace('https://reddit.com/', 'https://www.reddit.com/');
-      url += (url.includes('?') ? '&' : '?') + 'limit=25';
-      if (after) url += `&after=${encodeURIComponent(after)}`;
+      // Route through our Vercel proxy to avoid CORS — Reddit blocks direct cross-origin fetches
+      let feedUrl = state.redditFeedUrl;
+      feedUrl += (feedUrl.includes('?') ? '&' : '?') + 'limit=25';
+      if (after) feedUrl += `&after=${encodeURIComponent(after)}`;
+      const url = `/api/reddit-feed?url=${encodeURIComponent(feedUrl)}`;
 
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status} — check your feed URL is correct`);
