@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.8.2';
+const APP_VERSION = '0.8.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -352,28 +352,25 @@ db.version(4).stores({
   folders: '++id, name, icon, createdAt',
   config: 'key'
 });
-// Version 6: adds lists (static + smart) and item_lists junction table. Folders deprecated.
-db.version(6).stores({
-  items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt',
-  folders: '++id, name, icon, createdAt',
-  lists: '++id, name, type, createdAt',  // type: 'static' | 'smart'
-  item_lists: '++id, itemId, listId',    // junction table
-  config: 'key'
-});
+db.version(5).stores({
   items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt',
   folders: '++id, name, icon, createdAt',
   config: 'key'
 }).upgrade(tx => {
-  // Clean-slate migration: only items with BOTH a title and subreddit are
-  // considered definitively enriched. Everything else goes back to pending
-  // with a fresh attempt counter, since previous runs may have left the
-  // data in an inconsistent state.
   return tx.table('items').toCollection().modify(item => {
     const definitelyEnriched = !!(item.title && item.title.trim() && item.subreddit && item.subreddit.trim());
     item.enrichStatus   = definitelyEnriched ? 'enriched' : 'pending';
     item.enriched       = definitelyEnriched;
-    item.enrichAttempts = 0; // reset all counters — fresh start
+    item.enrichAttempts = 0;
   });
+});
+// Version 6: adds lists (static + smart) and item_lists junction table. Folders deprecated.
+db.version(6).stores({
+  items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt',
+  folders: '++id, name, icon, createdAt',
+  lists: '++id, name, type, createdAt',
+  item_lists: '++id, itemId, listId',
+  config: 'key'
 });
 
 // ─── STATE ──────────────────────────────────────────────────────────────────
