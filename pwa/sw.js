@@ -1,4 +1,4 @@
-const VERSION = '0.7.13';
+const VERSION = '0.7.14';
 const CACHE = `reddivault-${VERSION}`;
 
 const ASSETS = [
@@ -9,17 +9,13 @@ const ASSETS = [
   'https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js',
 ];
 
-// Install: cache core assets, activate immediately
 self.addEventListener('install', e => {
   e.waitUntil(
-    caches.open(CACHE)
-      .then(c => c.addAll(ASSETS))
-      .catch(() => {})
+    caches.open(CACHE).then(c => c.addAll(ASSETS)).catch(() => {})
   );
   self.skipWaiting();
 });
 
-// Activate: delete all old caches
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys().then(keys =>
@@ -29,20 +25,21 @@ self.addEventListener('activate', e => {
   self.clients.claim();
 });
 
-// Fetch: pass through all external API calls, cache-first for app assets
 self.addEventListener('fetch', e => {
   const url = e.request.url;
 
-  // Never intercept external API calls — let them go straight to network
-  if (url.includes('supabase.co') || url.includes('reddit.com')) return;
+  // External API calls — pass through by responding with a direct network fetch
+  if (url.includes('supabase.co') || url.includes('reddit.com')) {
+    e.respondWith(fetch(e.request));
+    return;
+  }
 
-  // Main app HTML — network first so updates are instant, fall back to cache offline
+  // Main app HTML — network first, cache fallback
   if (url.endsWith('/') || url.includes('index.html')) {
     e.respondWith(
       fetch(e.request)
         .then(res => {
-          const clone = res.clone();
-          caches.open(CACHE).then(c => c.put(e.request, clone));
+          caches.open(CACHE).then(c => c.put(e.request, res.clone()));
           return res;
         })
         .catch(() => caches.match(e.request))
@@ -50,15 +47,12 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Everything else (CDN assets etc) — cache first, fall back to network
+  // CDN assets — cache first, network fallback
   e.respondWith(
     caches.match(e.request).then(cached => {
       if (cached) return cached;
       return fetch(e.request).then(res => {
-        if (res.ok) {
-          const clone = res.clone();
-          caches.open(CACHE).then(c => c.put(e.request, clone));
-        }
+        if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
         return res;
       });
     })

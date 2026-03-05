@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.13';
+const APP_VERSION = '0.7.14';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -407,6 +407,7 @@ let state = {
   sortBy: 'postCreatedAt', // savedAt | postCreatedAt | score | subreddit | title
   sortDir: 'desc',       // asc | desc
   redditFeedUrl: '',     // private Reddit JSON feed URL (from old.reddit.com/prefs/feeds)
+  feedProxyUrl: '',      // Cloudflare Worker proxy URL
   feedSyncing: false,    // true while feed sync is running
   feedSyncResult: null,  // { added, skipped, pages, error } from last run
 };
@@ -446,6 +447,8 @@ async function loadConfig() {
     if (favs) state.favoriteSearches = favs.value || [];
     const feedUrl = await db.config.get('redditFeedUrl');
     if (feedUrl) state.redditFeedUrl = feedUrl.value;
+    const proxyUrl = await db.config.get('feedProxyUrl');
+    if (proxyUrl) state.feedProxyUrl = proxyUrl.value;
   } catch(e) {}
 }
 
@@ -2595,8 +2598,13 @@ function renderSettings() {
       </p>
       <div class="form-group">
         <label>Private Feed URL</label>
-        <input class="input" id="feed-url" placeholder="https://old.reddit.com/saved.json?feed=…&user=…"
+        <input class="input" id="feed-url" placeholder="https://old.reddit.com/.json?feed=…&user=…"
           value="${escHtml(state.redditFeedUrl)}" style="font-size:12px">
+      </div>
+      <div class="form-group">
+        <label>Proxy URL <span style="font-size:11px;color:var(--text-muted)">(Cloudflare Worker)</span></label>
+        <input class="input" id="feed-proxy-url" placeholder="https://your-worker.workers.dev"
+          value="${escHtml(state.feedProxyUrl)}" style="font-size:12px">
       </div>
       <div style="display:flex;gap:8px">
         <button class="btn btn-secondary" onclick="saveFeedUrl()" style="flex:1;justify-content:center">Save URL</button>
@@ -2813,16 +2821,21 @@ async function saveSupabaseConfig() {
 async function saveFeedUrl() {
   const raw = document.getElementById('feed-url')?.value?.trim();
   if (!raw) { showToast('Please paste your Reddit feed URL', 'error'); return; }
-  // Accept full URL or just the feed=...&user=... params
   let feedUrl = raw;
-  // Validate: must contain a feed= param and be a reddit URL
   if (!feedUrl.includes('feed=') || !feedUrl.includes('reddit.com')) {
     showToast('URL should be from reddit.com and contain a feed= parameter — copy it from old.reddit.com/prefs/feeds/', 'error');
     return;
   }
   await db.config.put({ key: 'redditFeedUrl', value: feedUrl });
   state.redditFeedUrl = feedUrl;
-  showToast('Feed URL saved!', 'success');
+
+  const proxyRaw = document.getElementById('feed-proxy-url')?.value?.trim();
+  if (proxyRaw) {
+    await db.config.put({ key: 'feedProxyUrl', value: proxyRaw });
+    state.feedProxyUrl = proxyRaw;
+  }
+
+  showToast('Settings saved!', 'success');
   render();
 }
 
@@ -2842,17 +2855,13 @@ async function syncFromFeed() {
 
   try {
     while (pages < MAX_PAGES) {
-      // Fetch directly — the feed token in the URL is the auth, no cookies needed.
-      // Use minimal fetch options to avoid triggering a CORS preflight.
       let feedUrl = state.redditFeedUrl;
-      // Normalise to www.reddit.com which has CORS headers; old.reddit.com does not
-      feedUrl = feedUrl
-        .replace('https://old.reddit.com', 'https://www.reddit.com')
-        .replace('https://reddit.com', 'https://www.reddit.com');
       feedUrl += (feedUrl.includes('?') ? '&' : '?') + 'limit=25';
       if (after) feedUrl += `&after=${encodeURIComponent(after)}`;
 
-      const res = await fetch(feedUrl);  // simple GET, no custom headers
+      // Route through proxy (required — Reddit blocks direct cross-origin fetches)
+      const proxyBase = state.feedProxyUrl || '/api/reddit-feed';
+      const url = `${proxyBase}?url=${encodeURIComponent(feedUrl)}`;
       if (!res.ok) throw new Error(`HTTP ${res.status} — check your feed URL is correct`);
       const json = await res.json();
 
