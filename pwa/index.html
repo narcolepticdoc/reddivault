@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.18';
+const APP_VERSION = '0.7.20';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -410,6 +410,7 @@ let state = {
   feedProxyUrl: '',      // Cloudflare Worker proxy URL
   feedSyncing: false,    // true while feed sync is running
   feedSyncResult: null,  // { added, skipped, pages, error } from last run
+  showDevTools: false,   // show legacy repair/troubleshooting controls
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -839,16 +840,22 @@ async function pullPreferences() {
     const rows = await supabaseFetch('/user_preferences?select=*');
     for (const row of rows) {
       if (row.key === 'favoriteSearches' && Array.isArray(row.value)) {
-        // Merge cloud favs with local — union of both, cloud wins on conflict
         const merged = [...new Set([...row.value, ...state.favoriteSearches])];
         state.favoriteSearches = merged;
         await db.config.put({ key: 'favoriteSearches', value: merged });
       }
       if (row.key === 'recentSearches' && Array.isArray(row.value)) {
-        // Merge recents, deduplicate, cap at 20
         const merged = [...new Set([...row.value, ...state.recentSearches])].slice(0, 20);
         state.recentSearches = merged;
         await db.config.put({ key: 'recentSearches', value: merged });
+      }
+      if (row.key === 'redditFeedUrl' && row.value) {
+        state.redditFeedUrl = row.value;
+        await db.config.put({ key: 'redditFeedUrl', value: row.value });
+      }
+      if (row.key === 'feedProxyUrl' && row.value) {
+        state.feedProxyUrl = row.value;
+        await db.config.put({ key: 'feedProxyUrl', value: row.value });
       }
     }
   } catch(e) {
@@ -2563,66 +2570,27 @@ function updateSpeedHints() {
 function renderSettings() {
   const lastSyncStr = state.lastSync ? new Date(state.lastSync).toLocaleString() : 'Never';
   const unenriched = state.items.filter(i => i.enrichStatus === 'pending').length;
+  const deadCount = state.items.filter(i => i.enrichStatus === 'dead').length;
 
   return `
     <div class="section-title" style="margin-bottom:16px">Settings</div>
 
+    <!-- ── 1. DAILY SYNC ─────────────────────────────────────────────────── -->
     <div class="config-section">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">☁️ Cloud Sync (Supabase)</div>
-      <div class="sync-status">
-        <div class="status-dot ${state.syncStatus}"></div>
-        <span>${state.syncStatus === 'connected' ? 'Connected' : state.syncStatus === 'syncing' ? 'Syncing...' : 'Not connected'}</span>
-        ${state.lastSync ? `<span style="margin-left:auto;color:var(--text-muted);font-size:11px">Last: ${lastSyncStr}</span>` : ''}
-      </div>
-      <div class="form-group">
-        <label>Supabase Project URL</label>
-        <input class="input" id="sb-url" placeholder="https://xxxx.supabase.co" value="${escHtml(state.supabaseUrl)}">
-      </div>
-      <div class="form-group">
-        <label>Supabase Anon Key</label>
-        <input class="input" id="sb-key" type="password" placeholder="eyJhbGc..." value="${escHtml(state.supabaseKey)}">
-      </div>
-      <button class="btn btn-primary" onclick="saveSupabaseConfig()" style="width:100%;justify-content:center">Save & Test Connection</button>
-      ${state.supabaseUrl ? `
-        <button class="btn btn-secondary" onclick="pushAllToSupabase()" style="width:100%;justify-content:center;margin-top:8px">
-          ☁️ Push all local data to cloud
-        </button>
-      ` : ''}
-    </div>
-
-    <div class="config-section">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:4px">📡 Reddit Feed Sync</div>
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:4px">🔄 Sync New Saves</div>
       <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
-        Sync new saves directly from Reddit — no extension needed. Works on mobile.
-        Get your private feed URL from <strong style="color:var(--text)">old.reddit.com/prefs/feeds/</strong> → enable private RSS feeds → copy the <strong style="color:var(--text)">saved.json</strong> URL.
+        Pulls your most recent Reddit saves directly into RedditVault. Run this whenever you've saved new items on Reddit.
       </p>
-      <div class="form-group">
-        <label>Private Feed URL</label>
-        <input class="input" id="feed-url" placeholder="https://old.reddit.com/.json?feed=…&user=…"
-          value="${escHtml(state.redditFeedUrl)}" style="font-size:12px">
-      </div>
-      <div class="form-group">
-        <label>Proxy URL <span style="font-size:11px;color:var(--text-muted)">(Cloudflare Worker)</span></label>
-        <input class="input" id="feed-proxy-url" placeholder="https://your-worker.workers.dev"
-          value="${escHtml(state.feedProxyUrl)}" style="font-size:12px">
-      </div>
-      <div style="display:flex;gap:8px">
-        <button class="btn btn-secondary" onclick="saveFeedUrl()" style="flex:1;justify-content:center">Save URL</button>
-        <button class="btn btn-primary" onclick="syncFromFeed()" style="flex:1;justify-content:center"
-          ${state.feedSyncing ? 'disabled' : ''}>
-          ${state.feedSyncing ? '⏳ Syncing…' : '🔄 Sync Now'}
-        </button>
-      </div>
-      ${state.items.some(i => i.source === 'feed') ? `
-        <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:8px;color:var(--danger)"
-          onclick="removeFeedItems()">🗑️ Remove all feed-imported items (${state.items.filter(i => i.source === 'feed').length})</button>
-      ` : ''}
+      <button class="btn btn-primary" onclick="syncFromFeed()" style="width:100%;justify-content:center"
+        ${state.feedSyncing ? 'disabled' : ''}>
+        ${state.feedSyncing ? '⏳ Syncing…' : '🔄 Sync Now'}
+      </button>
       ${state.feedSyncResult ? `
         <div style="margin-top:10px;font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:8px;padding:10px;line-height:2">
           ${state.feedSyncResult.error
             ? `<span style="color:var(--danger)">❌ ${escHtml(state.feedSyncResult.error)}</span>`
-            : `✅ <strong style="color:var(--text)">${state.feedSyncResult.added}</strong> new · 
-               <strong style="color:var(--text)">${state.feedSyncResult.skipped}</strong> already saved · 
+            : `✅ <strong style="color:var(--text)">${state.feedSyncResult.added}</strong> new &nbsp;·&nbsp;
+               <strong style="color:var(--text)">${state.feedSyncResult.skipped}</strong> already saved &nbsp;·&nbsp;
                <strong style="color:var(--text)">${state.feedSyncResult.pages}</strong> page${state.feedSyncResult.pages !== 1 ? 's' : ''} fetched
                ${state.feedSyncResult.added > 0 && state.feedSyncResult.skipped === 0 && state.feedSyncResult.pages >= 40
                  ? `<br><span style="color:var(--warning)">⚠️ No overlap found — you may have saves beyond Reddit's 1000-item limit. Consider a fresh CSV export.</span>`
@@ -2630,16 +2598,30 @@ function renderSettings() {
           }
         </div>
       ` : ''}
+      ${!state.redditFeedUrl ? `
+        <p style="font-size:12px;color:var(--warning);margin-top:8px">⚠️ No feed URL configured — see Connection Settings below.</p>
+      ` : ''}
     </div>
 
+    <!-- ── 2. CLOUD SYNC ──────────────────────────────────────────────────── -->
     <div class="config-section">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">💾 Local Backup</div>
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Export all your data as a JSON backup. Use to transfer between devices or as a safety backup.</p>
-      <button class="btn btn-secondary" onclick="exportJSON()" style="width:100%;justify-content:center">⬇️ Export Backup JSON</button>
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px">☁️ Cloud Database</div>
+      <div class="sync-status" style="margin-bottom:10px">
+        <div class="status-dot ${state.syncStatus}"></div>
+        <span>${state.syncStatus === 'connected' ? 'Connected' : state.syncStatus === 'syncing' ? 'Syncing...' : 'Not connected'}</span>
+        ${state.lastSync ? `<span style="margin-left:auto;color:var(--text-muted);font-size:11px">Last: ${lastSyncStr}</span>` : ''}
+      </div>
+      ${state.supabaseUrl ? `
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-secondary" onclick="syncFromSupabase()" style="flex:1;justify-content:center">⬇️ Pull from Cloud</button>
+          <button class="btn btn-secondary" onclick="pushAllToSupabase()" style="flex:1;justify-content:center">⬆️ Push to Cloud</button>
+        </div>
+      ` : ''}
     </div>
 
+    <!-- ── 3. LIBRARY STATS ───────────────────────────────────────────────── -->
     <div class="config-section">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">📊 Library Stats</div>
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">📊 Library</div>
       <div style="font-size:13px;line-height:2.2">
         <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Total items</span><span>${state.items.length.toLocaleString()}</span></div>
         <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Posts</span><span>${state.items.filter(i=>i.type==='post').length.toLocaleString()}</span></div>
@@ -2649,29 +2631,68 @@ function renderSettings() {
         <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Need enrichment</span>
           <span style="${unenriched>0?'color:var(--warning)':''}">${unenriched}</span>
         </div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unavailable (dead)</span>
-          <span style="${state.items.filter(i=>i.enrichStatus==='dead').length>0?'color:var(--text-muted)':''}">${state.items.filter(i=>i.enrichStatus==='dead').length.toLocaleString()}</span>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unavailable</span>
+          <span style="color:var(--text-muted)">${deadCount.toLocaleString()}</span>
         </div>
       </div>
-      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:12px"
-        onclick="repairItemTypes()" title="Re-evaluates post vs comment type for all items from their permalink">
-        🔧 Repair Post/Comment Types
-      </button>
-      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:8px"
-        onclick="if(confirm('This will normalise CSV item IDs, merge duplicates with extension items, and queue affected items for re-enrichment. Continue?'))repairCSVDuplicates()"
-        title="Fix duplicate items caused by CSV imports having bare IDs vs extension t3_/t1_ prefixed IDs">
-        🔧 Repair CSV Duplicates & Re-enrich
-      </button>
-      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:8px"
-        onclick="if(confirm('Reset ALL items to pending enrichment so they are re-fetched from Reddit with corrected type detection. This will queue everything — only do this if your enriched data looks wrong.'))resetAllEnrichment()"
-        title="Re-queue all items for enrichment">
-        🔄 Re-enrich Entire Library
-      </button>
+      <button class="btn btn-secondary" onclick="exportJSON()" style="width:100%;justify-content:center;margin-top:12px">⬇️ Export Local Backup</button>
     </div>
 
+    <!-- ── 4. CONNECTION SETTINGS ─────────────────────────────────────────── -->
     <div class="config-section">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px;color:var(--danger)">⚠️ Danger Zone</div>
-      <button class="btn btn-danger" style="width:100%;justify-content:center" onclick="if(confirm('Delete ALL local data? Make sure you have a backup first!'))clearAllData()">Clear All Local Data</button>
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">🔌 Connection Settings</div>
+
+      <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;letter-spacing:0.04em">REDDIT FEED</div>
+      <div class="form-group">
+        <label>Private Feed URL</label>
+        <input class="input" id="feed-url" placeholder="https://old.reddit.com/.json?feed=…&user=…"
+          value="${escHtml(state.redditFeedUrl)}" style="font-size:12px">
+        <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → enable private RSS feeds</span>
+      </div>
+      <div class="form-group">
+        <label>Proxy URL <span style="font-size:11px;color:var(--text-muted)">(Cloudflare Worker)</span></label>
+        <input class="input" id="feed-proxy-url" placeholder="https://your-worker.workers.dev"
+          value="${escHtml(state.feedProxyUrl)}" style="font-size:12px">
+      </div>
+      <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center;margin-bottom:16px">Save Feed Settings</button>
+
+      <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;letter-spacing:0.04em">SUPABASE CLOUD DB</div>
+      <div class="form-group">
+        <label>Project URL</label>
+        <input class="input" id="sb-url" placeholder="https://xxxx.supabase.co" value="${escHtml(state.supabaseUrl)}">
+      </div>
+      <div class="form-group">
+        <label>Anon Key</label>
+        <input class="input" id="sb-key" type="password" placeholder="eyJhbGc..." value="${escHtml(state.supabaseKey)}">
+      </div>
+      <button class="btn btn-secondary" onclick="saveSupabaseConfig()" style="width:100%;justify-content:center">Save & Test Connection</button>
+    </div>
+
+    <!-- ── 5. TROUBLESHOOTING ─────────────────────────────────────────────── -->
+    <div class="config-section">
+      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;opacity:0.6"
+        onclick="state.showDevTools=!state.showDevTools;render()">
+        ${state.showDevTools ? '🔧 Hide Troubleshooting Tools' : '🔧 Show Troubleshooting Tools'}
+      </button>
+      ${state.showDevTools ? `
+        <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:11px;color:var(--text-muted)">These tools were used during initial setup and should rarely be needed.</div>
+          <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
+            onclick="repairItemTypes()">🔧 Repair Post/Comment Types</button>
+          <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
+            onclick="if(confirm('Normalise CSV item IDs, merge duplicates and re-queue for enrichment. Continue?'))repairCSVDuplicates()">
+            🔧 Repair CSV Duplicates & Re-enrich</button>
+          <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
+            onclick="if(confirm('Reset ALL items to pending — re-fetches everything from Reddit. Continue?'))resetAllEnrichment()">
+            🔄 Re-enrich Entire Library</button>
+          ${state.items.some(i => i.source === 'feed') ? `
+            <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;color:var(--danger)"
+              onclick="removeFeedItems()">🗑️ Remove feed-imported items (${state.items.filter(i => i.source === 'feed').length})</button>
+          ` : ''}
+          <button class="btn btn-danger" style="width:100%;justify-content:center;margin-top:4px"
+            onclick="if(confirm('Delete ALL local data? Make sure you have a backup first!'))clearAllData()">⚠️ Clear All Local Data</button>
+        </div>
+      ` : ''}
     </div>
 
     <div style="text-align:center;padding:16px 0 4px;font-size:12px;color:var(--border)">
@@ -2841,6 +2862,10 @@ async function saveFeedUrl() {
     await db.config.put({ key: 'feedProxyUrl', value: proxyRaw });
     state.feedProxyUrl = proxyRaw;
   }
+
+  // Sync to cloud
+  await pushPreference('redditFeedUrl', feedUrl);
+  if (proxyRaw) await pushPreference('feedProxyUrl', proxyRaw);
 
   showToast('Settings saved!', 'success');
   render();
