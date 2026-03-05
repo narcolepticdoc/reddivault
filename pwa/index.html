@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.4';
+const APP_VERSION = '0.7.5';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1014,12 +1014,28 @@ async function resetAllEnrichment() {
 }
 
 async function repairCSVDuplicates() {
-  // CSV items have bare IDs (abc123); extension items have prefixed IDs (t3_abc123).
-  // This finds pairs where one is a duplicate of the other, keeps the prefixed
-  // (extension) version which has correct data, deletes the bare-ID (CSV) version,
-  // then marks all remaining bare-ID items for re-enrichment with corrected IDs.
-
   const allItems = await db.items.toArray();
+
+  // Diagnostic — show what ID formats we actually have
+  const prefixed = allItems.filter(i => /^t[13]_/.test(i.redditId || ''));
+  const bare     = allItems.filter(i => !/^t[13]_/.test(i.redditId || '') && i.redditId);
+  const enrichedAsComment = allItems.filter(i =>
+    i.type === 'comment' &&
+    (i.permalink || i.url || '').replace(/^https?:\/\/[^/]+/, '').split('/').filter(Boolean).length <= 5
+  );
+
+  console.log(`Total: ${allItems.length} | Prefixed IDs: ${prefixed.length} | Bare IDs: ${bare.length} | Posts stored as comments: ${enrichedAsComment.length}`);
+  if (bare.length > 0) console.log('Sample bare IDs:', bare.slice(0,3).map(i => i.redditId));
+  if (enrichedAsComment.length > 0) console.log('Sample mistyped:', enrichedAsComment.slice(0,3).map(i => ({id: i.redditId, permalink: i.permalink})));
+
+  showToast(
+    `Found: ${prefixed.length} prefixed IDs, ${bare.length} bare IDs, ${enrichedAsComment.length} posts stored as comments — check console for details`,
+    bare.length > 0 || enrichedAsComment.length > 0 ? 'warning' : 'success'
+  );
+
+  if (bare.length === 0 && enrichedAsComment.length === 0) return;
+
+  // CSV items have bare IDs (abc123); extension items have prefixed IDs (t3_abc123).
   let merged = 0, renumbered = 0, markedForReenrich = 0;
 
   // Build a map of bare-id -> prefixed item (extension version)
