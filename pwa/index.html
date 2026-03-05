@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.15';
+const APP_VERSION = '0.7.17';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2619,7 +2619,10 @@ function renderSettings() {
             ? `<span style="color:var(--danger)">❌ ${escHtml(state.feedSyncResult.error)}</span>`
             : `✅ <strong style="color:var(--text)">${state.feedSyncResult.added}</strong> new · 
                <strong style="color:var(--text)">${state.feedSyncResult.skipped}</strong> already saved · 
-               <strong style="color:var(--text)">${state.feedSyncResult.pages}</strong> page${state.feedSyncResult.pages !== 1 ? 's' : ''} fetched`
+               <strong style="color:var(--text)">${state.feedSyncResult.pages}</strong> page${state.feedSyncResult.pages !== 1 ? 's' : ''} fetched
+               ${state.feedSyncResult.added > 0 && state.feedSyncResult.skipped === 0 && state.feedSyncResult.pages >= 40
+                 ? `<br><span style="color:var(--warning)">⚠️ No overlap found — you may have saves beyond Reddit's 1000-item limit. Consider a fresh CSV export.</span>`
+                 : ''}`
           }
         </div>
       ` : ''}
@@ -2851,7 +2854,7 @@ async function syncFromFeed() {
   const MAX_PAGES = 40; // safety cap — 40 × 25 = 1000 items
 
   // Build set of existing reddit_ids for fast dedup
-  const existing = new Set(state.items.map(i => i.reddit_id));
+  const existing = new Set(state.items.map(i => i.redditId));
 
   try {
     while (pages < MAX_PAGES) {
@@ -2881,12 +2884,10 @@ async function syncFromFeed() {
           continue;
         }
 
-        // Derive type from kind or permalink
         const type = kind === 't1' ? 'comment' : 'post';
 
-        // Build item — data is already fully enriched from the feed
         const item = {
-          reddit_id: redditId,
+          redditId,
           type,
           title: d.title || (type === 'comment' ? `Comment in r/${d.subreddit}` : ''),
           body: type === 'comment' ? (d.body || '') : (d.selftext || ''),
@@ -2895,11 +2896,11 @@ async function syncFromFeed() {
           url: d.url || `https://reddit.com${d.permalink}`,
           permalink: d.permalink ? `https://reddit.com${d.permalink}` : '',
           score: d.score || 0,
-          saved_at: new Date().toISOString(), // time of this sync
-          post_created_at: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,
+          savedAt: new Date().toISOString(),
+          postCreatedAt: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,
           folder: '',
           enriched: true,
-          enrichStatus: 'done',
+          enrichStatus: 'enriched',
           source: 'feed',
         };
 
@@ -2908,13 +2909,9 @@ async function syncFromFeed() {
       }
 
       if (newItems.length > 0) {
-        const ids = await db.items.bulkAdd(newItems, { allKeys: true });
-        // Push to Supabase if connected
+        await db.items.bulkAdd(newItems);
         if (state.supabaseUrl && state.supabaseKey) {
-          const withIds = newItems.map((item, i) => ({ ...item, id: ids[i] }));
-          for (const item of withIds) {
-            try { await supabaseUpsert('/reddit_saves', [item]); } catch(e) {}
-          }
+          await pushToSupabase(newItems);
         }
         added += newItems.length;
       }
@@ -2931,8 +2928,13 @@ async function syncFromFeed() {
 
     await loadData();
     state.feedSyncResult = { added, skipped, pages };
-    if (added > 0) showToast(`✅ Sync complete — ${added} new item${added !== 1 ? 's' : ''} added`, 'success');
-    else showToast(`✅ Up to date — no new items found`, 'success');
+    if (added > 0 && skipped === 0 && pages >= MAX_PAGES) {
+      showToast(`⚠️ ${added} items added but no overlap found — you may have unseen saves beyond Reddit's limit. Consider a fresh CSV export.`, 'warning');
+    } else if (added > 0) {
+      showToast(`✅ Sync complete — ${added} new item${added !== 1 ? 's' : ''} added`, 'success');
+    } else {
+      showToast(`✅ Up to date — no new items found`, 'success');
+    }
 
   } catch(e) {
     state.feedSyncResult = { added, skipped, pages, error: e.message };
