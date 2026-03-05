@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.1';
+const APP_VERSION = '0.7.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -396,11 +396,13 @@ let state = {
   enrichRateLimitPause: 5,     // minutes to pause when rate limited
   enrichMaxAttempts: 3,        // attempts before user can bulk-mark as dead
   lastRunRateLimitHits: null,  // null = no run yet, 0 = clean last run, N = had issues
+  authorFreq: {},        // author -> save count, rebuilt on loadData
   recentSearches: [],    // last 20 unique queries, persisted
   favoriteSearches: [],  // user-starred queries, persisted
   searchFocused: false,  // controls recents visibility
   editingFavs: false,    // edit mode for favorites section
   showTrash: false,      // toggle trash view in browse
+  showAuthorList: false, // toggle author frequency panel
   filterFavourite: false, // show only favourited items
   sortBy: 'postCreatedAt', // savedAt | postCreatedAt | score | subreddit | title
   sortDir: 'desc',       // asc | desc
@@ -445,6 +447,13 @@ async function loadConfig() {
 async function loadData() {
   state.items = await db.items.orderBy('savedAt').reverse().toArray();
   state.folders = await db.folders.toArray();
+  // Build author frequency map — excludes deleted/unknown authors
+  state.authorFreq = {};
+  for (const item of state.items) {
+    if (item.author && item.author !== '[deleted]' && item.author !== 'AutoModerator') {
+      state.authorFreq[item.author] = (state.authorFreq[item.author] || 0) + 1;
+    }
+  }
 }
 
 // ─── ENRICHMENT ──────────────────────────────────────────────────────────────
@@ -1560,11 +1569,60 @@ function renderTrashView() {
   `;
 }
 
+function renderAuthorList() {
+  // Build sorted author list — min 2 saves, sorted by count desc
+  const authors = Object.entries(state.authorFreq)
+    .filter(([_, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1]);
+
+  if (authors.length === 0) {
+    return `<div class="empty"><div class="empty-icon">👤</div><h3>No repeat authors yet</h3>
+      <p>Authors you've saved 2 or more times will appear here.</p>
+      <button class="btn btn-ghost btn-sm" style="margin-top:12px" onclick="state.showAuthorList=false;render()">← Back</button>
+    </div>`;
+  }
+
+  // Group into tiers
+  const tiers = [
+    { label: '🏆 10+ saves', min: 10, items: authors.filter(([_,c]) => c >= 10) },
+    { label: '⭐ 5–9 saves',  min: 5,  items: authors.filter(([_,c]) => c >= 5 && c < 10) },
+    { label: '👤 2–4 saves',  min: 2,  items: authors.filter(([_,c]) => c >= 2 && c < 5) },
+  ].filter(t => t.items.length > 0);
+
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:18px">Frequent Authors</div>
+      <button class="btn btn-ghost btn-sm" onclick="state.showAuthorList=false;render()">← Back</button>
+    </div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
+      ${authors.length} author${authors.length!==1?'s':''} saved multiple times. Tap any to search their posts.
+    </p>
+    ${tiers.map(tier => `
+      <div style="margin-bottom:20px">
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${tier.label}</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${tier.items.map(([author, count]) => `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;cursor:pointer"
+              onclick="state.showAuthorList=false;applySearch('u/${escHtml(author)}')">
+              <span style="font-size:14px;color:var(--text)">u/${escHtml(author)}</span>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:12px;color:var(--text-muted)">${count} save${count!==1?'s':''}</span>
+                <span style="font-size:12px;color:var(--accent2)">→</span>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>
+    `).join('')}`;
+}
+
 function renderBrowse() {
   _searchLookup = []; // reset lookup table for this render
 
   // Trash view takes over the whole browse area
   if (state.showTrash) return renderTrashView();
+
+  // Author list view
+  if (state.showAuthorList) return renderAuthorList();
 
   const items = filteredItems();
   const favs = state.favoriteSearches;
@@ -1650,6 +1708,7 @@ function renderBrowse() {
     <div class="filter-row">
       ${deadCount > 0 ? `<button class="filter-pill ${state.showDead?'active':''}" onclick="setFilter('dead')" style="${state.showDead?'':'opacity:0.6'}">⚰️ Unavailable (${deadCount})</button>` : ''}
       ${trashCount > 0 ? `<button class="filter-pill" onclick="state.showTrash=true;render()" style="opacity:0.7">🗑️ Trash (${trashCount})</button>` : ''}
+      <button class="filter-pill" onclick="state.showAuthorList=true;render()" style="opacity:0.8">👤 Authors</button>
     </div>
 
     <!-- ── Results ───────────────────────────────────────────────────────── -->
@@ -1712,9 +1771,9 @@ function itemMatchesTokens(item, tokens) {
   return true;
 }
 
-function sortItems(items) {
+function sortItems(items, applyAuthorBoost = false) {
   const dir = state.sortDir === 'asc' ? 1 : -1;
-  return [...items].sort((a, b) => {
+  const sorted = [...items].sort((a, b) => {
     switch (state.sortBy) {
       case 'postCreatedAt':
         return dir * ((new Date(a.postCreatedAt||0)) - (new Date(b.postCreatedAt||0)));
@@ -1730,6 +1789,18 @@ function sortItems(items) {
         return dir * ((new Date(a.savedAt||0)) - (new Date(b.savedAt||0)));
     }
   });
+
+  // When searching, boost results from frequently-saved authors (3+ saves)
+  // within the sorted result — they float to the top of each "tier"
+  if (applyAuthorBoost && state.search.trim()) {
+    const BOOST_THRESHOLD = 3;
+    return sorted.sort((a, b) => {
+      const freqA = (a.author && state.authorFreq[a.author] >= BOOST_THRESHOLD) ? 1 : 0;
+      const freqB = (b.author && state.authorFreq[b.author] >= BOOST_THRESHOLD) ? 1 : 0;
+      return freqB - freqA; // boosted items first, stable within each group
+    });
+  }
+  return sorted;
 }
 
 function filteredItems() {
@@ -1763,7 +1834,7 @@ function filteredItems() {
   if (state.filterFolder === '__none__') items = items.filter(i => !i.folder);
   else if (state.filterFolder !== 'all') items = items.filter(i => i.folder === state.filterFolder);
 
-  return sortItems(items);
+  return sortItems(items, true);
 }
 
 // ─── SEARCH HISTORY ──────────────────────────────────────────────────────────
@@ -1969,7 +2040,15 @@ function renderItemCard(item, showActions) {
         <span class="badge ${badgeClass}">${badgeLabel}</span>
         ${subredditDisplay}
         ${needsEnrich ? `<span class="badge badge-enriching">⚡ needs enrichment</span>` : ''}
-        ${item.author ? `<span style="font-size:11px;color:var(--text-muted)">u/${escHtml(item.author)}</span>` : ''}
+        ${item.author ? (() => {
+          const freq = state.authorFreq[item.author] || 0;
+          const badge = freq >= 3
+            ? `<span style="background:rgba(168,85,247,0.2);color:var(--accent2);border-radius:10px;padding:1px 6px;font-size:10px;margin-left:2px">${freq}×</span>`
+            : '';
+          return `<span style="font-size:11px;color:var(--text-muted);cursor:pointer"
+            onclick="applySearch('u/${escHtml(item.author)}')"
+            title="Search posts by this author">u/${escHtml(item.author)}${badge}</span>`;
+        })() : ''}
       </div>
 
       <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px;color:var(--text);line-height:1.3;margin-bottom:6px;cursor:pointer"
