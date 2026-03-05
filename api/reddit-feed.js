@@ -33,13 +33,16 @@ export default async function handler(req, res) {
   try {
     const response = await fetch(url, {
       headers: {
-        'User-Agent': 'RedditVault/1.0 (personal saved items manager)',
-        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
       }
     });
 
     if (!response.ok) {
-      return res.status(response.status).json({ error: `Reddit returned ${response.status}` });
+      const body = await response.text().catch(() => '');
+      return res.status(response.status).json({ error: `Reddit returned ${response.status}`, detail: body.slice(0, 200) });
     }
 
     const data = await response.json();
