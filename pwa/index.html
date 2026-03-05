@@ -326,8 +326,8 @@
     <button class="nav-item" onclick="showPage('browse')" id="nav-browse">
       <span class="nav-icon">📋</span><span>All Saves</span>
     </button>
-    <button class="nav-item" onclick="showPage('folders')" id="nav-folders">
-      <span class="nav-icon">📁</span><span>Folders</span>
+    <button class="nav-item" onclick="showPage('lists')" id="nav-lists">
+      <span class="nav-icon">📋</span><span>Lists</span>
     </button>
     <button class="nav-item" onclick="showPage('settings')" id="nav-settings">
       <span class="nav-icon">⚙️</span><span>Settings</span>
@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.20';
+const APP_VERSION = '0.8.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -352,10 +352,14 @@ db.version(4).stores({
   folders: '++id, name, icon, createdAt',
   config: 'key'
 });
-// Version 5: adds enrichStatus field — 'pending' | 'enriched' | 'dead'
-// 'dead' items failed MAX_ITEM_ATTEMPTS times and are hidden from browse by default.
-// This replaces the overloaded enriched boolean for clearer state management.
-db.version(5).stores({
+// Version 6: adds lists (static + smart) and item_lists junction table. Folders deprecated.
+db.version(6).stores({
+  items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt',
+  folders: '++id, name, icon, createdAt',
+  lists: '++id, name, type, createdAt',  // type: 'static' | 'smart'
+  item_lists: '++id, itemId, listId',    // junction table
+  config: 'key'
+});
   items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt',
   folders: '++id, name, icon, createdAt',
   config: 'key'
@@ -376,10 +380,10 @@ db.version(5).stores({
 let state = {
   page: 'home',
   items: [],
-  folders: [],
+  folders: [],   // kept for data compat, not shown in UI
+  lists: [],     // { id, name, type, query } 
+  itemLists: [], // { id, itemId, listId }
   search: '',
-  filterType: 'all',
-  filterFolder: 'all',
   showDead: false,
   supabaseUrl: '',
   supabaseKey: '',
@@ -387,27 +391,39 @@ let state = {
   syncStatus: 'disconnected',
   enriching: false,
   enrichProgress: { done: 0, total: 0 },
-  // User-adjustable enrichment settings (persisted to IndexedDB config)
-  enrichReqPerMin: 8,          // default: 8 req/min for normal runs
-  enrichRetryReqPerMin: 4,     // default: 4 req/min for retry runs (mostly dead posts)
-  enrichRateLimitPause: 5,     // minutes to pause when rate limited
-  enrichMaxAttempts: 3,        // attempts before user can bulk-mark as dead
-  lastRunRateLimitHits: null,  // null = no run yet, 0 = clean last run, N = had issues
-  authorFreq: {},        // author -> save count, rebuilt on loadData
-  recentSearches: [],    // last 20 unique queries, persisted
-  favoriteSearches: [],  // user-starred queries, persisted
-  searchFocused: false,  // controls recents visibility
-  editingFavs: false,    // edit mode for favorites section
-  showTrash: false,      // toggle trash view in browse
-  showAuthorList: false, // toggle author frequency panel
-  filterFavourite: false, // show only favourited items
-  sortBy: 'postCreatedAt', // savedAt | postCreatedAt | score | subreddit | title
-  sortDir: 'desc',       // asc | desc
-  redditFeedUrl: '',     // private Reddit JSON feed URL (from old.reddit.com/prefs/feeds)
-  feedProxyUrl: '',      // Cloudflare Worker proxy URL
-  feedSyncing: false,    // true while feed sync is running
-  feedSyncResult: null,  // { added, skipped, pages, error } from last run
-  showDevTools: false,   // show legacy repair/troubleshooting controls
+  enrichReqPerMin: 8,
+  enrichRetryReqPerMin: 4,
+  enrichRateLimitPause: 5,
+  enrichMaxAttempts: 3,
+  lastRunRateLimitHits: null,
+  authorFreq: {},
+  recentSearches: [],
+  favoriteSearches: [],
+  searchFocused: false,
+  editingFavs: false,
+  showTrash: false,
+  showAuthorList: false,
+  filterFavourite: false,
+  sortBy: 'postCreatedAt',
+  sortDir: 'desc',
+  redditFeedUrl: '',
+  feedProxyUrl: '',
+  feedSyncing: false,
+  feedSyncResult: null,
+  showDevTools: false,
+  // Filter panel
+  showFilters: false,
+  filterType: 'all',       // all | post | comment
+  filterRating: 0,         // 0=any, 1-5=min rating
+  filterHasLinks: false,
+  filterDateField: 'postCreatedAt', // postCreatedAt | savedAt
+  filterDateFrom: '',
+  filterDateTo: '',
+  filterSubreddit: '',
+  filterAuthor: '',
+  // Lists tab
+  listView: 'all',         // 'all' | list id
+  listSeparate: false,     // separate smart vs static
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -453,6 +469,8 @@ async function loadConfig() {
 async function loadData() {
   state.items = await db.items.orderBy('savedAt').reverse().toArray();
   state.folders = await db.folders.toArray();
+  state.lists = await db.lists.orderBy('name').toArray();
+  state.itemLists = await db.item_lists.toArray();
   // Build author frequency map — only visible items (not disliked or dead)
   state.authorFreq = {};
   for (const item of state.items) {
@@ -942,6 +960,28 @@ async function syncFromSupabase() {
       }
     }
 
+    // Sync lists
+    try {
+      const remoteLists = await supabaseFetch('/reddit_lists?select=*');
+      for (const l of remoteLists) {
+        const exists = await db.lists.get(l.local_id) ||
+                       await db.lists.where('name').equals(l.name).first();
+        if (!exists) {
+          await db.lists.add({ name: l.name, type: l.type, query: l.query || '', createdAt: l.created_at });
+        }
+      }
+      const remoteItemLists = await supabaseFetch('/reddit_item_lists?select=*');
+      const localItems = await db.items.toArray();
+      const localLists = await db.lists.toArray();
+      for (const il of remoteItemLists) {
+        const item = localItems.find(i => i.redditId === il.reddit_id);
+        const list = localLists.find(l => l.name === il.list_name);
+        if (!item || !list) continue;
+        const exists = await db.item_lists.where('itemId').equals(item.id).and(r => r.listId === list.id).first();
+        if (!exists) await db.item_lists.add({ itemId: item.id, listId: list.id });
+      }
+    } catch(e) { console.warn('Lists sync skipped (tables may not exist yet):', e.message); }
+
     await db.config.put({ key: 'lastSync', value: new Date().toISOString() });
     state.lastSync = new Date().toISOString();
     state.syncStatus = 'connected';
@@ -983,13 +1023,27 @@ async function pushToSupabase(items) {
   }
 }
 
-async function pushFolderUpdate(itemId, folder) {
+async function pushListsToSupabase() {
   if (!state.supabaseUrl || !state.supabaseKey) return;
-  const item = await db.items.get(itemId);
-  if (!item) return;
   try {
-    await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', { folder });
-  } catch(e) {}
+    const lists = await db.lists.toArray();
+    if (lists.length) {
+      const payload = lists.map(l => ({ name: l.name, type: l.type, query: l.query || '', created_at: l.createdAt }));
+      await supabaseFetch('/reddit_lists?on_conflict=name', 'POST', payload);
+    }
+    const itemLists = await db.item_lists.toArray();
+    const allItems = await db.items.toArray();
+    const allLists = await db.lists.toArray();
+    if (itemLists.length) {
+      const payload = itemLists.map(il => {
+        const item = allItems.find(i => i.id === il.itemId);
+        const list = allLists.find(l => l.id === il.listId);
+        if (!item || !list) return null;
+        return { reddit_id: item.redditId, list_name: list.name };
+      }).filter(Boolean);
+      if (payload.length) await supabaseFetch('/reddit_item_lists?on_conflict=reddit_id,list_name', 'POST', payload);
+    }
+  } catch(e) { console.warn('Lists push skipped (tables may not exist yet):', e.message); }
 }
 
 // ─── IMPORT ──────────────────────────────────────────────────────────────────
@@ -1006,7 +1060,8 @@ async function pushAllToSupabase() {
       await pushToSupabase(allItems.slice(i, i + BATCH));
       showToast(`Pushing… ${Math.min(i + BATCH, allItems.length)} / ${allItems.length}`, 'info');
     }
-    showToast(`✓ Pushed ${allItems.length.toLocaleString()} items to cloud`, 'success');
+    await pushListsToSupabase();
+    showToast(`✓ Pushed ${allItems.length.toLocaleString()} items + lists to cloud`, 'success');
   } catch(e) {
     showToast('Push failed: ' + e.message, 'error');
   }
@@ -1281,33 +1336,6 @@ async function handleJSONImport(data) {
 }
 
 // ─── FOLDERS ─────────────────────────────────────────────────────────────────
-async function createFolder(name, icon='📁') {
-  const exists = state.folders.find(f => f.name.toLowerCase() === name.toLowerCase());
-  if (exists) { showToast('Folder already exists', 'error'); return; }
-  await db.folders.add({ name, icon, createdAt: new Date().toISOString() });
-  await loadData();
-  render();
-  showToast(`Folder "${name}" created`, 'success');
-}
-
-async function deleteFolder(id) {
-  const folder = state.folders.find(f => f.id === id);
-  if (!folder) return;
-  await db.items.where('folder').equals(folder.name).modify({ folder: null });
-  await db.folders.delete(id);
-  await loadData();
-  render();
-  showToast('Folder deleted', 'success');
-}
-
-async function assignFolder(itemId, folderName) {
-  await db.items.update(itemId, { folder: folderName || null });
-  await pushFolderUpdate(itemId, folderName || null);
-  await loadData();
-  render();
-  showToast(folderName ? `Moved to "${folderName}"` : 'Removed from folder', 'success');
-}
-
 async function deleteItem(itemId) {
   await db.items.delete(itemId);
   await loadData();
@@ -1318,8 +1346,9 @@ async function deleteItem(itemId) {
 // ─── EXPORT ──────────────────────────────────────────────────────────────────
 async function exportJSON() {
   const items = await db.items.toArray();
-  const folders = await db.folders.toArray();
-  const data = JSON.stringify({ items, folders, exportedAt: new Date().toISOString() }, null, 2);
+  const lists = await db.lists.toArray();
+  const itemLists = await db.item_lists.toArray();
+  const data = JSON.stringify({ items, lists, itemLists, exportedAt: new Date().toISOString() }, null, 2);
   const blob = new Blob([data], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1344,7 +1373,7 @@ function render() {
   switch(state.page) {
     case 'home':     content.innerHTML = renderHome(); break;
     case 'browse':   content.innerHTML = renderBrowse(); break;
-    case 'folders':  content.innerHTML = renderFolders(); break;
+    case 'lists':    content.innerHTML = renderLists(); break;
     case 'settings': content.innerHTML = renderSettings(); break;
   }
   attachEventListeners();
@@ -1824,28 +1853,112 @@ function renderBrowse() {
       </div>
     ` : ''}
 
-    <!-- ── Search input ──────────────────────────────────────────────────── -->
-    <div class="search-wrap" style="position:relative">
-      <span class="search-icon">🔍</span>
-      <input class="input" id="search-input"
-        placeholder='Search… e.g. big dog  r/aww  "exact phrase"  -exclude  u/name'
-        value="${escHtml(state.search)}"
-        oninput="handleSearchInput(this.value)"
-        onfocus="state.searchFocused=true;renderRecentSearches()"
-        onblur="setTimeout(()=>{state.searchFocused=false;renderRecentSearches()},300)"
-        onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderBrowseList();renderRecentSearches()}"
-        style="padding-right:${state.search ? '36px' : '12px'}">
-      ${state.search ? `
-        <button style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1;padding:0"
-          onclick="applySearch('')">✕</button>
-      ` : ''}
+    <!-- ── Search input + filter toggle ────────────────────────────────── -->
+    <div style="display:flex;gap:8px;align-items:center">
+      <div class="search-wrap" style="position:relative;flex:1">
+        <span class="search-icon">🔍</span>
+        <input class="input" id="search-input"
+          placeholder='Search… "phrase"  (a,b,c)  r:sub  u:name  -exclude'
+          value="${escHtml(state.search)}"
+          oninput="handleSearchInput(this.value)"
+          onfocus="state.searchFocused=true;renderRecentSearches()"
+          onblur="setTimeout(()=>{state.searchFocused=false;renderRecentSearches()},300)"
+          onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderBrowseList();renderRecentSearches()}"
+          style="padding-right:${state.search ? '36px' : '12px'}">
+        ${state.search ? `
+          <button style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1;padding:0"
+            onclick="applySearch('')">✕</button>
+        ` : ''}
+      </div>
+      <button onclick="state.showFilters=!state.showFilters;render()"
+        style="background:${hasActiveFilters()?'var(--accent2)':'var(--surface)'};border:1px solid ${hasActiveFilters()?'var(--accent2)':'var(--border)'};border-radius:10px;padding:0 12px;height:44px;cursor:pointer;font-size:13px;color:${hasActiveFilters()?'#fff':'var(--text-muted)'};white-space:nowrap;flex-shrink:0">
+        ${hasActiveFilters() ? '⚙️ Filters ●' : '⚙️ Filters'}
+      </button>
     </div>
 
-    <!-- ── Recent searches (shown on focus when search is empty) ─────────── -->
+    <!-- ── Recent searches ──────────────────────────────────────────────── -->
     <div id="recent-searches-row" style="display:none;margin:-4px 0 10px"></div>
 
+    <!-- ── Filter panel (slide-down) ────────────────────────────────────── -->
+    ${state.showFilters ? `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-top:4px;display:grid;gap:12px">
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <div style="flex:1;min-width:140px">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:600">TYPE</div>
+            <div style="display:flex;gap:6px">
+              ${['all','post','comment'].map(t => `
+                <button class="filter-pill ${state.filterType===t?'active':''}" style="flex:1;justify-content:center"
+                  onclick="state.filterType='${t}';render()">${t==='all'?'All':t==='post'?'📝 Posts':'💬 Comments'}</button>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <div style="flex:1;min-width:120px">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:600">MIN RATING</div>
+            <div style="display:flex;gap:4px">
+              <button class="filter-pill ${state.filterRating===0?'active':''}" onclick="state.filterRating=0;render()">Any</button>
+              ${[1,2,3,4,5].map(n => `
+                <button class="filter-pill ${state.filterRating===n?'active':''}" onclick="state.filterRating=${n};render()">
+                  ${'★'.repeat(n)}
+                </button>`).join('')}
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+            <input type="checkbox" ${state.filterFavourite?'checked':''} onchange="state.filterFavourite=this.checked;render()">
+            ⭐ Favourites only
+          </label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+            <input type="checkbox" ${state.filterHasLinks?'checked':''} onchange="state.filterHasLinks=this.checked;render()">
+            🔗 Has links
+          </label>
+        </div>
+
+        <div>
+          <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:600">DATE RANGE</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select class="input" style="width:auto;font-size:12px" onchange="state.filterDateField=this.value;render()">
+              <option value="postCreatedAt" ${state.filterDateField==='postCreatedAt'?'selected':''}>Post date</option>
+              <option value="savedAt" ${state.filterDateField==='savedAt'?'selected':''}>Saved date</option>
+            </select>
+            <input class="input" type="date" style="flex:1;min-width:120px;font-size:12px" value="${state.filterDateFrom}"
+              onchange="state.filterDateFrom=this.value;render()">
+            <span style="color:var(--text-muted);font-size:12px">to</span>
+            <input class="input" type="date" style="flex:1;min-width:120px;font-size:12px" value="${state.filterDateTo}"
+              onchange="state.filterDateTo=this.value;render()">
+          </div>
+        </div>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <div style="flex:1;min-width:120px">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-weight:600">SUBREDDIT</div>
+            <input class="input" style="font-size:12px" placeholder="e.g. programming"
+              value="${escHtml(state.filterSubreddit)}"
+              oninput="state.filterSubreddit=this.value;renderBrowseList()">
+          </div>
+          <div style="flex:1;min-width:120px">
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-weight:600">AUTHOR</div>
+            <input class="input" style="font-size:12px" placeholder="e.g. username"
+              value="${escHtml(state.filterAuthor)}"
+              oninput="state.filterAuthor=this.value;renderBrowseList()">
+          </div>
+        </div>
+
+        ${hasActiveFilters() ? `
+          <button class="btn btn-ghost btn-sm" onclick="clearFilters()" style="width:100%;justify-content:center;color:var(--danger)">
+            ✕ Clear all filters
+          </button>
+        ` : ''}
+      </div>
+    ` : ''}
+
     <!-- ── Result count + save search + sort ───────────────────────────── -->
-    <div id="search-result-info" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;min-height:24px;gap:8px">
+    <div id="search-result-info" style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;margin-bottom:4px;min-height:24px;gap:8px">
       <span style="font-size:12px;color:var(--text-muted);flex-shrink:0">
         ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
       </span>
@@ -1859,18 +1972,7 @@ function renderBrowse() {
       </div>
     </div>
 
-    <!-- ── Type + folder filters ─────────────────────────────────────────── -->
-    <div class="filter-row">
-      <button class="filter-pill ${state.filterType==='all'?'active':''}" onclick="setFilter('type','all')">All Types</button>
-      <button class="filter-pill ${state.filterType==='post'?'active':''}" onclick="setFilter('type','post')">📝 Posts</button>
-      <button class="filter-pill ${state.filterType==='comment'?'active':''}" onclick="setFilter('type','comment')">💬 Comments</button>
-      ${favCount > 0 ? `<button class="filter-pill ${state.filterFavourite?'active':''}" onclick="setFilter('favourite')" style="color:#f59e0b">⭐ Favourites${state.filterFavourite?'':' ('+favCount+')'}</button>` : ''}
-    </div>
-    <div class="filter-row">
-      <button class="filter-pill ${state.filterFolder==='all'?'active':''}" onclick="setFilter('folder','all')">All Folders</button>
-      <button class="filter-pill ${state.filterFolder==='__none__'?'active':''}" onclick="setFilter('folder','__none__')">📭 Unfiled</button>
-      ${state.folders.map(f=>`<button class="filter-pill ${state.filterFolder===f.name?'active':''}" onclick="setFilter('folder','${escAttr(f.name)}')">${f.icon} ${escHtml(f.name)}</button>`).join('')}
-    </div>
+    <!-- ── Quick filter pills ───────────────────────────────────────────── -->
     <div class="filter-row">
       ${deadCount > 0 ? `<button class="filter-pill ${state.showDead?'active':''}" onclick="setFilter('dead')" style="${state.showDead?'':'opacity:0.6'}">⚰️ ${state.showDead ? 'Unavailable ✕' : `Unavailable (${deadCount})`}</button>` : ''}
       ${trashCount > 0 ? `<button class="filter-pill" onclick="state.showTrash=true;render()" style="opacity:0.7">🗑️ Trash (${trashCount})</button>` : ''}
@@ -1885,52 +1987,61 @@ function renderBrowse() {
 }
 
 // ─── SEARCH PARSER ───────────────────────────────────────────────────────────
-// Supports:
-//   bare words      → all must appear somewhere in the item (AND logic)
-//   "quoted phrase" → exact substring match
-//   -word / -"phrase" → exclusion
-//   r/subreddit     → subreddit field only
-//   u/username      → author field only
-//   type:post / type:comment → type override (added to tokens, applied in filteredItems)
+// Syntax:
+//   bare words          → AND logic — all must match
+//   (a, b, c)           → OR group — at least one must match, AND'd with other tokens
+//   "quoted phrase"     → exact substring
+//   -word / -"phrase"   → exclusion
+//   r:subreddit         → subreddit field (partial)
+//   u:username          → author field (partial)
+//   type:post/comment   → type filter
 
 function parseSearchQuery(raw) {
   const tokens = [];
-  // Tokenise: quoted strings, field prefixes, bare words
+  let str = raw.trim();
+
+  // Extract OR groups first: (a, b, c)
+  str = str.replace(/\(([^)]+)\)/g, (_, inner) => {
+    const negate = false;
+    const values = inner.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    if (values.length) tokens.push({ type: 'orGroup', values, negate });
+    return ''; // remove from string
+  });
+
+  // Parse remainder: field prefixes, quoted strings, bare words, negation
   const re = /(-?)(?:(r|u|type):(\S+)|"([^"]+)"|(\S+))/g;
   let m;
-  while ((m = re.exec(raw)) !== null) {
-    const negate  = m[1] === '-';
-    if (m[2] && m[2] === 'r')    { tokens.push({ type: 'field', field: 'subreddit', value: m[3].toLowerCase(), negate }); continue; }
-    if (m[2] && m[2] === 'u')    { tokens.push({ type: 'field', field: 'author',    value: m[3].toLowerCase(), negate }); continue; }
-    if (m[2] && m[2] === 'type') { tokens.push({ type: 'type',  value: m[3].toLowerCase(), negate }); continue; }
+  while ((m = re.exec(str)) !== null) {
+    const negate = m[1] === '-';
+    if (m[2] === 'r')    { tokens.push({ type: 'field', field: 'subreddit', value: m[3].toLowerCase(), negate }); continue; }
+    if (m[2] === 'u')    { tokens.push({ type: 'field', field: 'author',    value: m[3].toLowerCase(), negate }); continue; }
+    if (m[2] === 'type') { tokens.push({ type: 'typeFilter', value: m[3].toLowerCase(), negate }); continue; }
     const phrase = m[4] || m[5];
     if (phrase) tokens.push({ type: 'text', value: phrase.toLowerCase(), negate });
   }
   return tokens;
 }
 
-function itemMatchesTokens(item, tokens) {
-  const title     = (item.title     || '').toLowerCase();
-  const subreddit = (item.subreddit || '').toLowerCase();
-  const author    = (item.author    || '').toLowerCase();
-  const body      = (item.body      || '').toLowerCase();
+function itemMatchesText(item, value) {
+  return (item.title     || '').toLowerCase().includes(value) ||
+         (item.subreddit || '').toLowerCase().includes(value) ||
+         (item.author    || '').toLowerCase().includes(value) ||
+         (item.body      || '').toLowerCase().includes(value);
+}
 
+function itemMatchesTokens(item, tokens) {
   for (const t of tokens) {
     let match = false;
-
-    if (t.type === 'field') {
-      if (t.field === 'subreddit') match = subreddit === t.value || subreddit.includes(t.value);
-      if (t.field === 'author')    match = author === t.value; // exact match only
-    } else if (t.type === 'type') {
+    if (t.type === 'orGroup') {
+      match = t.values.some(v => itemMatchesText(item, v));
+    } else if (t.type === 'field') {
+      const fieldVal = (item[t.field] || '').toLowerCase();
+      match = fieldVal.includes(t.value);
+    } else if (t.type === 'typeFilter') {
       match = item.type === t.value;
     } else {
-      // text token — check all fields
-      match = title.includes(t.value) || subreddit.includes(t.value) ||
-              author.includes(t.value) || body.includes(t.value);
+      match = itemMatchesText(item, t.value);
     }
-
-    // AND logic: if a required token doesn't match, item is excluded
-    // Negation: if an excluded token matches, item is excluded
     if (t.negate && match)  return false;
     if (!t.negate && !match) return false;
   }
@@ -1973,14 +2084,11 @@ function filteredItems() {
   let items = state.items;
 
   // Trash view — only disliked items
-  if (state.showTrash) {
-    return sortItems(items.filter(i => i.isDisliked));
-  }
+  if (state.showTrash) return sortItems(items.filter(i => i.isDisliked));
 
   // Normal browse — exclude disliked and dead unless filtering for dead
   items = items.filter(i => !i.isDisliked);
   if (state.showDead) {
-    // Exclusive: show ONLY dead items
     items = items.filter(i => i.enrichStatus === 'dead');
   } else {
     items = items.filter(i => i.enrichStatus !== 'dead');
@@ -1989,21 +2097,49 @@ function filteredItems() {
   // Favourite filter
   if (state.filterFavourite) items = items.filter(i => i.isFavourite);
 
+  // Type filter (panel or search token)
+  let typeOverride = null;
   if (state.search.trim()) {
     const tokens = parseSearchQuery(state.search);
-    const typeToken = tokens.find(t => t.type === 'type' && !t.negate);
-    if (typeToken) {
-      items = items.filter(i => i.type === typeToken.value);
-    } else if (state.filterType !== 'all') {
-      items = items.filter(i => i.type === state.filterType);
-    }
-    items = items.filter(i => itemMatchesTokens(i, tokens.filter(t => t.type !== 'type' || t.negate)));
-  } else {
-    if (state.filterType !== 'all') items = items.filter(i => i.type === state.filterType);
+    const typeToken = tokens.find(t => t.type === 'typeFilter' && !t.negate);
+    if (typeToken) typeOverride = typeToken.value;
+    const filterTokens = tokens.filter(t => t.type !== 'typeFilter' || t.negate);
+    if (filterTokens.length) items = items.filter(i => itemMatchesTokens(i, filterTokens));
+  }
+  const effectiveType = typeOverride || state.filterType;
+  if (effectiveType !== 'all') items = items.filter(i => i.type === effectiveType);
+
+  // Filter panel — rating
+  if (state.filterRating > 0) items = items.filter(i => (i.rating || 0) >= state.filterRating);
+
+  // Filter panel — has links (URLs in body)
+  if (state.filterHasLinks) {
+    const urlRe = /https?:\/\/\S+/;
+    items = items.filter(i => urlRe.test(i.body || '') || urlRe.test(i.url || ''));
   }
 
-  if (state.filterFolder === '__none__') items = items.filter(i => !i.folder);
-  else if (state.filterFolder !== 'all') items = items.filter(i => i.folder === state.filterFolder);
+  // Filter panel — date range
+  if (state.filterDateFrom || state.filterDateTo) {
+    const field = state.filterDateField;
+    const from = state.filterDateFrom ? new Date(state.filterDateFrom).getTime() : 0;
+    const to   = state.filterDateTo   ? new Date(state.filterDateTo).getTime() + 86399999 : Infinity;
+    items = items.filter(i => {
+      const d = new Date(i[field] || 0).getTime();
+      return d >= from && d <= to;
+    });
+  }
+
+  // Filter panel — subreddit
+  if (state.filterSubreddit.trim()) {
+    const s = state.filterSubreddit.trim().toLowerCase();
+    items = items.filter(i => (i.subreddit || '').toLowerCase().includes(s));
+  }
+
+  // Filter panel — author
+  if (state.filterAuthor.trim()) {
+    const a = state.filterAuthor.trim().toLowerCase();
+    items = items.filter(i => (i.author || '').toLowerCase().includes(a));
+  }
 
   return sortItems(items, true);
 }
@@ -2160,9 +2296,25 @@ function renderBrowseList() {
   }
 }
 
+function hasActiveFilters() {
+  return state.filterType !== 'all' || state.filterRating > 0 || state.filterHasLinks ||
+    state.filterFavourite || state.filterDateFrom || state.filterDateTo ||
+    state.filterSubreddit.trim() || state.filterAuthor.trim();
+}
+
+function clearFilters() {
+  state.filterType = 'all';
+  state.filterRating = 0;
+  state.filterHasLinks = false;
+  state.filterFavourite = false;
+  state.filterDateFrom = '';
+  state.filterDateTo = '';
+  state.filterSubreddit = '';
+  state.filterAuthor = '';
+  render();
+}
+
 function setFilter(type, value) {
-  if (type === 'type') state.filterType = value;
-  if (type === 'folder') state.filterFolder = value;
   if (type === 'dead') state.showDead = !state.showDead;
   if (type === 'favourite') state.filterFavourite = !state.filterFavourite;
   render();
@@ -2171,8 +2323,8 @@ function setFilter(type, value) {
 function renderItemCard(item, showActions) {
   const badgeClass = item.type === 'comment' ? 'badge-comment' : 'badge-post';
   const badgeLabel = item.type === 'comment' ? '💬 Comment' : '📝 Post';
-  const folder = item.folder ? `<span class="folder-chip" onclick="showFolderMenu(${item.id})">${getFolderIcon(item.folder)} ${escHtml(item.folder)}</span>` : '';
   const needsEnrich = !item.enriched;
+  const inListCount = state.itemLists.filter(il => il.itemId === item.id).length;
 
   // Date display: show post created date if available, otherwise saved date
   const postDate = item.postCreatedAt
@@ -2236,7 +2388,6 @@ function renderItemCard(item, showActions) {
       </div>
 
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
-        ${folder}
         ${ratingHtml}
         <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
           ${showActions ? `
@@ -2244,10 +2395,13 @@ function renderItemCard(item, showActions) {
               onclick="toggleFavourite(${item.id})" title="${item.isFavourite?'Remove from favourites':'Add to favourites'}">
               ${item.isFavourite ? '⭐' : '☆'}
             </button>
-            <button class="btn btn-ghost btn-sm" onclick="showFolderMenu(${item.id})" title="Move to folder">📁</button>
+            <button class="btn btn-ghost btn-sm" onclick="showListMenu(${item.id})" title="Add to list"
+              style="${inListCount>0?'color:var(--accent2)':''}">
+              ${inListCount > 0 ? `📋 ${inListCount}` : '📋'}
+            </button>
             <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener" title="Open">↗</a>
             ${item.type !== 'comment' && permalinkUrl !== openUrl ? `<a class="btn btn-ghost btn-sm" href="${escHtml(permalinkUrl)}" target="_blank" rel="noopener" title="Reddit thread">💬</a>` : ''}
-            <button class="btn btn-ghost btn-sm" onclick="dislikeItem(${item.id})" title="Dislike — move to trash" style="color:var(--danger)">👎</button>
+            <button class="btn btn-ghost btn-sm" onclick="dislikeItem(${item.id})" title="Move to trash" style="color:var(--danger)">🗑️</button>
           ` : `
             <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">Open →</a>
           `}
@@ -2257,37 +2411,112 @@ function renderItemCard(item, showActions) {
   `;
 }
 
-function renderFolders() {
+function renderLists() {
+  const allLists = state.lists;
+  const separated = state.listSeparate;
+
+  const renderListCard = (list) => {
+    const isSmart = list.type === 'smart';
+    const itemIds = isSmart
+      ? (() => { const tokens = parseSearchQuery(list.query || ''); return state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && (tokens.length === 0 || itemMatchesTokens(i, tokens))).map(i => i.id); })()
+      : state.itemLists.filter(il => il.listId === list.id).map(il => il.itemId);
+    const count = itemIds.length;
+    return `
+      <div class="card" style="cursor:pointer" onclick="state.listView=${list.id};render()">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px">${escHtml(list.name)}</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:3px">
+              ${isSmart ? `<span style="color:var(--accent2)">✦ Smart</span> · ` : ''}${count} item${count!==1?'s':''}
+            </div>
+          </div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();editList(${list.id})" title="Edit">✏️</button>
+            <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();if(confirm('Delete list?'))deleteList(${list.id})" title="Delete" style="color:var(--danger)">🗑️</button>
+          </div>
+        </div>
+        ${isSmart && list.query ? `<div style="font-size:11px;color:var(--text-muted);margin-top:6px;font-style:italic">${escHtml(list.query)}</div>` : ''}
+      </div>`;
+  };
+
+  // List detail view
+  if (state.listView !== 'all') {
+    const list = state.lists.find(l => l.id === state.listView);
+    if (!list) { state.listView = 'all'; return renderLists(); }
+    const isSmart = list.type === 'smart';
+    const tokens = isSmart ? parseSearchQuery(list.query || '') : [];
+
+    // For smart lists, get matching items; for static, get pinned item ids
+    const pinnedIds = new Set(state.itemLists.filter(il => il.listId === list.id).map(il => il.itemId));
+    let smartItems = [];
+    let pinnedItems = [];
+    if (isSmart) {
+      const allMatching = state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && (tokens.length === 0 || itemMatchesTokens(i, tokens)));
+      pinnedItems = state.items.filter(i => pinnedIds.has(i.id) && !allMatching.find(m => m.id === i.id));
+      smartItems = allMatching;
+    } else {
+      pinnedItems = state.items.filter(i => pinnedIds.has(i.id) && !i.isDisliked && i.enrichStatus !== 'dead');
+    }
+
+    return `
+      <div class="section-header">
+        <button class="btn btn-ghost btn-sm" onclick="state.listView='all';render()">← Lists</button>
+        <div class="section-title" style="flex:1;text-align:center">${escHtml(list.name)}</div>
+        <button class="btn btn-ghost btn-sm" onclick="editList(${list.id})">✏️</button>
+      </div>
+      ${isSmart && list.query ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;padding:8px 12px;background:rgba(168,85,247,0.08);border-radius:8px">✦ Smart: ${escHtml(list.query)}</div>` : ''}
+      ${pinnedItems.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">📌 PINNED</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
+          ${pinnedItems.map(i => renderItemCard(i, true)).join('')}
+        </div>
+        ${isSmart ? `<div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">✦ MATCHING</div>` : ''}
+      ` : ''}
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${(isSmart ? smartItems : pinnedItems).length === 0
+          ? `<div class="empty"><div class="empty-icon">📋</div><h3>No items</h3><p>${isSmart ? 'No items match this search.' : 'Add items from the Browse tab using the 📋 button.'}</p></div>`
+          : (isSmart ? smartItems : pinnedItems).map(i => renderItemCard(i, true)).join('')}
+      </div>
+    `;
+  }
+
+  // Sort and optionally separate
+  const sorted = [...allLists].sort((a,b) => a.name.localeCompare(b.name));
+  const smarts = sorted.filter(l => l.type === 'smart');
+  const statics = sorted.filter(l => l.type === 'static');
+
   return `
     <div class="section-header">
-      <div class="section-title">Folders</div>
-      <button class="btn btn-primary btn-sm" onclick="showCreateFolder()">+ New</button>
+      <div class="section-title">Lists</div>
+      <div style="display:flex;gap:6px">
+        ${allLists.length > 1 ? `
+          <button class="btn btn-ghost btn-sm" onclick="state.listSeparate=!state.listSeparate;render()"
+            style="${state.listSeparate?'color:var(--accent2)':''}">
+            ${state.listSeparate ? '⊟ Merge' : '⊞ Separate'}
+          </button>` : ''}
+        <button class="btn btn-secondary btn-sm" onclick="showCreateList('static')">+ Static</button>
+        <button class="btn btn-primary btn-sm" onclick="showCreateList('smart')">+ Smart</button>
+      </div>
     </div>
-    ${state.folders.length === 0 ? `
+
+    ${allLists.length === 0 ? `
       <div class="empty">
-        <div class="empty-icon">📁</div>
-        <h3>No folders yet</h3>
-        <p>Create folders to organize your saved items by topic, project, or anything else.</p>
+        <div class="empty-icon">📋</div>
+        <h3>No lists yet</h3>
+        <p>Create a <strong>Static list</strong> to manually collect posts, or a <strong>Smart list</strong> that auto-populates from a saved search.</p>
       </div>
+    ` : separated ? `
+      ${smarts.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">✦ SMART LISTS</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${smarts.map(renderListCard).join('')}</div>
+      ` : ''}
+      ${statics.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">📋 STATIC LISTS</div>
+        <div style="display:flex;flex-direction:column;gap:8px">${statics.map(renderListCard).join('')}</div>
+      ` : ''}
     ` : `
-      <div class="folder-grid">
-        ${state.folders.map(f => {
-          const count = state.items.filter(i => i.folder === f.name).length;
-          return `
-            <div class="folder-card" onclick="setFilter('folder','${escAttr(f.name)}');showPage('browse')">
-              <div class="folder-card-icon">${f.icon}</div>
-              <div class="folder-card-name">${escHtml(f.name)}</div>
-              <div class="folder-card-count">${count} item${count!==1?'s':''}</div>
-              <button class="btn btn-danger btn-sm" style="margin-top:10px;width:100%" onclick="event.stopPropagation();if(confirm('Delete folder? Items will be unfiled.'))deleteFolder(${f.id})">Delete</button>
-            </div>
-          `;
-        }).join('')}
-      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">${sorted.map(renderListCard).join('')}</div>
     `}
-    <div style="font-size:13px;color:var(--text-muted);padding:12px 0">
-      ${state.items.filter(i => !i.folder).length} unfiled items
-      ${state.items.filter(i => !i.folder).length > 0 ? `<button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="setFilter('folder','__none__');showPage('browse')">View →</button>` : ''}
-    </div>
   `;
 }
 
@@ -2568,65 +2797,156 @@ function closeModal() {
   document.getElementById('modal-overlay')?.remove();
 }
 
-function showCreateFolder() {
-  const ICONS = ['📁','🔖','⭐','🎮','💻','🎵','🎬','📚','🏋️','🍕','✈️','💡','🔬','💼','🌿','🎨','🏠','💰','🗺️','🎯'];
+// ─── LIST MANAGEMENT ─────────────────────────────────────────────────────────
+
+function showCreateList(type) {
+  const isSmart = type === 'smart';
   showModal(`
-    <div class="modal-title">New Folder</div>
+    <div class="modal-title">${isSmart ? '✦ New Smart List' : '📋 New Static List'}</div>
     <div class="form-group">
-      <label>Folder Name</label>
-      <input class="input" id="folder-name" placeholder="e.g. Recipes, Work, Gaming..." autofocus>
+      <label>Name</label>
+      <input class="input" id="list-name" placeholder="e.g. Must Reads, AI Papers..." autofocus>
     </div>
-    <div class="form-group">
-      <label>Icon</label>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px" id="icon-picker">
-        ${ICONS.map((icon,i) => `<button onclick="selectIcon('${icon}',this)" class="icon-btn" style="font-size:24px;padding:6px;border-radius:8px;background:${i===0?'var(--accent2)':'var(--surface2)'};border:1px solid var(--border);cursor:pointer">${icon}</button>`).join('')}
+    ${isSmart ? `
+      <div class="form-group">
+        <label>Search query</label>
+        <input class="input" id="list-query" placeholder='e.g. r:MachineLearning (pytorch, tensorflow)'>
+        <span style="font-size:11px;color:var(--text-muted)">Uses the same syntax as the search bar</span>
       </div>
-      <input type="hidden" id="folder-icon" value="📁">
-    </div>
+    ` : ''}
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;justify-content:center">Cancel</button>
-      <button class="btn btn-primary" onclick="doCreateFolder()" style="flex:1;justify-content:center">Create</button>
+      <button class="btn btn-primary" onclick="doCreateList('${type}')" style="flex:1;justify-content:center">Create</button>
     </div>
   `);
 }
 
-function selectIcon(icon, btn) {
-  document.querySelectorAll('.icon-btn').forEach(b => b.style.background = 'var(--surface2)');
-  btn.style.background = 'var(--accent2)';
-  document.getElementById('folder-icon').value = icon;
-}
-
-async function doCreateFolder() {
-  const name = document.getElementById('folder-name')?.value?.trim();
-  const icon = document.getElementById('folder-icon')?.value || '📁';
-  if (!name) { showToast('Please enter a folder name', 'error'); return; }
+async function doCreateList(type) {
+  const name = document.getElementById('list-name')?.value?.trim();
+  if (!name) { showToast('Please enter a name', 'error'); return; }
+  const query = type === 'smart' ? (document.getElementById('list-query')?.value?.trim() || '') : '';
   closeModal();
-  await createFolder(name, icon);
+  const id = await db.lists.add({ name, type, query, createdAt: new Date().toISOString() });
+  await loadData();
+  await pushListsToSupabase();
+  state.listView = id;
+  render();
+  showToast(`List "${name}" created`, 'success');
 }
 
-function showFolderMenu(itemId) {
+async function deleteList(id) {
+  await db.lists.delete(id);
+  await db.item_lists.where('listId').equals(id).delete();
+  if (state.listView === id) state.listView = 'all';
+  await loadData();
+  render();
+}
+
+function editList(id) {
+  const list = state.lists.find(l => l.id === id);
+  if (!list) return;
+  showModal(`
+    <div class="modal-title">Edit List</div>
+    <div class="form-group">
+      <label>Name</label>
+      <input class="input" id="edit-list-name" value="${escHtml(list.name)}">
+    </div>
+    ${list.type === 'smart' ? `
+      <div class="form-group">
+        <label>Search query</label>
+        <input class="input" id="edit-list-query" value="${escHtml(list.query || '')}">
+      </div>
+    ` : ''}
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;justify-content:center">Cancel</button>
+      <button class="btn btn-primary" onclick="doEditList(${id})" style="flex:1;justify-content:center">Save</button>
+    </div>
+  `);
+}
+
+async function doEditList(id) {
+  const name = document.getElementById('edit-list-name')?.value?.trim();
+  if (!name) { showToast('Name required', 'error'); return; }
+  const query = document.getElementById('edit-list-query')?.value?.trim() ?? undefined;
+  const updates = { name };
+  if (query !== undefined) updates.query = query;
+  await db.lists.update(id, updates);
+  closeModal();
+  await loadData();
+  await pushListsToSupabase();
+  render();
+}
+
+function showListMenu(itemId) {
   const item = state.items.find(i => i.id === itemId);
   if (!item) return;
-  const shortTitle = (item.title || 'this item').substring(0, 60);
+  if (state.lists.length === 0) {
+    showModal(`
+      <div class="modal-title">Add to List</div>
+      <p style="color:var(--text-muted);font-size:13px">No lists yet. Create one in the Lists tab first.</p>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;justify-content:center">Cancel</button>
+        <button class="btn btn-primary" onclick="closeModal();showPage('lists')" style="flex:1;justify-content:center">Go to Lists</button>
+      </div>
+    `);
+    return;
+  }
+
+  const inListIds = new Set(state.itemLists.filter(il => il.itemId === itemId).map(il => il.listId));
+  const sorted = [...state.lists].sort((a,b) => a.name.localeCompare(b.name));
+
   showModal(`
-    <div class="modal-title">Move to Folder</div>
-    <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">${escHtml(shortTitle)}${item.title?.length > 60 ? '...' : ''}</p>
-    <div style="display:flex;flex-direction:column;gap:8px">
-      <button class="btn btn-secondary" onclick="assignFolder(${itemId},null);closeModal()" style="justify-content:flex-start">
-        📭 Remove from folder
-      </button>
-      ${state.folders.map(f => `
-        <button class="btn ${item.folder===f.name?'btn-primary':'btn-secondary'}" onclick="assignFolder(${itemId},'${escAttr(f.name)}');closeModal()" style="justify-content:flex-start">
-          ${f.icon} ${escHtml(f.name)} ${item.folder===f.name?'✓':''}
+    <div class="modal-title">Add to List</div>
+    <input class="input" id="list-search" placeholder="Search lists…" oninput="filterListMenu(this.value)"
+      style="margin-bottom:10px;font-size:13px">
+    <div id="list-menu-items" style="display:flex;flex-direction:column;gap:6px;max-height:50vh;overflow-y:auto">
+      ${sorted.map(l => `
+        <button id="lmbtn-${l.id}" class="btn ${inListIds.has(l.id)?'btn-primary':'btn-secondary'}"
+          onclick="toggleItemList(${itemId},${l.id})"
+          style="justify-content:space-between;text-align:left">
+          <span>
+            ${l.type==='smart'?'<span style="color:var(--accent2);font-size:10px">✦</span> ':''}${escHtml(l.name)}
+          </span>
+          <span>${inListIds.has(l.id) ? '✓' : '+'}</span>
         </button>
       `).join('')}
-      <button class="btn btn-ghost" onclick="closeModal();showCreateFolder()" style="justify-content:flex-start">+ Create New Folder</button>
     </div>
-    <div style="margin-top:12px">
-      <button class="btn btn-ghost" onclick="closeModal()" style="width:100%;justify-content:center">Cancel</button>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button class="btn btn-ghost" onclick="closeModal()" style="flex:1;justify-content:center">Done</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal();showPage('lists')" style="flex:1;justify-content:center">Manage Lists →</button>
     </div>
   `);
 }
+
+function filterListMenu(q) {
+  const term = q.toLowerCase();
+  document.querySelectorAll('#list-menu-items button').forEach(btn => {
+    btn.style.display = btn.textContent.toLowerCase().includes(term) ? '' : 'none';
+  });
+}
+
+async function toggleItemList(itemId, listId) {
+  const existing = state.itemLists.find(il => il.itemId === itemId && il.listId === listId);
+  if (existing) {
+    await db.item_lists.delete(existing.id);
+  } else {
+    await db.item_lists.add({ itemId, listId });
+  }
+  await loadData();
+  // Sync to Supabase
+  try { await pushListsToSupabase(); } catch(e) {}
+  const inListIds = new Set(state.itemLists.filter(il => il.itemId === itemId).map(il => il.listId));
+  const btn = document.getElementById(`lmbtn-${listId}`);
+  if (btn) {
+    const isNowIn = inListIds.has(listId);
+    btn.className = `btn ${isNowIn ? 'btn-primary' : 'btn-secondary'}`;
+    btn.querySelector('span:last-child').textContent = isNowIn ? '✓' : '+';
+  }
+  // Refresh the 📋 button on visible cards without full re-render
+  renderBrowseList();
+}
+
+
 
 // ─── EVENT LISTENERS ──────────────────────────────────────────────────────────
 function attachEventListeners() {
@@ -2858,10 +3178,6 @@ async function clearAllData() {
 }
 
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
-function getFolderIcon(name) {
-  return state.folders.find(f => f.name === name)?.icon || '📁';
-}
-
 function escHtml(str) {
   if (!str) return '';
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
