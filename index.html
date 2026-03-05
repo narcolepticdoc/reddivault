@@ -1,0 +1,2975 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="RedditVault" />
+  <meta name="theme-color" content="#1a0a2e" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <title>RedditVault</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d0618;
+      --surface: #160d2a;
+      --surface2: #1f1340;
+      --border: #2d1f55;
+      --accent: #7c3aed;
+      --accent2: #a855f7;
+      --accent3: #f472b6;
+      --text: #e2d9f3;
+      --text-muted: #8b7aaa;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --radius: 14px;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      min-height: -webkit-fill-available;
+      overflow-x: hidden;
+    }
+    #app { min-height: 100vh; display: flex; flex-direction: column; }
+
+    .header {
+      background: linear-gradient(135deg, #1a0a2e 0%, #0d0618 100%);
+      border-bottom: 1px solid var(--border);
+      padding: calc(var(--safe-top) + 16px) 20px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      position: sticky; top: 0; z-index: 100;
+      backdrop-filter: blur(20px);
+    }
+    .logo { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 22px;
+      background: linear-gradient(135deg, var(--accent2), var(--accent3));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .logo span { font-weight: 400; }
+
+    .nav-bar {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      display: flex; padding: 8px 0 calc(var(--safe-bottom) + 8px);
+      z-index: 100;
+    }
+    .nav-item {
+      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 6px; cursor: pointer; border: none; background: none;
+      color: var(--text-muted); font-family: 'DM Sans', sans-serif; font-size: 11px;
+      transition: color 0.2s;
+    }
+    .nav-item.active { color: var(--accent2); }
+    .nav-icon { font-size: 22px; line-height: 1; }
+
+    .content { flex: 1; padding: 20px; padding-bottom: 100px; overflow-y: auto; }
+
+    /* Cards */
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 16px; margin-bottom: 12px;
+      transition: border-color 0.2s, transform 0.1s;
+    }
+    .card:active { transform: scale(0.99); }
+    .card.needs-enrichment { border-color: rgba(251,191,36,0.3); }
+
+    /* Badges */
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 8px; border-radius: 20px; font-size: 11px; font-weight: 500;
+    }
+    .badge-post { background: rgba(124,58,237,0.2); color: var(--accent2); }
+    .badge-comment { background: rgba(244,114,182,0.15); color: var(--accent3); }
+    .badge-enriching { background: rgba(251,191,36,0.15); color: var(--warning); }
+
+    /* Folder chip */
+    .folder-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 10px; border-radius: 20px; font-size: 12px;
+      background: rgba(168,85,247,0.15); color: var(--accent2);
+      border: 1px solid rgba(168,85,247,0.3); cursor: pointer;
+      transition: background 0.2s;
+    }
+    .folder-chip:hover { background: rgba(168,85,247,0.25); }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 10px 18px; border-radius: 10px; font-family: 'DM Sans', sans-serif;
+      font-size: 14px; font-weight: 500; cursor: pointer; border: none;
+      transition: all 0.2s; text-decoration: none;
+    }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { background: var(--accent2); }
+    .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+    .btn-ghost { background: transparent; color: var(--text-muted); border: 1px solid var(--border); }
+    .btn-sm { padding: 6px 12px; font-size: 12px; border-radius: 8px; }
+    .btn-danger { background: rgba(248,113,113,0.15); color: var(--danger); border: 1px solid rgba(248,113,113,0.3); }
+    .btn-warning { background: rgba(251,191,36,0.15); color: var(--warning); border: 1px solid rgba(251,191,36,0.3); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Inputs */
+    .input {
+      width: 100%; padding: 12px 16px; background: var(--surface2);
+      border: 1px solid var(--border); border-radius: 10px;
+      color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 15px;
+      outline: none; transition: border-color 0.2s;
+    }
+    .input:focus { border-color: var(--accent2); }
+    .input::placeholder { color: var(--text-muted); }
+
+    /* Search */
+    .search-wrap { position: relative; margin-bottom: 16px; }
+    .search-wrap .input { padding-left: 42px; }
+    .search-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+      font-size: 18px; color: var(--text-muted); pointer-events: none; }
+
+    /* Section header */
+    .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .section-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 20px; }
+
+    /* Empty state */
+    .empty { text-align: center; padding: 60px 20px; color: var(--text-muted); }
+    .empty-icon { font-size: 52px; margin-bottom: 16px; }
+    .empty h3 { font-family: 'Syne', sans-serif; font-size: 18px; color: var(--text); margin-bottom: 8px; }
+    .empty p { font-size: 14px; line-height: 1.6; }
+
+    /* Drop zone */
+    .drop-zone {
+      border: 2px dashed var(--border); border-radius: var(--radius);
+      padding: 40px 20px; text-align: center; cursor: pointer;
+      transition: all 0.2s; margin-bottom: 20px;
+    }
+    .drop-zone.drag-over { border-color: var(--accent2); background: rgba(168,85,247,0.05); }
+    .drop-zone-icon { font-size: 44px; margin-bottom: 12px; }
+    .drop-zone h3 { font-family: 'Syne', sans-serif; font-size: 17px; margin-bottom: 6px; }
+    .drop-zone p { font-size: 13px; color: var(--text-muted); }
+
+    /* Folder grid */
+    .folder-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+    .folder-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 18px 14px; cursor: pointer;
+      transition: all 0.2s; position: relative; overflow: hidden;
+    }
+    .folder-card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--accent), var(--accent3));
+    }
+    .folder-card:active { transform: scale(0.97); }
+    .folder-card-icon { font-size: 28px; margin-bottom: 8px; }
+    .folder-card-name { font-family: 'Syne', sans-serif; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
+    .folder-card-count { font-size: 12px; color: var(--text-muted); }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: flex; align-items: flex-end; z-index: 200;
+      backdrop-filter: blur(4px);
+    }
+    .modal {
+      background: var(--surface); border-radius: 20px 20px 0 0;
+      padding: 24px 20px calc(var(--safe-bottom) + 24px);
+      width: 100%; max-height: 80vh; overflow-y: auto;
+      border-top: 1px solid var(--border);
+    }
+    .modal-handle { width: 40px; height: 4px; background: var(--border);
+      border-radius: 2px; margin: 0 auto 20px; }
+    .modal-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 18px; margin-bottom: 16px; }
+
+    /* Preview modal — full height sheet */
+    .preview-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+      display: flex; align-items: flex-end; z-index: 200;
+      backdrop-filter: blur(4px);
+    }
+    .preview-sheet {
+      background: var(--bg); border-radius: 20px 20px 0 0;
+      width: 100%; height: 92vh;
+      display: flex; flex-direction: column;
+      border-top: 1px solid var(--border);
+    }
+    .preview-header {
+      padding: 16px 20px 12px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: flex-start; gap: 12px; flex-shrink: 0;
+    }
+    .preview-body {
+      flex: 1; overflow-y: auto; padding: 20px;
+      font-size: 15px; line-height: 1.7; color: var(--text);
+    }
+    .preview-body h1,.preview-body h2,.preview-body h3 {
+      font-family:'Syne',sans-serif; margin: 16px 0 8px; color: var(--text);
+    }
+    .preview-body p { margin-bottom: 12px; }
+    .preview-body a { color: var(--accent2); text-decoration: underline; word-break: break-all; }
+    .preview-body code {
+      background: var(--surface2); padding: 2px 6px; border-radius: 4px;
+      font-family: monospace; font-size: 13px;
+    }
+    .preview-body pre {
+      background: var(--surface2); padding: 12px; border-radius: 8px;
+      overflow-x: auto; margin-bottom: 12px;
+    }
+    .preview-body pre code { background: none; padding: 0; }
+    .preview-body blockquote {
+      border-left: 3px solid var(--border); padding-left: 12px;
+      color: var(--text-muted); margin-bottom: 12px;
+    }
+    .preview-body ul,.preview-body ol { padding-left: 20px; margin-bottom: 12px; }
+    .preview-body li { margin-bottom: 4px; }
+    .preview-body hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+    .preview-footer {
+      padding: 12px 20px calc(var(--safe-bottom) + 12px);
+      border-top: 1px solid var(--border); display: flex; gap: 8px; flex-shrink: 0;
+    }
+
+
+    /* Toast */
+    .toast-container { position: fixed; top: calc(var(--safe-top) + 80px); right: 16px; z-index: 300; display: flex; flex-direction: column; gap: 8px; }
+    .toast {
+      background: var(--surface2); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 16px; font-size: 13px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      animation: slideIn 0.3s ease; max-width: 280px;
+    }
+    .toast.success { border-color: var(--success); color: var(--success); }
+    .toast.error { border-color: var(--danger); color: var(--danger); }
+    .toast.warning { border-color: var(--warning); color: var(--warning); }
+    @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+    /* Progress */
+    .progress-bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin: 12px 0; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent3));
+      border-radius: 2px; transition: width 0.3s; }
+
+    /* Stats */
+    .stats-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+    .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+      padding: 14px; text-align: center; }
+    .stat-num { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 22px;
+      background: linear-gradient(135deg, var(--accent2), var(--accent3));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+    /* Filter pills */
+    .filter-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 16px; scrollbar-width: none; }
+    .filter-row::-webkit-scrollbar { display: none; }
+    .filter-pill {
+      display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+      padding: 6px 14px; border-radius: 20px; font-size: 13px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface2); color: var(--text-muted);
+      transition: all 0.2s;
+    }
+    .filter-pill.active { background: var(--accent); border-color: var(--accent); color: white; }
+
+    /* Config */
+    .config-section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+    .sync-status { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 8px 12px;
+      background: var(--surface2); border-radius: 8px; margin-bottom: 12px; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .status-dot.connected { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    .status-dot.disconnected { background: var(--text-muted); }
+    .status-dot.syncing { background: var(--warning); animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    /* Enrichment banner */
+    .enrich-banner {
+      background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.25);
+      border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
+      display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    }
+    .enrich-banner-text { flex: 1; min-width: 160px; }
+    .enrich-banner-text strong { display: block; font-size: 14px; color: var(--warning); margin-bottom: 2px; }
+    .enrich-banner-text span { font-size: 12px; color: var(--text-muted); }
+
+    /* Date row on cards */
+    .date-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 11px; color: var(--text-muted); }
+    .date-item { display: flex; align-items: center; gap: 3px; }
+
+    .divider { height: 1px; background: var(--border); margin: 16px 0; }
+    label { display: block; font-size: 13px; color: var(--text-muted); margin-bottom: 6px; }
+    .form-group { margin-bottom: 14px; }
+
+    .item-url { font-size: 12px; color: var(--accent2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .subreddit-tag { font-size: 12px; color: var(--accent3); font-weight: 500; }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  </style>
+</head>
+<body>
+<div id="app">
+  <div class="header">
+    <div style="display:flex;align-items:baseline;gap:8px">
+      <div class="logo">Reddit<span>Vault</span></div>
+      <div id="app-version" style="font-size:11px;color:var(--text-muted);font-family:'DM Sans',sans-serif;font-weight:400"></div>
+    </div>
+    <div id="header-actions"></div>
+  </div>
+  <div class="content" id="main-content"></div>
+  <nav class="nav-bar">
+    <button class="nav-item active" onclick="showPage('home')" id="nav-home">
+      <span class="nav-icon">🏠</span><span>Home</span>
+    </button>
+    <button class="nav-item" onclick="showPage('browse')" id="nav-browse">
+      <span class="nav-icon">📋</span><span>All Saves</span>
+    </button>
+    <button class="nav-item" onclick="showPage('folders')" id="nav-folders">
+      <span class="nav-icon">📁</span><span>Folders</span>
+    </button>
+    <button class="nav-item" onclick="showPage('import')" id="nav-import">
+      <span class="nav-icon">⬆️</span><span>Import</span>
+    </button>
+    <button class="nav-item" onclick="showPage('settings')" id="nav-settings">
+      <span class="nav-icon">⚙️</span><span>Settings</span>
+    </button>
+  </nav>
+  <div class="toast-container" id="toasts"></div>
+</div>
+
+<script>
+// ─── VERSION ─────────────────────────────────────────────────────────────────
+const APP_VERSION = '0.7.5';
+
+// ─── DATABASE ────────────────────────────────────────────────────────────────
+const db = new Dexie('RedditVault');
+db.version(3).stores({
+  items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, syncedAt',
+  folders: '++id, name, icon, createdAt',
+  config: 'key'
+});
+db.version(4).stores({
+  items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichAttempts, syncedAt',
+  folders: '++id, name, icon, createdAt',
+  config: 'key'
+});
+// Version 5: adds enrichStatus field — 'pending' | 'enriched' | 'dead'
+// 'dead' items failed MAX_ITEM_ATTEMPTS times and are hidden from browse by default.
+// This replaces the overloaded enriched boolean for clearer state management.
+db.version(5).stores({
+  items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt',
+  folders: '++id, name, icon, createdAt',
+  config: 'key'
+}).upgrade(tx => {
+  // Clean-slate migration: only items with BOTH a title and subreddit are
+  // considered definitively enriched. Everything else goes back to pending
+  // with a fresh attempt counter, since previous runs may have left the
+  // data in an inconsistent state.
+  return tx.table('items').toCollection().modify(item => {
+    const definitelyEnriched = !!(item.title && item.title.trim() && item.subreddit && item.subreddit.trim());
+    item.enrichStatus   = definitelyEnriched ? 'enriched' : 'pending';
+    item.enriched       = definitelyEnriched;
+    item.enrichAttempts = 0; // reset all counters — fresh start
+  });
+});
+
+// ─── STATE ──────────────────────────────────────────────────────────────────
+let state = {
+  page: 'home',
+  items: [],
+  folders: [],
+  search: '',
+  filterType: 'all',
+  filterFolder: 'all',
+  showDead: false,
+  supabaseUrl: '',
+  supabaseKey: '',
+  lastSync: null,
+  syncStatus: 'disconnected',
+  enriching: false,
+  enrichProgress: { done: 0, total: 0 },
+  // User-adjustable enrichment settings (persisted to IndexedDB config)
+  enrichReqPerMin: 8,          // default: 8 req/min for normal runs
+  enrichRetryReqPerMin: 4,     // default: 4 req/min for retry runs (mostly dead posts)
+  enrichRateLimitPause: 5,     // minutes to pause when rate limited
+  enrichMaxAttempts: 3,        // attempts before user can bulk-mark as dead
+  lastRunRateLimitHits: null,  // null = no run yet, 0 = clean last run, N = had issues
+  authorFreq: {},        // author -> save count, rebuilt on loadData
+  recentSearches: [],    // last 20 unique queries, persisted
+  favoriteSearches: [],  // user-starred queries, persisted
+  searchFocused: false,  // controls recents visibility
+  editingFavs: false,    // edit mode for favorites section
+  showTrash: false,      // toggle trash view in browse
+  showAuthorList: false, // toggle author frequency panel
+  filterFavourite: false, // show only favourited items
+  sortBy: 'postCreatedAt', // savedAt | postCreatedAt | score | subreddit | title
+  sortDir: 'desc',       // asc | desc
+  redditFeedUrl: '',     // private Reddit JSON feed URL (from old.reddit.com/prefs/feeds)
+  feedSyncing: false,    // true while feed sync is running
+  feedSyncResult: null,  // { added, skipped, pages, error } from last run
+};
+
+// ─── INIT ────────────────────────────────────────────────────────────────────
+async function init() {
+  await loadConfig();
+  await loadData();
+  render();
+  // Pull cloud preferences in background after initial render
+  if (state.supabaseUrl) {
+    pullPreferences().then(() => render());
+  }
+}
+
+async function loadConfig() {
+  try {
+    const url = await db.config.get('supabaseUrl');
+    const key = await db.config.get('supabaseKey');
+    const lastSync = await db.config.get('lastSync');
+    const enrichRpm = await db.config.get('enrichReqPerMin');
+    const retryRpm = await db.config.get('enrichRetryReqPerMin');
+    const rlPause = await db.config.get('enrichRateLimitPause');
+    if (url) state.supabaseUrl = url.value;
+    if (key) state.supabaseKey = key.value;
+    if (lastSync) state.lastSync = lastSync.value;
+    const maxAttempts = await db.config.get('enrichMaxAttempts');
+    const lastRunRL = await db.config.get('lastRunRateLimitHits');
+    if (enrichRpm) state.enrichReqPerMin = enrichRpm.value;
+    if (retryRpm) state.enrichRetryReqPerMin = retryRpm.value;
+    if (rlPause) state.enrichRateLimitPause = rlPause.value;
+    if (maxAttempts) state.enrichMaxAttempts = maxAttempts.value;
+    if (lastRunRL) state.lastRunRateLimitHits = lastRunRL.value;
+    const recents = await db.config.get('recentSearches');
+    const favs = await db.config.get('favoriteSearches');
+    if (recents) state.recentSearches = recents.value || [];
+    if (favs) state.favoriteSearches = favs.value || [];
+    const feedUrl = await db.config.get('redditFeedUrl');
+    if (feedUrl) state.redditFeedUrl = feedUrl.value;
+  } catch(e) {}
+}
+
+async function loadData() {
+  state.items = await db.items.orderBy('savedAt').reverse().toArray();
+  state.folders = await db.folders.toArray();
+  // Build author frequency map — only visible items (not disliked or dead)
+  state.authorFreq = {};
+  for (const item of state.items) {
+    if (!item.author || item.author === '[deleted]' || item.author === 'AutoModerator') continue;
+    if (item.isDisliked || item.enrichStatus === 'dead') continue;
+    state.authorFreq[item.author] = (state.authorFreq[item.author] || 0) + 1;
+  }
+}
+
+// ─── ENRICHMENT ──────────────────────────────────────────────────────────────
+// Fetches title, subreddit, post_created_at, author from Reddit's public .json API.
+// Works without authentication. Uses adaptive rate limiting and batch pausing
+// to survive enriching thousands of items without getting blocked by Reddit.
+
+// enriched field values:
+//   false / 0 / undefined = needs enrichment
+//   true / 1              = successfully enriched OR permanently unavailable (deleted/private)
+// enrichAttempts field tracks how many times we've tried, so we can skip
+// items that have failed many times (truly deleted/private) vs ones that
+// just got rate-limited mid-run.
+
+async function enrichItemFromReddit(item) {
+  const redditUrl = item.permalink || item.url || '';
+  if (!redditUrl.includes('reddit.com')) return null;
+
+  const clean = redditUrl.split('?')[0].replace(/\/$/, '');
+  const jsonUrl = clean + '.json?raw_json=1&limit=1';
+
+  try {
+    const res = await fetch(jsonUrl, {
+      headers: { 'Accept': 'application/json' }
+    });
+
+    // 429 = rate limited — caller should back off
+    if (res.status === 429) return 'rate_limited';
+    // 403/404 = deleted or private — mark as done so we don't retry forever
+    if (res.status === 403 || res.status === 404) return 'unavailable';
+    if (!res.ok) return null;
+
+    const data = await res.json();
+
+    if (!Array.isArray(data) || data.length === 0) return null;
+
+    const postChildren = data[0]?.data?.children;
+    if (!postChildren?.length) return null;
+    const postData = postChildren[0].data;
+    if (!postData) return null;
+
+    // Re-derive type from permalink — don't trust stored type which may be wrong
+    // from old CSV import bugs. A comment permalink has 6+ path segments;
+    // a post permalink has exactly 5.
+    const permalinkPath = (item.permalink || item.url || '').replace(/^https?:\/\/[^/]+/, '');
+    const derivedType = permalinkPath.split('/').filter(Boolean).length > 5 ? 'comment' : 'post';
+
+    let commentData = null;
+    if (derivedType === 'comment' && data.length > 1) {
+      // We need to find the SPECIFIC saved comment, not just the first in the thread.
+      // The comment's bare ID is the last non-empty path segment of the permalink,
+      // or we can strip the t1_ prefix from redditId.
+      const bareId = (item.redditId || '').replace(/^t1_/, '');
+      // Reddit returns a nested comment tree — walk it to find our comment
+      function findComment(children) {
+        for (const child of (children || [])) {
+          if (!child.data) continue;
+          if (child.data.id === bareId) return child.data;
+          // Comments can be nested — recurse into replies
+          const nested = child.data.replies?.data?.children;
+          if (nested) {
+            const found = findComment(nested);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+      const cc = data[1]?.data?.children;
+      commentData = bareId ? findComment(cc) : (cc?.[0]?.data || null);
+    }
+
+    const enriched = {
+      type: derivedType,   // store corrected type in case it was wrong
+      subreddit: postData.subreddit || item.subreddit || '',
+      postCreatedAt: postData.created_utc
+        ? new Date(postData.created_utc * 1000).toISOString()
+        : item.postCreatedAt || null,
+      enriched: true,
+      enrichAttempts: (item.enrichAttempts || 0) + 1,
+    };
+
+    if (derivedType === 'comment') {
+      enriched.title = postData.title || item.title || 'Saved Comment';
+      enriched.author = commentData?.author || item.author || '';
+      enriched.body = commentData?.body || item.body || '';
+      enriched.score = commentData?.score ?? item.score ?? null;
+      if (commentData?.created_utc) {
+        enriched.postCreatedAt = new Date(commentData.created_utc * 1000).toISOString();
+      }
+    } else {
+      enriched.title = postData.title || item.title || 'Untitled Post';
+      enriched.author = postData.author || item.author || '';
+      enriched.body = postData.selftext || item.body || '';
+      enriched.score = postData.score ?? item.score ?? null;
+      if (postData.url && !postData.url.includes('reddit.com/r/')) {
+        enriched.url = postData.url;
+      }
+    }
+
+    return enriched;
+  } catch(e) {
+    return null;
+  }
+}
+
+// ── Proactive rate-limit avoidance ───────────────────────────────────────────
+// Without OAuth, Reddit allows 10 requests per minute on a rolling 10-minute
+// window. We target 8 req/min by default — 80% of the limit — which keeps
+// us safely clear. A steady drip is better than bursts followed by long waits.
+//
+// Retry runs default to 4 req/min since the pool is mostly dead/private posts
+// and there is no urgency — slower = fewer false rate limit signals.
+//
+// All settings are user-adjustable within sane bounds and persisted to config.
+
+// Max attempts before bulk-dead action is enabled — controlled via state.enrichMaxAttempts
+
+// Derive timing from state settings at runtime (not hardcoded constants)
+function getEnrichDelay(isRetry) {
+  const rpm = isRetry ? state.enrichRetryReqPerMin : state.enrichReqPerMin;
+  return Math.round(60000 / rpm); // ms per request
+}
+function getRateLimitPause() {
+  return state.enrichRateLimitPause * 60000; // convert minutes to ms
+}
+
+let enrichStopped = false;
+
+async function enrichAllItems(retryFailed = false) {
+  if (state.enriching) return;
+  enrichStopped = false;
+
+  if (retryFailed) {
+    // Reset items that had attempts but no data and aren't dead — give them another shot
+    await db.items.toCollection().modify(item => {
+      if (item.enrichStatus !== 'dead' && !item.title && !item.subreddit) {
+        item.enriched = false;
+        item.enrichStatus = 'pending';
+        item.enrichAttempts = 0;
+      }
+    });
+    await loadData();
+  }
+
+  const allItems = await db.items.toArray();
+  const toEnrich = allItems.filter(i => i.enrichStatus === 'pending');
+
+  if (toEnrich.length === 0) {
+    showToast('All items already enriched ✓', 'success');
+    return;
+  }
+
+  const delay = getEnrichDelay(retryFailed);
+  const rlPause = getRateLimitPause();
+  const rpm = retryFailed ? state.enrichRetryReqPerMin : state.enrichReqPerMin;
+
+  state.enriching = true;
+  state.enrichProgress = { done: 0, total: toEnrich.length, enriched: 0, failed: 0, rateLimitHits: 0 };
+  render();
+
+  let enrichedCount = 0;
+  let failedCount = 0;
+  let rateLimitHits = 0;    // total rate limit events this run
+  let consecutiveNulls = 0; // track silent failures in a row
+
+  for (let i = 0; i < toEnrich.length; i++) {
+    if (enrichStopped) {
+      showToast('Enrichment paused — click Start to resume', 'warning');
+      break;
+    }
+
+    const item = toEnrich[i];
+    updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount);
+
+    const result = await enrichItemFromReddit(item);
+
+    if (result === 'rate_limited') {
+      // Explicit 429 — take a long pause then continue forward (no rewind)
+      rateLimitHits++;
+      state.enrichProgress.rateLimitHits = rateLimitHits;
+      updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'ratelimit', rlPause);
+      await sleep(rlPause);
+      consecutiveNulls = 0;
+      i--; // retry this one item then carry on
+      continue;
+
+    } else if (result === 'unavailable') {
+      await db.items.update(item.id, { enriched: true, enrichStatus: 'dead', enrichAttempts: (item.enrichAttempts || 0) + 1 });
+      failedCount++;
+      consecutiveNulls = 0;
+
+    } else if (result && typeof result === 'object') {
+      await db.items.update(item.id, { ...result, enrichStatus: 'enriched' });
+      enrichedCount++;
+      consecutiveNulls = 0;
+
+    } else {
+      // null — no data returned. Could be silent rate limiting or a broken/missing
+      // post. We never auto-mark dead on null — only explicit 404/403 does that.
+      // Just increment attempts and leave as pending so the user can decide.
+      const attempts = (item.enrichAttempts || 0) + 1;
+      await db.items.update(item.id, { enrichAttempts: attempts });
+      failedCount++;
+      consecutiveNulls++;
+
+      if (consecutiveNulls >= 3) {
+        // 3 consecutive nulls = likely silent rate limiting — take the long pause
+        rateLimitHits++;
+        state.enrichProgress.rateLimitHits = rateLimitHits;
+        updateEnrichProgress(i + 1, toEnrich.length, enrichedCount, failedCount, 'ratelimit', rlPause);
+        await sleep(rlPause);
+        consecutiveNulls = 0;
+      }
+    }
+
+    // Steady delay between every request
+    await sleep(delay);
+  }
+
+  state.enriching = false;
+  state.enrichProgress = { done: 0, total: 0, enriched: 0, failed: 0, rateLimitHits: 0 };
+  // Persist last run rate limit count so the "mark dead" action knows if run was clean
+  state.lastRunRateLimitHits = rateLimitHits;
+  await db.config.put({ key: 'lastRunRateLimitHits', value: rateLimitHits });
+  await loadData();
+
+  // Push enriched data to Supabase in batches
+  if (state.supabaseUrl && enrichedCount > 0) {
+    const enrichedItems = await db.items.filter(i => i.enriched && i.title).toArray();
+    for (let i = 0; i < enrichedItems.length; i += 200) {
+      await pushToSupabase(enrichedItems.slice(i, i + 200));
+    }
+  }
+
+  const remaining = (await db.items.filter(i => !i.enriched).count());
+  const rlMsg = rateLimitHits > 0 ? ` · ⚠ ${rateLimitHits} rate limit${rateLimitHits > 1 ? 's' : ''} hit` : '';
+  showToast(
+    `✓ Enriched ${enrichedCount} · ${failedCount} unavailable${remaining > 0 ? ` · ${remaining} remaining` : ''}${rlMsg}`,
+    rateLimitHits > 0 ? 'warning' : enrichedCount > 0 ? 'success' : 'warning'
+  );
+  render();
+}
+
+async function markAttemptedAsDead() {
+  const maxAttempts = state.enrichMaxAttempts;
+  const candidates = state.items.filter(i =>
+    i.enrichStatus === 'pending' && (i.enrichAttempts || 0) >= maxAttempts
+  );
+  if (candidates.length === 0) {
+    showToast('No items meet the threshold', 'warning');
+    return;
+  }
+  if (!confirm(`Mark ${candidates.length} item${candidates.length !== 1 ? 's' : ''} with ${maxAttempts}+ failed attempts as dead? They will be hidden from your library.`)) return;
+
+  for (const item of candidates) {
+    await db.items.update(item.id, { enriched: true, enrichStatus: 'dead' });
+  }
+  await loadData();
+  showToast(`Marked ${candidates.length} items as dead`, 'success');
+  render();
+}
+
+function stopEnrichment() {
+  enrichStopped = true;
+}
+
+function updateEnrichProgress(done, total, enriched, failed, status = '', rlPauseMs = 300000) {
+  const el = document.getElementById('enrich-progress-details');
+  if (!el) return;
+  const pct = Math.round((done / total) * 100);
+  const remaining = total - done;
+  const delay = getEnrichDelay(false); // use current run delay for estimate
+  const minsLeft = Math.round((remaining * delay) / 60000);
+  const rlHits = state.enrichProgress.rateLimitHits || 0;
+  const rlPauseMins = Math.round(rlPauseMs / 60000);
+
+  let statusMsg = '';
+  if (status === 'ratelimit') {
+    statusMsg = `<span style="color:var(--warning)">⏳ Rate limited — pausing ${rlPauseMins} min before continuing...</span>`;
+  }
+
+  el.innerHTML = `
+    <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+    <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">
+      ${done} / ${total} processed &nbsp;·&nbsp; ${enriched} enriched &nbsp;·&nbsp; ${failed} unavailable
+      ${rlHits > 0 ? `&nbsp;·&nbsp; <span style="color:var(--warning)">⚠ ${rlHits} rate limit${rlHits > 1 ? 's' : ''}</span>` : ''}
+      ${!status && minsLeft > 1 ? `&nbsp;·&nbsp; ~${minsLeft} min left` : ''}
+    </div>
+    ${statusMsg ? `<div style="font-size:12px;text-align:center;margin-top:6px">${statusMsg}</div>` : ''}
+  `;
+}
+
+// ─── SUPABASE ────────────────────────────────────────────────────────────────
+async function supabaseFetch(path, method='GET', body=null) {
+  if (!state.supabaseUrl || !state.supabaseKey) throw new Error('Supabase not configured');
+  const res = await fetch(`${state.supabaseUrl}/rest/v1${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'apikey': state.supabaseKey,
+      'Authorization': `Bearer ${state.supabaseKey}`,
+      'Prefer': method === 'POST' ? 'resolution=merge-duplicates' : ''
+    },
+    body: body ? JSON.stringify(body) : null
+  });
+  if (!res.ok) throw new Error(`Supabase error: ${res.status}`);
+  return method === 'GET' ? res.json() : res;
+}
+
+// Fetches a specific row range using HTTP Range headers — the correct way to
+// paginate Supabase which otherwise hard-caps at 1000 rows per request
+async function supabaseFetchRange(path, from, to) {
+  if (!state.supabaseUrl || !state.supabaseKey) throw new Error('Supabase not configured');
+  const res = await fetch(`${state.supabaseUrl}/rest/v1${path}`, {
+    headers: {
+      'apikey': state.supabaseKey,
+      'Authorization': `Bearer ${state.supabaseKey}`,
+      'Range': `${from}-${to}`,
+      'Range-Unit': 'items',
+      'Prefer': 'count=none'
+    }
+  });
+  // 206 Partial Content = more pages exist, 200 = last page
+  if (res.status !== 200 && res.status !== 206) {
+    throw new Error(`Supabase range fetch error: ${res.status}`);
+  }
+  return res.json();
+}
+
+async function saveEnrichSettings() {
+  const rpm = parseInt(document.getElementById('enrich-rpm')?.value);
+  const retryRpm = parseInt(document.getElementById('enrich-retry-rpm')?.value);
+  const rlPause = parseInt(document.getElementById('enrich-rl-pause')?.value);
+
+  // Validate within sane bounds
+  const validRpm = Math.min(10, Math.max(1, rpm || 8));
+  const validRetryRpm = Math.min(10, Math.max(1, retryRpm || 4));
+  const validRlPause = Math.min(30, Math.max(1, rlPause || 5));
+
+  const maxAtt = parseInt(document.getElementById('enrich-max-attempts')?.value);
+  const validMaxAtt = Math.min(20, Math.max(1, maxAtt || 3));
+
+  state.enrichReqPerMin = validRpm;
+  state.enrichRetryReqPerMin = validRetryRpm;
+  state.enrichRateLimitPause = validRlPause;
+  state.enrichMaxAttempts = validMaxAtt;
+
+  await db.config.put({ key: 'enrichReqPerMin', value: validRpm });
+  await db.config.put({ key: 'enrichRetryReqPerMin', value: validRetryRpm });
+  await db.config.put({ key: 'enrichRateLimitPause', value: validRlPause });
+  await db.config.put({ key: 'enrichMaxAttempts', value: validMaxAtt });
+
+  showToast('Enrichment settings saved ✓', 'success');
+  render();
+}
+
+// ─── PREFERENCES SYNC ────────────────────────────────────────────────────────
+
+async function pushPreference(key, value) {
+  if (!state.supabaseUrl) return;
+  try {
+    await supabaseFetch(
+      '/user_preferences?on_conflict=key',
+      'POST',
+      [{ key, value, updated_at: new Date().toISOString() }]
+    );
+  } catch(e) {
+    console.warn('Preference push failed:', e);
+  }
+}
+
+async function pullPreferences() {
+  if (!state.supabaseUrl) return;
+  try {
+    const rows = await supabaseFetch('/user_preferences?select=*');
+    for (const row of rows) {
+      if (row.key === 'favoriteSearches' && Array.isArray(row.value)) {
+        // Merge cloud favs with local — union of both, cloud wins on conflict
+        const merged = [...new Set([...row.value, ...state.favoriteSearches])];
+        state.favoriteSearches = merged;
+        await db.config.put({ key: 'favoriteSearches', value: merged });
+      }
+      if (row.key === 'recentSearches' && Array.isArray(row.value)) {
+        // Merge recents, deduplicate, cap at 20
+        const merged = [...new Set([...row.value, ...state.recentSearches])].slice(0, 20);
+        state.recentSearches = merged;
+        await db.config.put({ key: 'recentSearches', value: merged });
+      }
+    }
+  } catch(e) {
+    console.warn('Preference pull failed:', e);
+  }
+}
+
+async function syncFromSupabase() {
+  state.syncStatus = 'syncing';
+  renderHeaderActions();
+  try {
+    // Supabase hard-caps responses at 1000 rows by default regardless of the
+    // limit parameter. We page through using Range headers until we have everything.
+    const PAGE_SIZE = 1000;
+    let allRemoteItems = [];
+    let offset = 0;
+    while (true) {
+      const page = await supabaseFetchRange(
+        '/reddit_saves?select=*&order=saved_at.desc',
+        offset, offset + PAGE_SIZE - 1
+      );
+      allRemoteItems = allRemoteItems.concat(page);
+      showToast(`Fetching from cloud... ${allRemoteItems.length} items`, 'success');
+      if (page.length < PAGE_SIZE) break; // last page
+      offset += PAGE_SIZE;
+    }
+
+    const remoteFolders = await supabaseFetch('/reddit_folders?select=*');
+
+    for (const f of remoteFolders) {
+      const exists = await db.folders.where('name').equals(f.name).first();
+      if (!exists) {
+        await db.folders.add({ name: f.name, icon: f.icon || '📁', createdAt: f.created_at });
+      }
+    }
+
+    let added = 0, updated = 0;
+    for (const item of allRemoteItems) {
+      const exists = await db.items.where('redditId').equals(item.reddit_id).first();
+      if (!exists) {
+        await db.items.add({
+          redditId: item.reddit_id,
+          type: item.type,
+          subreddit: item.subreddit || '',
+          title: item.title || '',
+          url: item.url || '',
+          permalink: item.permalink || item.url || '',
+          body: item.body || '',
+          author: item.author || '',
+          score: item.score ?? null,
+          folder: item.folder || null,
+          savedAt: item.saved_at,
+          postCreatedAt: item.post_created_at || null,
+          enriched: !!(item.title && item.subreddit),
+          enrichStatus: item.enrich_status || ((item.title && item.subreddit) ? 'enriched' : 'pending'),
+          isFavourite:  item.is_favourite || false,
+          rating:       item.rating || null,
+          isDisliked:   item.is_disliked || false,
+          enrichAttempts: 0,
+          syncedAt: new Date().toISOString()
+        });
+        added++;
+      } else {
+        // Full replacement from cloud — Supabase is the source of truth.
+        // We preserve local-only fields (enrichAttempts, syncedAt) but
+        // overwrite everything that the cloud owns.
+        await db.items.update(exists.id, {
+          type:          item.type,
+          subreddit:     item.subreddit || '',
+          title:         item.title || '',
+          url:           item.url || '',
+          permalink:     item.permalink || item.url || '',
+          body:          item.body || '',
+          author:        item.author || '',
+          score:         item.score ?? null,
+          folder:        item.folder || null,
+          savedAt:       item.saved_at,
+          postCreatedAt: item.post_created_at || null,
+          enriched:      !!(item.title && item.subreddit),
+          enrichStatus:  item.enrich_status || ((item.title && item.subreddit) ? 'enriched' : 'pending'),
+          isFavourite:   item.is_favourite || false,
+          rating:        item.rating || null,
+          isDisliked:    item.is_disliked || false,
+          syncedAt:      new Date().toISOString(),
+        });
+        updated++;
+      }
+    }
+
+    await db.config.put({ key: 'lastSync', value: new Date().toISOString() });
+    state.lastSync = new Date().toISOString();
+    state.syncStatus = 'connected';
+    await loadData();
+    await pullPreferences();
+    showToast(`Synced ${allRemoteItems.length} items from cloud ✓`, 'success');
+    render();
+  } catch(e) {
+    state.syncStatus = 'disconnected';
+    showToast('Sync failed: ' + e.message, 'error');
+    renderHeaderActions();
+  }
+}
+
+async function pushToSupabase(items) {
+  if (!state.supabaseUrl || !state.supabaseKey) return;
+  const payload = items.map(i => ({
+    reddit_id: i.redditId,
+    type: i.type,
+    subreddit: i.subreddit || '',
+    title: i.title || '',
+    url: i.url || '',
+    permalink: i.permalink || i.url || '',
+    body: i.body || '',
+    author: i.author || '',
+    score: i.score ?? null,
+    folder: i.folder || null,
+    saved_at: i.savedAt,
+    post_created_at: i.postCreatedAt || null,
+    enrich_status: i.enrichStatus || 'pending',
+    is_favourite: i.isFavourite || false,
+    rating: i.rating || null,
+    is_disliked: i.isDisliked || false,
+  }));
+  try {
+    await supabaseFetch('/reddit_saves?on_conflict=reddit_id', 'POST', payload);
+  } catch(e) {
+    console.warn('Push failed:', e);
+  }
+}
+
+async function pushFolderUpdate(itemId, folder) {
+  if (!state.supabaseUrl || !state.supabaseKey) return;
+  const item = await db.items.get(itemId);
+  if (!item) return;
+  try {
+    await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', { folder });
+  } catch(e) {}
+}
+
+// ─── IMPORT ──────────────────────────────────────────────────────────────────
+async function pushAllToSupabase() {
+  if (!state.supabaseUrl || !state.supabaseKey) {
+    showToast('Supabase not configured', 'error');
+    return;
+  }
+  showToast('Pushing all local data to cloud…', 'info');
+  try {
+    const allItems = await db.items.toArray();
+    const BATCH = 200;
+    for (let i = 0; i < allItems.length; i += BATCH) {
+      await pushToSupabase(allItems.slice(i, i + BATCH));
+      showToast(`Pushing… ${Math.min(i + BATCH, allItems.length)} / ${allItems.length}`, 'info');
+    }
+    showToast(`✓ Pushed ${allItems.length.toLocaleString()} items to cloud`, 'success');
+  } catch(e) {
+    showToast('Push failed: ' + e.message, 'error');
+  }
+}
+async function resetAllEnrichment() {
+  const allItems = await db.items.toArray();
+  for (const item of allItems) {
+    await db.items.update(item.id, {
+      enriched: false,
+      enrichStatus: 'pending',
+      enrichAttempts: 0,
+    });
+  }
+  await loadData();
+  showToast(`${allItems.length.toLocaleString()} items queued for re-enrichment`, 'success');
+  render();
+}
+
+async function repairCSVDuplicates() {
+  const allItems = await db.items.toArray();
+
+  // Diagnostic — show what ID formats we actually have
+  const prefixed = allItems.filter(i => /^t[13]_/.test(i.redditId || ''));
+  const bare     = allItems.filter(i => !/^t[13]_/.test(i.redditId || '') && i.redditId);
+  const enrichedAsComment = allItems.filter(i =>
+    i.type === 'comment' &&
+    (i.permalink || i.url || '').replace(/^https?:\/\/[^/]+/, '').split('/').filter(Boolean).length <= 5
+  );
+
+  console.log(`Total: ${allItems.length} | Prefixed IDs: ${prefixed.length} | Bare IDs: ${bare.length} | Posts stored as comments: ${enrichedAsComment.length}`);
+  if (bare.length > 0) console.log('Sample bare IDs:', bare.slice(0,3).map(i => i.redditId));
+  if (enrichedAsComment.length > 0) console.log('Sample mistyped:', enrichedAsComment.slice(0,3).map(i => ({id: i.redditId, permalink: i.permalink})));
+
+  showToast(
+    `Found: ${prefixed.length} prefixed IDs, ${bare.length} bare IDs, ${enrichedAsComment.length} posts stored as comments — check console for details`,
+    bare.length > 0 || enrichedAsComment.length > 0 ? 'warning' : 'success'
+  );
+
+  if (bare.length === 0 && enrichedAsComment.length === 0) return;
+
+  // CSV items have bare IDs (abc123); extension items have prefixed IDs (t3_abc123).
+  let merged = 0, renumbered = 0, markedForReenrich = 0;
+
+  // Build a map of bare-id -> prefixed item (extension version)
+  const prefixedById = {};
+  for (const item of allItems) {
+    const id = item.redditId || '';
+    if (id.startsWith('t3_') || id.startsWith('t1_')) {
+      prefixedById[id.replace(/^t[13]_/, '')] = item;
+    }
+  }
+
+  for (const item of allItems) {
+    const id = item.redditId || '';
+    if (id.startsWith('t3_') || id.startsWith('t1_')) continue; // already prefixed
+
+    const bareId = id;
+    const prefixedItem = prefixedById[bareId];
+
+    if (prefixedItem) {
+      // Duplicate — a prefixed version exists from the extension.
+      // Preserve folder/favourite/rating from CSV item if the prefixed one lacks them,
+      // then delete the bare-ID duplicate.
+      const updates = {};
+      if (!prefixedItem.folder && item.folder) updates.folder = item.folder;
+      if (!prefixedItem.isFavourite && item.isFavourite) updates.isFavourite = item.isFavourite;
+      if (!prefixedItem.rating && item.rating) updates.rating = item.rating;
+      if (Object.keys(updates).length) await db.items.update(prefixedItem.id, updates);
+      await db.items.delete(item.id);
+      // Also delete from Supabase
+      if (state.supabaseUrl) {
+        try { await supabaseFetch('/reddit_saves?reddit_id=eq.' + bareId, 'DELETE', null); } catch(e) {}
+      }
+      merged++;
+    } else {
+      // No duplicate — just needs its ID normalised and re-enrichment triggered
+      const permalink = item.permalink || item.url || '';
+      const permalinkPath = permalink.replace(/^https?:\/\/[^\/]+/, '');
+      const isComment = permalinkPath.split('/').filter(Boolean).length > 5;
+      const newId = (isComment ? 't1_' : 't3_') + bareId;
+
+      await db.items.update(item.id, {
+        redditId: newId,
+        enriched: false,
+        enrichStatus: 'pending',
+        enrichAttempts: 0,
+      });
+      // Update Supabase — delete old bare-id row, the next push will create the correct one
+      if (state.supabaseUrl) {
+        try { await supabaseFetch('/reddit_saves?reddit_id=eq.' + bareId, 'DELETE', null); } catch(e) {}
+      }
+      renumbered++;
+      markedForReenrich++;
+    }
+  }
+
+  await loadData();
+  const msg = [
+    merged > 0 ? `${merged} duplicate${merged!==1?'s':''} merged` : '',
+    renumbered > 0 ? `${renumbered} ID${renumbered!==1?'s':''} normalised` : '',
+    markedForReenrich > 0 ? `${markedForReenrich} queued for re-enrichment` : '',
+  ].filter(Boolean).join(', ');
+
+  showToast(msg || 'Nothing to repair', merged + renumbered > 0 ? 'success' : 'warning');
+  render();
+
+  // Push corrected items to Supabase
+  if ((merged + renumbered) > 0 && state.supabaseUrl) {
+    showToast('Syncing repairs to cloud…', 'info');
+    const fixed = await db.items.toArray();
+    for (let i = 0; i < fixed.length; i += 200) await pushToSupabase(fixed.slice(i, i + 200));
+    showToast('✓ Repairs synced to cloud', 'success');
+  }
+}
+
+async function repairItemTypes() {
+  // Items imported from CSV before the fix have wrong types because the detection
+  // logic didn't strip the domain from full URLs before counting path segments.
+  // Re-evaluate every item's type from its stored permalink.
+  const allItems = await db.items.toArray();
+  let fixed = 0;
+
+  for (const item of allItems) {
+    const permalink = item.permalink || item.url || '';
+    if (!permalink) continue;
+
+    const path = permalink.replace(/^https?:\/\/[^\/]+/, '');
+    const parts = path.split('/').filter(Boolean);
+    const correctType = parts.length > 5 ? 'comment' : 'post';
+
+    if (item.type !== correctType) {
+      await db.items.update(item.id, { type: correctType });
+      fixed++;
+    }
+  }
+
+  await loadData();
+  showToast(`Repaired ${fixed} item type${fixed !== 1 ? 's' : ''} ✓`, fixed > 0 ? 'success' : 'warning');
+  render();
+  // Push repaired types to Supabase so other devices get the fix
+  if (fixed > 0 && state.supabaseUrl) {
+    showToast('Syncing repairs to cloud…', 'info');
+    const allItems = await db.items.toArray();
+    for (let i = 0; i < allItems.length; i += 200) {
+      await pushToSupabase(allItems.slice(i, i + 200));
+    }
+    showToast('✓ Repairs synced to cloud', 'success');
+  }
+}
+async function handleCSVImport(file) {
+  return new Promise((resolve) => {
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        const rows = results.data;
+        let added = 0, dupes = 0;
+
+        for (const row of rows) {
+          // Reddit's data export CSV has these columns:
+          // id, permalink, url, title, body, created_utc, subreddit, type
+          // However the "saved items" export often only has: id, permalink, url
+          const rawId = (row.id || '').trim();
+          if (!rawId) continue;
+
+          // Detect type first so we can normalise the ID with the correct prefix
+          const permalink = row.permalink || '';
+          const permalinkPath = permalink.replace(/^https?:\/\/[^\/]+/, '');
+          const isComment = permalinkPath.split('/').filter(Boolean).length > 5;
+
+          // Normalise to Reddit fullname format (t1_ = comment, t3_ = post).
+          // CSV exports give bare IDs; the extension gives prefixed ones.
+          // Consistent storage prevents duplicates when both sources have same item.
+          const prefix = isComment ? 't1_' : 't3_';
+          const redditId = (rawId.startsWith('t1_') || rawId.startsWith('t3_'))
+            ? rawId
+            : prefix + rawId;
+
+          // Check for existing item under either the normalised OR bare ID
+          const exists = await db.items.where('redditId').equals(redditId).first()
+            || await db.items.where('redditId').equals(rawId).first();
+          if (exists) { dupes++; continue; }
+
+          // Determine if we have enough data already or need enrichment
+          const hasTitle = !!(row.title && row.title.trim());
+          const hasSubreddit = !!(row.subreddit && row.subreddit.trim());
+          const hasEnoughData = hasTitle && hasSubreddit;
+
+          // Extract subreddit from permalink if not in CSV: /r/SUBREDDIT/...
+          let subreddit = row.subreddit || '';
+          if (!subreddit && permalink) {
+            const parts = permalink.split('/').filter(Boolean);
+            if (parts[0] === 'r' && parts[1]) subreddit = parts[1];
+          }
+
+          // Build permalink as full URL
+          const fullPermalink = permalink.startsWith('http')
+            ? permalink
+            : `https://www.reddit.com${permalink}`;
+
+          // For the display URL: use provided url, or fall back to permalink
+          const url = row.url || fullPermalink;
+
+          // Parse created_utc if available (it's a Unix timestamp)
+          const postCreatedAt = row.created_utc && !isNaN(parseInt(row.created_utc))
+            ? new Date(parseInt(row.created_utc) * 1000).toISOString()
+            : null;
+
+          await db.items.add({
+            redditId,
+            type: isComment ? 'comment' : 'post',
+            subreddit,
+            title: row.title || '',
+            url,
+            permalink: fullPermalink,
+            body: row.body || '',
+            author: row.author || '',
+            score: null,
+            savedAt: new Date().toISOString(), // CSV doesn't include save time
+            postCreatedAt,
+            enriched: hasEnoughData,
+            enrichStatus: hasEnoughData ? 'enriched' : 'pending',
+            syncedAt: null,
+            folder: null
+          });
+          added++;
+        }
+
+        await loadData();
+
+        // Push new items to Supabase if configured
+        if (state.supabaseUrl) {
+          const newItems = state.items.filter(i => !i.syncedAt);
+          if (newItems.length > 0) {
+            await pushToSupabase(newItems);
+            await db.items.where('syncedAt').equals(null).modify({ syncedAt: new Date().toISOString() });
+          }
+        }
+
+        resolve({ added, dupes, total: rows.length });
+      }
+    });
+  });
+}
+
+async function handleJSONImport(data) {
+  let added = 0, dupes = 0;
+  const items = Array.isArray(data) ? data : data.items || [];
+  for (const item of items) {
+    if (!item.redditId) continue;
+    const exists = await db.items.where('redditId').equals(item.redditId).first();
+    if (exists) { dupes++; continue; }
+    // Ensure all new fields exist
+    await db.items.add({
+      ...item,
+      postCreatedAt: item.postCreatedAt || null,
+      enriched: item.enriched ?? !!(item.title && item.subreddit),
+      enrichStatus: item.enrichStatus || (item.title && item.subreddit ? 'enriched' : 'pending'),
+      permalink: item.permalink || item.url || '',
+      author: item.author || '',
+      score: item.score ?? null,
+    });
+    added++;
+  }
+  const folders_ = Array.isArray(data) ? [] : data.folders || [];
+  for (const f of folders_) {
+    const exists = await db.folders.where('name').equals(f.name).first();
+    if (!exists) await db.folders.add(f);
+  }
+  await loadData();
+  return { added, dupes };
+}
+
+// ─── FOLDERS ─────────────────────────────────────────────────────────────────
+async function createFolder(name, icon='📁') {
+  const exists = state.folders.find(f => f.name.toLowerCase() === name.toLowerCase());
+  if (exists) { showToast('Folder already exists', 'error'); return; }
+  await db.folders.add({ name, icon, createdAt: new Date().toISOString() });
+  await loadData();
+  render();
+  showToast(`Folder "${name}" created`, 'success');
+}
+
+async function deleteFolder(id) {
+  const folder = state.folders.find(f => f.id === id);
+  if (!folder) return;
+  await db.items.where('folder').equals(folder.name).modify({ folder: null });
+  await db.folders.delete(id);
+  await loadData();
+  render();
+  showToast('Folder deleted', 'success');
+}
+
+async function assignFolder(itemId, folderName) {
+  await db.items.update(itemId, { folder: folderName || null });
+  await pushFolderUpdate(itemId, folderName || null);
+  await loadData();
+  render();
+  showToast(folderName ? `Moved to "${folderName}"` : 'Removed from folder', 'success');
+}
+
+async function deleteItem(itemId) {
+  await db.items.delete(itemId);
+  await loadData();
+  render();
+  showToast('Item removed', 'success');
+}
+
+// ─── EXPORT ──────────────────────────────────────────────────────────────────
+async function exportJSON() {
+  const items = await db.items.toArray();
+  const folders = await db.folders.toArray();
+  const data = JSON.stringify({ items, folders, exportedAt: new Date().toISOString() }, null, 2);
+  const blob = new Blob([data], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `reddivault-backup-${new Date().toISOString().split('T')[0]}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('Backup downloaded ✓', 'success');
+}
+
+// ─── RENDER ──────────────────────────────────────────────────────────────────
+function showPage(page) {
+  state.page = page;
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.getElementById(`nav-${page}`)?.classList.add('active');
+  render();
+}
+
+function render() {
+  const content = document.getElementById('main-content');
+  renderHeaderActions();
+  switch(state.page) {
+    case 'home':     content.innerHTML = renderHome(); break;
+    case 'browse':   content.innerHTML = renderBrowse(); break;
+    case 'folders':  content.innerHTML = renderFolders(); break;
+    case 'import':   content.innerHTML = renderImport(); break;
+    case 'settings': content.innerHTML = renderSettings(); break;
+  }
+  attachEventListeners();
+}
+
+function renderHeaderActions() {
+  // Version badge — always visible in header
+  const versionEl = document.getElementById('app-version');
+  if (versionEl) versionEl.textContent = `v${APP_VERSION}`;
+
+  const el = document.getElementById('header-actions');
+  if (state.syncStatus === 'syncing') {
+    el.innerHTML = `<span style="font-size:12px;color:var(--warning)">🔄 Syncing...</span>`;
+  } else if (state.supabaseUrl && state.supabaseKey) {
+    el.innerHTML = `<button class="btn btn-sm btn-ghost" onclick="syncFromSupabase()">🟢 Sync</button>`;
+  } else {
+    el.innerHTML = '';
+  }
+}
+
+function renderHome() {
+  const total = state.items.length;
+  const posts = state.items.filter(i => i.type === 'post').length;
+  const needsEnrich = state.items.filter(i => i.enrichStatus === 'pending').length;
+  const recent = state.items.slice(0, 5);
+
+  return `
+    <div class="stats-row">
+      <div class="stat-card"><div class="stat-num">${total.toLocaleString()}</div><div class="stat-label">Saved Items</div></div>
+      <div class="stat-card"><div class="stat-num">${posts.toLocaleString()}</div><div class="stat-label">Posts</div></div>
+      <div class="stat-card"><div class="stat-num">${state.folders.length}</div><div class="stat-label">Folders</div></div>
+    </div>
+
+    ${needsEnrich > 0 ? `
+      <div class="enrich-banner">
+        <div class="enrich-banner-text">
+          <strong>⚡ ${needsEnrich} items need enrichment</strong>
+          <span>Missing titles, subreddits, or post dates from CSV import</span>
+        </div>
+        <button class="btn btn-warning btn-sm" onclick="showPage('import')" style="white-space:nowrap">Enrich Now</button>
+      </div>
+    ` : ''}
+
+    ${total === 0 ? `
+      <div class="empty">
+        <div class="empty-icon">📥</div>
+        <h3>No saved items yet</h3>
+        <p>Import your Reddit saved posts CSV or sync from the cloud to get started.</p>
+        <br>
+        <button class="btn btn-primary" onclick="showPage('import')">Import CSV</button>
+      </div>
+    ` : `
+      <div class="section-header">
+        <div class="section-title">Recently Saved</div>
+        <button class="btn btn-ghost btn-sm" onclick="showPage('browse')">See all →</button>
+      </div>
+      ${recent.map(item => renderItemCard(item, false)).join('')}
+    `}
+  `;
+}
+
+// ─── MARKDOWN RENDERER ───────────────────────────────────────────────────────
+// Renders Reddit's markdown subset to safe HTML.
+// Handles: headers, bold, italic, code blocks, inline code, blockquotes,
+//          ordered/unordered lists, horizontal rules, links, and paragraphs.
+
+function renderMarkdown(text) {
+  if (!text) return '';
+
+  // Extract markdown links BEFORE escaping so brackets/parens aren't mangled.
+  // Replace [text](url) with a placeholder, restore as <a> after escaping.
+  const linkPlaceholders = [];
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_, linkText, url) => {
+    const idx = linkPlaceholders.length;
+    const safeUrl = url.replace(/'/g, '%27').replace(/"/g, '%22');
+    const safeText = linkText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    linkPlaceholders.push(`<a href="${safeUrl}" onclick="openLink(event,'${safeUrl}')">${safeText}</a>`);
+    return `\x00LINK${idx}\x00`;
+  });
+
+  let html = escHtml(text);
+
+  // Restore link placeholders
+  html = html.replace(/\x00LINK(\d+)\x00/g, (_, i) => linkPlaceholders[+i]);
+
+  // Code blocks (``` ... ```) — must come before inline code
+  html = html.replace(/```([\s\S]*?)```/g, (_, code) =>
+    `<pre><code>${code.trim()}</code></pre>`);
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Bold and italic
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/_(.+?)_/g, '<em>$1</em>');
+
+  // Horizontal rule
+  html = html.replace(/^(-{3,}|\*{3,})$/gm, '<hr>');
+
+  // Blockquotes
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Unordered lists
+  html = html.replace(/(^[*\-] .+$(\n[*\-] .+$)*)/gm, match => {
+    const items = match.split('\n').map(l => `<li>${l.replace(/^[*\-] /, '')}</li>`).join('');
+    return `<ul>${items}</ul>`;
+  });
+
+  // Ordered lists
+  html = html.replace(/(^\d+\. .+$(\n\d+\. .+$)*)/gm, match => {
+    const items = match.split('\n').map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`).join('');
+    return `<ol>${items}</ol>`;
+  });
+
+  // Auto-links (bare URLs — don't double-wrap URLs already inside <a> tags)
+  html = html.replace(/(<a [^>]+>[\s\S]*?<\/a>)|(https?:\/\/[^\s<>"]+)/g, (match, anchor, url) => {
+    if (anchor) return anchor; // already an <a> tag, leave it alone
+    return `<a href="${url}" onclick="openLink(event,'${url}')">${url}</a>`;
+  });
+
+  // Paragraphs — wrap double-newline separated blocks
+  html = html.split(/\n\n+/).map(block => {
+    block = block.trim();
+    if (!block) return '';
+    if (/^<(h[1-3]|ul|ol|pre|blockquote|hr)/.test(block)) return block;
+    return `<p>${block.replace(/\n/g, '<br>')}</p>`;
+  }).join('\n');
+
+  return html;
+}
+
+// ─── LINK HANDLER ────────────────────────────────────────────────────────────
+
+function openLink(event, url) {
+  event.preventDefault();
+  if (!url) return;
+
+  // Check if it's a reddit post link we have locally — open preview instead
+  if (url.includes('reddit.com')) {
+    const match = url.match(/comments\/([a-z0-9]+)/i);
+    if (match) {
+      const redditId = match[1];
+      const localItem = state.items.find(i =>
+        i.redditId === redditId ||
+        i.redditId === 't3_' + redditId ||
+        i.redditId === 't1_' + redditId ||
+        (i.permalink || '').includes('/' + redditId + '/')
+      );
+      if (localItem) {
+        showPreview(localItem.id);
+        return;
+      }
+    }
+  }
+
+  // Let the OS handle it — on iOS standalone this opens the in-app Safari sheet
+  window.location.href = url;
+}
+
+// ─── POST PREVIEW ─────────────────────────────────────────────────────────────
+
+async function showPreview(itemId) {
+  const item = await db.items.get(itemId);
+  if (!item) return;
+
+  document.getElementById('preview-overlay')?.remove();
+
+  const overlay = document.createElement('div');
+  overlay.className = 'preview-overlay';
+  overlay.id = 'preview-overlay';
+  overlay.addEventListener('click', e => { if (e.target === overlay) closePreview(); });
+
+  const openUrl = (item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '';
+  const permalinkUrl = item.permalink || item.url || '';
+  const hasBody = !!(item.body && item.body.trim());
+  const isLinkPost = !hasBody && item.url && !item.url.includes('reddit.com');
+
+  const metaHtml = `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <span class="badge ${item.type==='comment'?'badge-comment':'badge-post'}">${item.type==='comment'?'💬 Comment':'📝 Post'}</span>
+      ${item.subreddit ? `<span class="subreddit-tag" style="cursor:pointer" onclick="closePreview();applySearch('r/${escHtml(item.subreddit)}')">r/${escHtml(item.subreddit)}</span>` : ''}
+      ${item.isFavourite ? '<span style="color:#f59e0b">⭐</span>' : ''}
+    </div>
+    <div style="display:flex;gap:12px;font-size:12px;color:var(--text-muted);flex-wrap:wrap">
+      ${item.author ? `<span>u/${escHtml(item.author)}</span>` : ''}
+      ${item.postCreatedAt ? `<span>📅 ${fmtDate(item.postCreatedAt)}</span>` : ''}
+      ${item.score != null ? `<span>⬆ ${item.score.toLocaleString()}</span>` : ''}
+      ${item.rating ? `<span style="color:#f59e0b">${'★'.repeat(item.rating)}${'☆'.repeat(5-item.rating)}</span>` : ''}
+    </div>`;
+
+  const bodyHtml = hasBody
+    ? renderMarkdown(item.body)
+    : isLinkPost
+      ? `<div style="text-align:center;padding:40px 20px">
+           <div style="font-size:48px;margin-bottom:16px">🔗</div>
+           <div style="font-size:14px;color:var(--text-muted);margin-bottom:20px;word-break:break-all">${escHtml(item.url)}</div>
+           <button class="btn btn-primary" onclick="openLink(event,'${item.url.replace(/'/g,"\'")}')">Open link</button>
+         </div>`
+      : `<div style="text-align:center;padding:40px 20px;color:var(--text-muted)">
+           <div style="font-size:48px;margin-bottom:12px">📄</div>
+           No local content — open on Reddit to read.
+         </div>`;
+
+  overlay.innerHTML = `
+    <div class="preview-sheet">
+      <div class="preview-header">
+        <div style="flex:1;min-width:0">
+          ${metaHtml}
+        </div>
+        <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:22px;padding:0;line-height:1;flex-shrink:0;align-self:flex-start"
+          onclick="closePreview()">✕</button>
+      </div>
+      <div class="preview-body">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:19px;line-height:1.3;margin-bottom:16px;color:var(--text)">
+          ${escHtml(item.title || 'Untitled')}
+        </div>
+        ${bodyHtml}
+      </div>
+      <div class="preview-footer">
+        ${openUrl ? `<button class="btn btn-primary" style="flex:1;justify-content:center"
+          onclick="openLink(event,'${openUrl.replace(/'/g,"\'")}')">
+          ${item.type==='comment' ? '💬 Open thread' : isLinkPost ? '🔗 Open link' : '📖 Open on Reddit'} ↗
+        </button>` : ''}
+        ${item.type !== 'comment' && permalinkUrl !== openUrl ? `
+          <button class="btn btn-ghost" style="justify-content:center"
+            onclick="openLink(event,'${permalinkUrl.replace(/'/g,"\'")}')">💬 Thread</button>
+        ` : ''}
+        <button class="btn btn-ghost" onclick="closePreview()">Close</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+}
+
+function closePreview() {
+  document.getElementById('preview-overlay')?.remove();
+}
+
+// ─── ITEM ACTIONS ────────────────────────────────────────────────────────────
+
+async function toggleFavourite(id) {
+  const item = await db.items.get(id);
+  if (!item) return;
+  const val = !item.isFavourite;
+  await db.items.update(id, { isFavourite: val });
+  await pushItemUpdate(id, { is_favourite: val });
+  await loadData();
+  renderBrowseList();
+}
+
+async function setRating(id, rating) {
+  const item = await db.items.get(id);
+  if (!item) return;
+  // Clicking the same rating again clears it
+  const val = item.rating === rating ? null : rating;
+  await db.items.update(id, { rating: val });
+  await pushItemUpdate(id, { rating: val });
+  await loadData();
+  renderBrowseList();
+}
+
+async function dislikeItem(id) {
+  await db.items.update(id, { isDisliked: true, isFavourite: false, rating: null });
+  await pushItemUpdate(id, { is_disliked: true, is_favourite: false, rating: null });
+  await loadData();
+  renderBrowseList();
+}
+
+async function restoreItem(id) {
+  await db.items.update(id, { isDisliked: false });
+  await pushItemUpdate(id, { is_disliked: false });
+  await loadData();
+  renderBrowseList();
+}
+
+async function deleteItemPermanently(id) {
+  const item = await db.items.get(id);
+  if (!item) return;
+  await db.items.delete(id);
+  if (state.supabaseUrl && item.redditId) {
+    try {
+      await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'DELETE', null);
+    } catch(e) {}
+  }
+  await loadData();
+  renderBrowseList();
+}
+
+async function deleteAllDisliked() {
+  const disliked = state.items.filter(i => i.isDisliked);
+  if (!disliked.length) return;
+  if (!confirm(`Permanently delete ${disliked.length} item${disliked.length!==1?'s':''} from your library and cloud? This cannot be undone.`)) return;
+  for (const item of disliked) {
+    await db.items.delete(item.id);
+    if (state.supabaseUrl && item.redditId) {
+      try { await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'DELETE', null); } catch(e) {}
+    }
+  }
+  await loadData();
+  render();
+}
+
+async function pushItemUpdate(id, fields) {
+  const item = await db.items.get(id);
+  if (!item || !state.supabaseUrl) return;
+  try {
+    await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', fields);
+  } catch(e) {}
+}
+
+function setSort(by) {
+  if (state.sortBy === by) {
+    state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    state.sortBy = by;
+    state.sortDir = by === 'title' || by === 'subreddit' ? 'asc' : 'desc';
+  }
+  renderBrowseList();
+  // Re-render the sort control too
+  const sc = document.getElementById('sort-control');
+  if (sc) sc.outerHTML = renderSortControl();
+}
+
+function renderSortControl() {
+  const opts = [
+    { key: 'savedAt', label: 'Date saved' },
+    { key: 'postCreatedAt', label: 'Date posted' },
+    { key: 'score', label: 'Score' },
+    { key: 'rating', label: 'Rating' },
+    { key: 'subreddit', label: 'Subreddit' },
+    { key: 'title', label: 'Title' },
+  ];
+  const cur = opts.find(o => o.key === state.sortBy);
+  const arrow = state.sortDir === 'desc' ? '↓' : '↑';
+  const optHtml = opts.map(o =>
+    `<option value="${o.key}" ${o.key === state.sortBy ? 'selected' : ''}>${o.label}</option>`
+  ).join('');
+  return `<div id="sort-control" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted)">
+    <span>Sort:</span>
+    <select style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:2px 6px;cursor:pointer"
+      onchange="state.sortBy=this.value;state.sortDir=(this.value==='title'||this.value==='subreddit')?'asc':'desc';renderBrowseList();this.closest('#sort-control').outerHTML=renderSortControl()">
+      ${optHtml}
+    </select>
+    <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:14px;padding:0 2px"
+      onclick="state.sortDir=state.sortDir==='desc'?'asc':'desc';renderBrowseList();this.closest('#sort-control').outerHTML=renderSortControl()"
+      title="Toggle direction">${arrow}</button>
+  </div>`;
+}
+
+function renderTrashView() {
+  const items = filteredItems(); // already filtered to disliked when showTrash=true
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="font-family:'Syne',sans-serif;font-weight:600">🗑️ Trash (${items.length})</div>
+      <div style="display:flex;gap:8px">
+        ${items.length > 0 ? `<button class="btn btn-danger btn-sm" onclick="deleteAllDisliked()">Delete all</button>` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="state.showTrash=false;render()">← Back</button>
+      </div>
+    </div>
+    ${items.length === 0 ? `
+      <div class="empty"><div class="empty-icon">🗑️</div><h3>Trash is empty</h3><p>Items you dislike will appear here.</p></div>
+    ` : items.map(item => {
+      const openUrl = (item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '#';
+      return `
+        <div class="card" style="border-color:rgba(239,68,68,0.2)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+            <span class="badge ${item.type==='comment'?'badge-comment':'badge-post'}">${item.type==='comment'?'💬 Comment':'📝 Post'}</span>
+            ${item.subreddit ? `<span class="subreddit-tag">r/${escHtml(item.subreddit)}</span>` : ''}
+            ${item.author ? `<span style="font-size:11px;color:var(--text-muted)">u/${escHtml(item.author)}</span>` : ''}
+          </div>
+          <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px;color:var(--text);line-height:1.3;margin-bottom:8px">
+            ${escHtml(item.title || 'Untitled')}
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn btn-ghost btn-sm" onclick="restoreItem(${item.id})">↩ Restore</button>
+            <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">↗ Open</a>
+            <button class="btn btn-danger btn-sm" onclick="if(confirm('Permanently delete this item?'))deleteItemPermanently(${item.id})">🗑 Delete</button>
+          </div>
+        </div>`;
+    }).join('')}
+  `;
+}
+
+function renderAuthorList() {
+  // Build sorted author list — min 2 saves, sorted by count desc
+  const authors = Object.entries(state.authorFreq)
+    .filter(([_, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1]);
+
+  if (authors.length === 0) {
+    return `<div class="empty"><div class="empty-icon">👤</div><h3>No repeat authors yet</h3>
+      <p>Authors you've saved 2 or more times will appear here.</p>
+      <button class="btn btn-ghost btn-sm" style="margin-top:12px" onclick="state.showAuthorList=false;render()">← Back</button>
+    </div>`;
+  }
+
+  // Group into tiers
+  const tiers = [
+    { label: '🏆 10+ saves', min: 10, items: authors.filter(([_,c]) => c >= 10) },
+    { label: '⭐ 5–9 saves',  min: 5,  items: authors.filter(([_,c]) => c >= 5 && c < 10) },
+    { label: '👤 2–4 saves',  min: 2,  items: authors.filter(([_,c]) => c >= 2 && c < 5) },
+  ].filter(t => t.items.length > 0);
+
+  return `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:18px">Frequent Authors</div>
+      <button class="btn btn-ghost btn-sm" onclick="state.showAuthorList=false;render()">← Back</button>
+    </div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">
+      ${authors.length} author${authors.length!==1?'s':''} saved multiple times. Tap any to search their posts.
+    </p>
+    ${tiers.map(tier => `
+      <div style="margin-bottom:20px">
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${tier.label}</div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${tier.items.map(([author, count]) => `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;cursor:pointer"
+              onclick="state.showAuthorList=false;applySearch('u/${escHtml(author)}')">
+              <span style="font-size:14px;color:var(--text)">u/${escHtml(author)}</span>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:12px;color:var(--text-muted)">${count} save${count!==1?'s':''}</span>
+                <span style="font-size:12px;color:var(--accent2)">→</span>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>
+    `).join('')}`;
+}
+
+function renderBrowse() {
+  _searchLookup = []; // reset lookup table for this render
+
+  // Trash view takes over the whole browse area
+  if (state.showTrash) return renderTrashView();
+
+  // Author list view
+  if (state.showAuthorList) return renderAuthorList();
+
+  const items = filteredItems();
+  const favs = state.favoriteSearches;
+  const q = state.search.trim();
+  const isFav = favs.includes(q);
+  const deadCount = state.items.filter(i => i.enrichStatus === 'dead').length;
+  const trashCount = state.items.filter(i => i.isDisliked).length;
+  const favCount = state.items.filter(i => i.isFavourite).length;
+
+  return `
+    <!-- ── Favorite searches ─────────────────────────────────────────────── -->
+    ${favs.length > 0 ? `
+      <div style="margin-bottom:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+          <span style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em">★ SAVED SEARCHES</span>
+          ${state.editingFavs ? `
+            <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2)" onclick="state.editingFavs=false;render()">Done</button>
+          ` : `
+            <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text-muted)" onclick="state.editingFavs=true;render()">Edit</button>
+          `}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">
+          ${favs.map(s => { const i = _sl(s); return `
+            <div style="display:inline-flex;align-items:center;gap:4px;background:${q===s?'rgba(245,158,11,0.15)':'var(--surface)'};border:1px solid ${q===s?'rgba(245,158,11,0.5)':'var(--border)'};border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer"
+              onmousedown="event.preventDefault();runSavedSearch(${i})">
+              <span style="color:${q===s?'#f59e0b':'var(--text)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(s)}</span>
+              ${state.editingFavs ? `
+                <button style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:13px;padding:0 0 0 4px;line-height:1"
+                  onmousedown="event.preventDefault();event.stopPropagation();toggleFavByIndex(${i})">✕</button>
+              ` : ''}
+            </div>`; }).join('')}
+        </div>
+      </div>
+    ` : ''}
+
+    <!-- ── Search input ──────────────────────────────────────────────────── -->
+    <div class="search-wrap" style="position:relative">
+      <span class="search-icon">🔍</span>
+      <input class="input" id="search-input"
+        placeholder='Search… e.g. big dog  r/aww  "exact phrase"  -exclude  u/name'
+        value="${escHtml(state.search)}"
+        oninput="handleSearchInput(this.value)"
+        onfocus="state.searchFocused=true;renderRecentSearches()"
+        onblur="setTimeout(()=>{state.searchFocused=false;renderRecentSearches()},300)"
+        onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderBrowseList();renderRecentSearches()}"
+        style="padding-right:${state.search ? '36px' : '12px'}">
+      ${state.search ? `
+        <button style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1;padding:0"
+          onclick="applySearch('')">✕</button>
+      ` : ''}
+    </div>
+
+    <!-- ── Recent searches (shown on focus when search is empty) ─────────── -->
+    <div id="recent-searches-row" style="display:none;margin:-4px 0 10px"></div>
+
+    <!-- ── Result count + save search + sort ───────────────────────────── -->
+    <div id="search-result-info" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;min-height:24px;gap:8px">
+      <span style="font-size:12px;color:var(--text-muted);flex-shrink:0">
+        ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
+      </span>
+      <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+        ${q ? `
+          <button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 4px;white-space:nowrap"
+            onclick="toggleFavoriteSearch(state.search.trim())">
+            ${isFav ? '★ Saved' : '☆ Save'}
+          </button>` : ''}
+        ${renderSortControl()}
+      </div>
+    </div>
+
+    <!-- ── Type + folder filters ─────────────────────────────────────────── -->
+    <div class="filter-row">
+      <button class="filter-pill ${state.filterType==='all'?'active':''}" onclick="setFilter('type','all')">All Types</button>
+      <button class="filter-pill ${state.filterType==='post'?'active':''}" onclick="setFilter('type','post')">📝 Posts</button>
+      <button class="filter-pill ${state.filterType==='comment'?'active':''}" onclick="setFilter('type','comment')">💬 Comments</button>
+      ${favCount > 0 ? `<button class="filter-pill ${state.filterFavourite?'active':''}" onclick="setFilter('favourite')" style="color:#f59e0b">⭐ Favourites${state.filterFavourite?'':' ('+favCount+')'}</button>` : ''}
+    </div>
+    <div class="filter-row">
+      <button class="filter-pill ${state.filterFolder==='all'?'active':''}" onclick="setFilter('folder','all')">All Folders</button>
+      <button class="filter-pill ${state.filterFolder==='__none__'?'active':''}" onclick="setFilter('folder','__none__')">📭 Unfiled</button>
+      ${state.folders.map(f=>`<button class="filter-pill ${state.filterFolder===f.name?'active':''}" onclick="setFilter('folder','${escAttr(f.name)}')">${f.icon} ${escHtml(f.name)}</button>`).join('')}
+    </div>
+    <div class="filter-row">
+      ${deadCount > 0 ? `<button class="filter-pill ${state.showDead?'active':''}" onclick="setFilter('dead')" style="${state.showDead?'':'opacity:0.6'}">⚰️ Unavailable (${deadCount})</button>` : ''}
+      ${trashCount > 0 ? `<button class="filter-pill" onclick="state.showTrash=true;render()" style="opacity:0.7">🗑️ Trash (${trashCount})</button>` : ''}
+      <button class="filter-pill" onclick="state.showAuthorList=true;render()" style="opacity:0.8">👤 Authors</button>
+    </div>
+
+    <!-- ── Results ───────────────────────────────────────────────────────── -->
+    <div id="browse-list">
+      ${renderBrowseItems(items)}
+    </div>
+  `;
+}
+
+// ─── SEARCH PARSER ───────────────────────────────────────────────────────────
+// Supports:
+//   bare words      → all must appear somewhere in the item (AND logic)
+//   "quoted phrase" → exact substring match
+//   -word / -"phrase" → exclusion
+//   r/subreddit     → subreddit field only
+//   u/username      → author field only
+//   type:post / type:comment → type override (added to tokens, applied in filteredItems)
+
+function parseSearchQuery(raw) {
+  const tokens = [];
+  // Tokenise: quoted strings, field prefixes, bare words
+  const re = /(-?)(?:(r|u|type):(\S+)|"([^"]+)"|(\S+))/g;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    const negate  = m[1] === '-';
+    if (m[2] && m[2] === 'r')    { tokens.push({ type: 'field', field: 'subreddit', value: m[3].toLowerCase(), negate }); continue; }
+    if (m[2] && m[2] === 'u')    { tokens.push({ type: 'field', field: 'author',    value: m[3].toLowerCase(), negate }); continue; }
+    if (m[2] && m[2] === 'type') { tokens.push({ type: 'type',  value: m[3].toLowerCase(), negate }); continue; }
+    const phrase = m[4] || m[5];
+    if (phrase) tokens.push({ type: 'text', value: phrase.toLowerCase(), negate });
+  }
+  return tokens;
+}
+
+function itemMatchesTokens(item, tokens) {
+  const title     = (item.title     || '').toLowerCase();
+  const subreddit = (item.subreddit || '').toLowerCase();
+  const author    = (item.author    || '').toLowerCase();
+  const body      = (item.body      || '').toLowerCase();
+
+  for (const t of tokens) {
+    let match = false;
+
+    if (t.type === 'field') {
+      if (t.field === 'subreddit') match = subreddit === t.value || subreddit.includes(t.value);
+      if (t.field === 'author')    match = author === t.value; // exact match only
+    } else if (t.type === 'type') {
+      match = item.type === t.value;
+    } else {
+      // text token — check all fields
+      match = title.includes(t.value) || subreddit.includes(t.value) ||
+              author.includes(t.value) || body.includes(t.value);
+    }
+
+    // AND logic: if a required token doesn't match, item is excluded
+    // Negation: if an excluded token matches, item is excluded
+    if (t.negate && match)  return false;
+    if (!t.negate && !match) return false;
+  }
+  return true;
+}
+
+function sortItems(items, applyAuthorBoost = false) {
+  const dir = state.sortDir === 'asc' ? 1 : -1;
+  const sorted = [...items].sort((a, b) => {
+    switch (state.sortBy) {
+      case 'postCreatedAt':
+        return dir * ((new Date(a.postCreatedAt||0)) - (new Date(b.postCreatedAt||0)));
+      case 'score':
+        return dir * ((a.score||0) - (b.score||0));
+      case 'subreddit':
+        return dir * (a.subreddit||'').localeCompare(b.subreddit||'');
+      case 'title':
+        return dir * (a.title||'').localeCompare(b.title||'');
+      case 'rating':
+        return dir * ((a.rating||0) - (b.rating||0));
+      default: // savedAt
+        return dir * ((new Date(a.savedAt||0)) - (new Date(b.savedAt||0)));
+    }
+  });
+
+  // When searching, boost results from frequently-saved authors (3+ saves)
+  // within the sorted result — they float to the top of each "tier"
+  if (applyAuthorBoost && state.search.trim()) {
+    const BOOST_THRESHOLD = 3;
+    return sorted.sort((a, b) => {
+      const freqA = (a.author && state.authorFreq[a.author] >= BOOST_THRESHOLD) ? 1 : 0;
+      const freqB = (b.author && state.authorFreq[b.author] >= BOOST_THRESHOLD) ? 1 : 0;
+      return freqB - freqA; // boosted items first, stable within each group
+    });
+  }
+  return sorted;
+}
+
+function filteredItems() {
+  let items = state.items;
+
+  // Trash view — only disliked items
+  if (state.showTrash) {
+    return sortItems(items.filter(i => i.isDisliked));
+  }
+
+  // Normal browse — exclude disliked and dead unless toggled
+  items = items.filter(i => !i.isDisliked);
+  if (!state.showDead) items = items.filter(i => i.enrichStatus !== 'dead');
+
+  // Favourite filter
+  if (state.filterFavourite) items = items.filter(i => i.isFavourite);
+
+  if (state.search.trim()) {
+    const tokens = parseSearchQuery(state.search);
+    const typeToken = tokens.find(t => t.type === 'type' && !t.negate);
+    if (typeToken) {
+      items = items.filter(i => i.type === typeToken.value);
+    } else if (state.filterType !== 'all') {
+      items = items.filter(i => i.type === state.filterType);
+    }
+    items = items.filter(i => itemMatchesTokens(i, tokens.filter(t => t.type !== 'type' || t.negate)));
+  } else {
+    if (state.filterType !== 'all') items = items.filter(i => i.type === state.filterType);
+  }
+
+  if (state.filterFolder === '__none__') items = items.filter(i => !i.folder);
+  else if (state.filterFolder !== 'all') items = items.filter(i => i.folder === state.filterFolder);
+
+  return sortItems(items, true);
+}
+
+// ─── SEARCH HISTORY ──────────────────────────────────────────────────────────
+
+async function commitSearch(query) {
+  const q = query.trim();
+  if (!q) return;
+  state.recentSearches = [q, ...state.recentSearches.filter(s => s !== q)].slice(0, 20);
+  await db.config.put({ key: 'recentSearches', value: state.recentSearches });
+  await pushPreference('recentSearches', state.recentSearches);
+}
+
+async function toggleFavoriteSearch(query) {
+  const q = query.trim();
+  if (!q) return;
+  const isFav = state.favoriteSearches.includes(q);
+  if (isFav) {
+    state.favoriteSearches = state.favoriteSearches.filter(s => s !== q);
+  } else {
+    state.favoriteSearches = [q, ...state.favoriteSearches];
+    // Also add to recents so it appears in history
+    await commitSearch(q);
+  }
+  await db.config.put({ key: 'favoriteSearches', value: state.favoriteSearches });
+  await pushPreference('favoriteSearches', state.favoriteSearches);
+  render();
+}
+
+async function removeRecentSearch(query) {
+  state.recentSearches = state.recentSearches.filter(s => s !== query);
+  await db.config.put({ key: 'recentSearches', value: state.recentSearches });
+  await pushPreference('recentSearches', state.recentSearches);
+  renderRecentSearches();
+}
+
+function applySearch(query) {
+  state.search = query;
+  state.searchFocused = false;
+  state.editingFavs = false;
+  if (query.trim()) commitSearch(query);
+  // Full re-render so favorites section updates (active highlight, save button)
+  render();
+}
+
+// Renders the recents row in-place (no full re-render needed)
+// Search string lookup — avoids embedding quoted strings in HTML attributes
+// Populated before each render, referenced by index from onclick handlers
+let _searchLookup = [];
+function _sl(s) {
+  const i = _searchLookup.length;
+  _searchLookup.push(s);
+  return i;
+}
+function runSavedSearch(i) {
+  applySearch(_searchLookup[i] || '');
+}
+function removeSavedSearchByIndex(i) {
+  removeRecentSearch(_searchLookup[i] || '');
+}
+function toggleFavByIndex(i) {
+  toggleFavoriteSearch(_searchLookup[i] || '');
+}
+
+// ─── SEARCH DEBOUNCE ─────────────────────────────────────────────────────────
+// Only trigger a live search update when:
+//   - The query is empty (clear results immediately)
+//   - A space has been typed (first/next word is complete)
+//   - The current word being typed is >= 4 characters
+// This avoids hammering the filter on every keystroke for short words like
+// "b", "bi", "big" — the search fires when you type "big " or "bigg".
+
+let _searchDebounceTimer = null;
+
+function handleSearchInput(value) {
+  state.search = value;
+  renderRecentSearches();
+
+  // Always clear immediately
+  if (!value.trim()) {
+    renderBrowseList();
+    return;
+  }
+
+  // Check trigger conditions
+  const lastChar = value[value.length - 1];
+  const words = value.trim().split(/\s+/);
+  const currentWord = words[words.length - 1];
+  // Strip field prefixes and quotes for length check
+  const bareWord = currentWord.replace(/^[-"r\/u\:]*/,'').replace(/"/g,'');
+
+  const shouldTrigger =
+    lastChar === ' ' ||          // completed a word
+    bareWord.length >= 4;        // current word is long enough
+
+  clearTimeout(_searchDebounceTimer);
+  if (shouldTrigger) {
+    // Small debounce to batch rapid keystrokes
+    _searchDebounceTimer = setTimeout(() => renderBrowseList(), 120);
+  }
+}
+
+function renderRecentSearches() {
+  const el = document.getElementById('recent-searches-row');
+  if (!el) return;
+  const favSet = new Set(state.favoriteSearches);
+  const recents = state.recentSearches.filter(s => !favSet.has(s));
+  const show = state.searchFocused && !state.search.trim() && recents.length > 0;
+  if (!show) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:6px">RECENT</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${recents.map(s => { const i = _sl(s); return `
+        <div style="display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:4px 10px;font-size:12px;cursor:pointer;max-width:200px"
+          onmousedown="event.preventDefault();runSavedSearch(${i})">
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escHtml(s)}</span>
+          <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:0;line-height:1;flex-shrink:0"
+            title="Remove"
+            onmousedown="event.preventDefault();event.stopPropagation();removeSavedSearchByIndex(${i})">✕</button>
+        </div>`; }).join('')}
+    </div>`;
+}
+
+function renderBrowseItems(items) {
+  if (items.length === 0) {
+    return `<div class="empty"><div class="empty-icon">🔍</div><h3>No results</h3><p>Try adjusting your search or filters.</p></div>`;
+  }
+  return items.map(item => renderItemCard(item, true)).join('');
+}
+
+function renderBrowseList() {
+  const el = document.getElementById('browse-list');
+  if (!el) { render(); return; }
+  const items = filteredItems();
+  el.innerHTML = renderBrowseItems(items);
+  // Update result count + save button in-place
+  const countEl = document.getElementById('search-result-info');
+  if (countEl) {
+    const q = state.search.trim();
+    const isFav = state.favoriteSearches.includes(q);
+    countEl.innerHTML = `
+      <span style="font-size:12px;color:var(--text-muted);flex-shrink:0">
+        ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
+      </span>
+      <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+        ${q ? `<button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 4px;white-space:nowrap"
+          onclick="toggleFavoriteSearch(state.search.trim())">
+          ${isFav ? '★ Saved' : '☆ Save'}
+        </button>` : ''}
+        ${renderSortControl()}
+      </div>`;
+  }
+}
+
+function setFilter(type, value) {
+  if (type === 'type') state.filterType = value;
+  if (type === 'folder') state.filterFolder = value;
+  if (type === 'dead') state.showDead = !state.showDead;
+  if (type === 'favourite') state.filterFavourite = !state.filterFavourite;
+  render();
+}
+
+function renderItemCard(item, showActions) {
+  const badgeClass = item.type === 'comment' ? 'badge-comment' : 'badge-post';
+  const badgeLabel = item.type === 'comment' ? '💬 Comment' : '📝 Post';
+  const folder = item.folder ? `<span class="folder-chip" onclick="showFolderMenu(${item.id})">${getFolderIcon(item.folder)} ${escHtml(item.folder)}</span>` : '';
+  const needsEnrich = !item.enriched;
+
+  // Date display: show post created date if available, otherwise saved date
+  const postDate = item.postCreatedAt
+    ? `<span class="date-item" title="Date posted to Reddit">📅 ${fmtDate(item.postCreatedAt)}</span>`
+    : '';
+  const savedDate = item.savedAt
+    ? `<span class="date-item" title="Date synced/imported">💾 ${fmtDate(item.savedAt)}</span>`
+    : '';
+
+  // Show subreddit prominently, or a warning if missing
+  const subredditDisplay = item.subreddit
+    ? `<span class="subreddit-tag">r/${escHtml(item.subreddit)}</span>`
+    : `<span style="font-size:12px;color:var(--warning)">⚠ unknown subreddit</span>`;
+
+  const titleDisplay = item.title
+    ? escHtml(item.title)
+    : `<span style="color:var(--text-muted);font-style:italic">No title — needs enrichment</span>`;
+
+  // Open link: prefer permalink for comments (goes to comment context),
+  // use url for link posts (goes to external destination)
+  const openUrl = (item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '#';
+  const permalinkUrl = item.permalink || item.url || '#';
+
+  // Star rating display (1-5)
+  const ratingHtml = showActions ? `
+    <div style="display:flex;align-items:center;gap:2px">
+      ${[1,2,3,4,5].map(n => `
+        <button style="background:none;border:none;cursor:pointer;font-size:14px;padding:1px;line-height:1;color:${(item.rating||0)>=n?'#f59e0b':'var(--border)'}"
+          onclick="setRating(${item.id},${n})" title="${n} star${n!==1?'s':''}">★</button>
+      `).join('')}
+    </div>` : (item.rating ? `<span style="font-size:12px;color:#f59e0b">${'★'.repeat(item.rating)}${'☆'.repeat(5-item.rating)}</span>` : '');
+
+  return `
+    <div class="card ${needsEnrich ? 'needs-enrichment' : ''}" style="${item.isFavourite?'border-color:rgba(245,158,11,0.35)':''}">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+        <span class="badge ${badgeClass}">${badgeLabel}</span>
+        ${subredditDisplay}
+        ${needsEnrich ? `<span class="badge badge-enriching">⚡ needs enrichment</span>` : ''}
+        ${item.author ? (() => {
+          const freq = state.authorFreq[item.author] || 0;
+          const badge = freq >= 3
+            ? `<span style="background:rgba(168,85,247,0.2);color:var(--accent2);border-radius:10px;padding:1px 6px;font-size:10px;margin-left:2px">${freq}×</span>`
+            : '';
+          return `<span style="font-size:11px;color:var(--text-muted);cursor:pointer"
+            onclick="applySearch('u/${escHtml(item.author)}')"
+            title="Search posts by this author">u/${escHtml(item.author)}${badge}</span>`;
+        })() : ''}
+      </div>
+
+      <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px;color:var(--text);line-height:1.3;margin-bottom:6px;cursor:pointer"
+        onclick="showPreview(${item.id})" title="Preview">
+        ${titleDisplay}
+      </div>
+
+      ${item.body ? `<div style="font-size:13px;color:var(--text-muted);margin-top:4px;line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${escHtml(item.body)}</div>` : ''}
+
+      <div class="date-row">
+        ${postDate}
+        ${savedDate}
+        ${item.score != null ? `<span class="date-item">⬆ ${item.score.toLocaleString()}</span>` : ''}
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+        ${folder}
+        ${ratingHtml}
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+          ${showActions ? `
+            <button style="background:none;border:none;cursor:pointer;font-size:16px;padding:2px;line-height:1;color:${item.isFavourite?'#f59e0b':'var(--text-muted)'}"
+              onclick="toggleFavourite(${item.id})" title="${item.isFavourite?'Remove from favourites':'Add to favourites'}">
+              ${item.isFavourite ? '⭐' : '☆'}
+            </button>
+            <button class="btn btn-ghost btn-sm" onclick="showFolderMenu(${item.id})" title="Move to folder">📁</button>
+            <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener" title="Open">↗</a>
+            ${item.type !== 'comment' && permalinkUrl !== openUrl ? `<a class="btn btn-ghost btn-sm" href="${escHtml(permalinkUrl)}" target="_blank" rel="noopener" title="Reddit thread">💬</a>` : ''}
+            <button class="btn btn-ghost btn-sm" onclick="dislikeItem(${item.id})" title="Dislike — move to trash" style="color:var(--danger)">👎</button>
+          ` : `
+            <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">Open →</a>
+          `}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderFolders() {
+  return `
+    <div class="section-header">
+      <div class="section-title">Folders</div>
+      <button class="btn btn-primary btn-sm" onclick="showCreateFolder()">+ New</button>
+    </div>
+    ${state.folders.length === 0 ? `
+      <div class="empty">
+        <div class="empty-icon">📁</div>
+        <h3>No folders yet</h3>
+        <p>Create folders to organize your saved items by topic, project, or anything else.</p>
+      </div>
+    ` : `
+      <div class="folder-grid">
+        ${state.folders.map(f => {
+          const count = state.items.filter(i => i.folder === f.name).length;
+          return `
+            <div class="folder-card" onclick="setFilter('folder','${escAttr(f.name)}');showPage('browse')">
+              <div class="folder-card-icon">${f.icon}</div>
+              <div class="folder-card-name">${escHtml(f.name)}</div>
+              <div class="folder-card-count">${count} item${count!==1?'s':''}</div>
+              <button class="btn btn-danger btn-sm" style="margin-top:10px;width:100%" onclick="event.stopPropagation();if(confirm('Delete folder? Items will be unfiled.'))deleteFolder(${f.id})">Delete</button>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `}
+    <div style="font-size:13px;color:var(--text-muted);padding:12px 0">
+      ${state.items.filter(i => !i.folder).length} unfiled items
+      ${state.items.filter(i => !i.folder).length > 0 ? `<button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="setFilter('folder','__none__');showPage('browse')">View →</button>` : ''}
+    </div>
+  `;
+}
+
+function enrichTimeEstimate(itemCount, rpm) {
+  const delaySecs = 60 / rpm;
+  const totalMins = Math.ceil(itemCount * delaySecs / 60);
+  if (totalMins < 60) return `~${totalMins} min`;
+  const hrs = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  return mins > 0 ? `~${hrs}h ${mins}m` : `~${hrs}h`;
+}
+
+function renderImport() {
+  const enrichedCount = state.items.filter(i => i.enrichStatus === 'enriched').length;
+  const pendingCount  = state.items.filter(i => i.enrichStatus === 'pending').length;
+  const deadCount     = state.items.filter(i => i.enrichStatus === 'dead').length;
+  // Pending items that have been attempted at least once
+  const attemptedCount = state.items.filter(i => i.enrichStatus === 'pending' && (i.enrichAttempts || 0) > 0).length;
+  // Pending items that have hit the maxAttempts threshold
+  const thresholdCount = state.items.filter(i => i.enrichStatus === 'pending' && (i.enrichAttempts || 0) >= state.enrichMaxAttempts).length;
+  const needsEnrich = pendingCount;
+  const lastRunClean = state.lastRunRateLimitHits === 0;
+  const hasRunBefore = state.lastRunRateLimitHits !== null;
+
+  // Use actual queue size for estimates, fall back to 1000 if no items yet
+  const normalQueue = needsEnrich  || 1000;
+  const retryQueue  = attemptedCount || 1000;
+
+  const normalDelaySecs  = Math.round(60 / state.enrichReqPerMin);
+  const retryDelaySecs   = Math.round(60 / state.enrichRetryReqPerMin);
+  const rlPauseMins      = state.enrichRateLimitPause;
+
+  return `
+    <div class="section-header">
+      <div class="section-title">Import & Enrich</div>
+    </div>
+
+    <!-- ── Enrichment status overview ───────────────────────────────────── -->
+    ${state.items.length > 0 ? `
+      <div class="card" style="padding:14px 16px">
+        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:10px;font-size:13px">Enrichment Status</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:13px">
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(52,211,153,0.08);border-radius:6px">
+            <span style="color:var(--text-muted)">✓ Enriched</span>
+            <strong style="color:var(--success)">${enrichedCount.toLocaleString()}</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(251,191,36,0.08);border-radius:6px">
+            <span style="color:var(--text-muted)">⏳ Pending</span>
+            <strong style="color:var(--warning)">${pendingCount.toLocaleString()}</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(156,163,175,0.08);border-radius:6px">
+            <span style="color:var(--text-muted)">⚰️ Dead</span>
+            <strong style="color:var(--text-muted)">${deadCount.toLocaleString()}</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;padding:6px 10px;background:rgba(99,102,241,0.08);border-radius:6px">
+            <span style="color:var(--text-muted)">🔄 Attempted</span>
+            <strong style="color:var(--accent2,#818cf8)">${attemptedCount.toLocaleString()}</strong>
+          </div>
+        </div>
+        ${attemptedCount > 0 ? `
+          <div style="margin-top:10px;font-size:12px;color:var(--text-muted);line-height:1.6">
+            ${thresholdCount > 0 ? `
+              <strong style="color:var(--text)">${thresholdCount.toLocaleString()}</strong> pending item${thresholdCount !== 1 ? 's have' : ' has'}
+              reached the ${state.enrichMaxAttempts}-attempt threshold.
+            ` : `
+              ${attemptedCount.toLocaleString()} pending item${attemptedCount !== 1 ? 's have' : ' has'} been attempted at least once.
+              None have yet reached the ${state.enrichMaxAttempts}-attempt threshold.
+            `}
+            ${hasRunBefore ? (lastRunClean
+              ? `<span style="color:var(--success)">✓ Last run was clean (no rate limits).</span>`
+              : `<span style="color:var(--warning)">⚠ Last run hit ${state.lastRunRateLimitHits} rate limit${state.lastRunRateLimitHits !== 1 ? 's' : ''} — attempted items may be rate-limited, not dead.</span>`
+            ) : ''}
+          </div>
+          ${thresholdCount > 0 ? `
+            <button class="btn ${lastRunClean ? 'btn-danger' : 'btn-ghost'} btn-sm"
+              style="margin-top:10px;width:100%;justify-content:center"
+              onclick="markAttemptedAsDead()"
+              ${!lastRunClean ? 'title="Last run had rate limits — confirm items are truly dead before marking"' : ''}>
+              ⚰️ Mark ${thresholdCount} item${thresholdCount !== 1 ? 's' : ''} as dead
+              ${!lastRunClean ? '(last run had rate limits)' : ''}
+            </button>
+          ` : ''}
+        ` : ''}
+      </div>
+    ` : ''}
+
+    <!-- CSV import drop zone -->
+    <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()">
+      <div class="drop-zone-icon">📥</div>
+      <h3>Import Reddit CSV</h3>
+      <p>Tap to select your saved_posts.csv file<br>or drag and drop here</p>
+      <input type="file" id="csv-file" accept=".csv,.json" style="display:none">
+    </div>
+
+    <!-- ── Normal enrichment ───────────────────────────────────────────────── -->
+    ${needsEnrich > 0 || state.enriching ? `
+      <div class="card" style="border-color:rgba(251,191,36,0.3)">
+        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px;color:var(--warning)">
+          ⚡ Initial Enrichment — ${needsEnrich} item${needsEnrich !== 1 ? 's' : ''}
+        </div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
+          Fetches titles, subreddits, authors, and post dates from Reddit's public API.
+          Running at <strong style="color:var(--text)">${state.enrichReqPerMin} req/min</strong>
+          (1 request every ${normalDelaySecs}s) —
+          estimated <strong style="color:var(--text)">${enrichTimeEstimate(normalQueue, state.enrichReqPerMin)}</strong>
+          for ${needsEnrich > 0 ? needsEnrich.toLocaleString() + ' items' : '1000 items'}.
+          Leave this tab open and it will run unattended.
+        </p>
+        ${state.enriching ? `
+          <div id="enrich-progress-details">
+            <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
+            <div style="font-size:12px;color:var(--text-muted);text-align:center">Starting...</div>
+          </div>
+          <button class="btn btn-danger" style="width:100%;justify-content:center;margin-top:10px" onclick="stopEnrichment()">
+            ⏹ Pause
+          </button>
+          <p style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:6px">
+            Progress is saved after each item — safe to pause and resume.
+          </p>
+        ` : `
+          <button class="btn btn-warning" style="width:100%;justify-content:center" onclick="enrichAllItems(false)">
+            ⚡ Start Enrichment
+          </button>
+        `}
+      </div>
+    ` : state.items.length > 0 ? `
+      <div class="card" style="border-color:rgba(52,211,153,0.3)">
+        <div style="color:var(--success);font-weight:600;margin-bottom:4px">✓ Initial enrichment complete</div>
+        <div style="font-size:13px;color:var(--text-muted)">All items have been through the enrichment process.</div>
+      </div>
+    ` : ''}
+
+    <!-- ── Retry enrichment ────────────────────────────────────────────────── -->
+    ${attemptedCount > 0 && !state.enriching ? `
+      <div class="card" style="border-color:rgba(99,102,241,0.3)">
+        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px;color:var(--accent2,#818cf8)">
+          🔄 Retry Run — ${attemptedCount} item${attemptedCount !== 1 ? 's' : ''}
+        </div>
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
+          These items didn't return data on a previous run — possibly deleted posts, private
+          subreddits, or items that were rate-limited. Running slower at
+          <strong style="color:var(--text)">${state.enrichRetryReqPerMin} req/min</strong>
+          (1 request every ${retryDelaySecs}s) to reduce false rate-limit signals —
+          estimated <strong style="color:var(--text)">${enrichTimeEstimate(retryQueue, state.enrichRetryReqPerMin)}</strong>
+          for ${attemptedCount.toLocaleString()} items.
+        </p>
+        <button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="enrichAllItems(true)">
+          🔄 Start Retry Run
+        </button>
+      </div>
+    ` : ''}
+
+    <!-- ── Dead items summary ────────────────────────────────────────────── -->
+    ${deadCount > 0 ? `
+      <div class="card" style="border-color:rgba(156,163,175,0.3)">
+        <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px;color:var(--text-muted)">
+          ⚰️ ${deadCount.toLocaleString()} Unavailable Item${deadCount !== 1 ? 's' : ''}
+        </div>
+        <p style="font-size:13px;color:var(--text-muted);line-height:1.6;margin-bottom:0">
+          These items returned no data after multiple attempts — deleted posts, private
+          subreddits, or removed content. They are hidden from your library but remain in the
+          database. Toggle them visible in Browse using the ⚰️ filter.
+        </p>
+      </div>
+    ` : ''}
+
+    <!-- ── Enrichment speed settings ──────────────────────────────────────── -->
+    <div class="card">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px">⚙️ Enrichment Speed</div>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px;line-height:1.6">
+        Reddit allows 10 req/min without OAuth. Max 10 recommended.
+        If you keep hitting rate limits, reduce these values.
+      </p>
+
+      <div style="display:grid;gap:12px">
+        <div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
+            Initial run speed (req/min, 1–10)
+          </label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <input class="input" id="enrich-rpm" type="number" min="1" max="10"
+              value="${state.enrichReqPerMin}" style="width:70px"
+              oninput="updateSpeedHints()">
+            <span id="hint-normal" style="font-size:12px;color:var(--text-muted)">
+              every ${normalDelaySecs}s · ${enrichTimeEstimate(normalQueue, state.enrichReqPerMin)} for ${normalQueue.toLocaleString()} items
+            </span>
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
+            Retry run speed (req/min, 1–10)
+          </label>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <input class="input" id="enrich-retry-rpm" type="number" min="1" max="10"
+              value="${state.enrichRetryReqPerMin}" style="width:70px"
+              oninput="updateSpeedHints()">
+            <span id="hint-retry" style="font-size:12px;color:var(--text-muted)">
+              every ${retryDelaySecs}s · ${enrichTimeEstimate(retryQueue, state.enrichRetryReqPerMin)} for ${retryQueue.toLocaleString()} items
+            </span>
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
+            Rate limit pause (minutes, 1–30)
+          </label>
+          <div style="display:flex;align-items:center;gap:10px">
+            <input class="input" id="enrich-rl-pause" type="number" min="1" max="30"
+              value="${state.enrichRateLimitPause}" style="width:70px">
+            <span style="font-size:12px;color:var(--text-muted)">pause when a rate limit is detected</span>
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">
+            Attempts before eligible for bulk-dead (1–20)
+          </label>
+          <div style="display:flex;align-items:center;gap:10px">
+            <input class="input" id="enrich-max-attempts" type="number" min="1" max="20"
+              value="${state.enrichMaxAttempts}" style="width:70px">
+            <span style="font-size:12px;color:var(--text-muted)">
+              items with this many failed attempts can be bulk-marked dead after a clean run
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn btn-secondary" onclick="saveEnrichSettings()" style="width:100%;justify-content:center;margin-top:14px">
+        Save Settings
+      </button>
+    </div>
+
+    <!-- How to get Reddit data -->
+    <div class="card">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:10px">📋 How to get your Reddit data</div>
+      <ol style="font-size:13px;color:var(--text-muted);line-height:2.2;padding-left:18px">
+        <li>Go to <strong style="color:var(--text)">reddit.com/settings</strong></li>
+        <li>Click <strong style="color:var(--text)">"Data Request"</strong> or <strong style="color:var(--text)">"Request data archive"</strong></li>
+        <li>Wait for an email (a few hours to 24h)</li>
+        <li>Download and unzip the file</li>
+        <li>Find <strong style="color:var(--text)">saved_posts.csv</strong> inside</li>
+        <li>Import it above, then run <strong style="color:var(--text)">Initial Enrichment</strong></li>
+      </ol>
+    </div>
+
+    <!-- Backup restore -->
+    <div class="card">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:10px">🔄 Restore from Backup</div>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Import a previously exported RedditVault .json backup file.</p>
+      <button class="btn btn-secondary" onclick="document.getElementById('csv-file').click()">Select .json Backup</button>
+    </div>
+
+    <div id="import-progress" style="display:none">
+      <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
+      <div style="font-size:13px;color:var(--text-muted);text-align:center" id="progress-label">Processing...</div>
+    </div>
+  `;
+}
+
+function updateSpeedHints() {
+  const normalRpm  = Math.min(10, Math.max(1, parseInt(document.getElementById('enrich-rpm')?.value) || 8));
+  const retryRpm   = Math.min(10, Math.max(1, parseInt(document.getElementById('enrich-retry-rpm')?.value) || 4));
+  const needsEnrich = state.items.filter(i => !i.enriched).length;
+  const retryable   = state.items.filter(i => i.enriched && !i.title && !i.subreddit).length +
+                      state.items.filter(i => !i.enriched && (i.enrichAttempts || 0) > 0).length;
+  const normalQueue = needsEnrich || 1000;
+  const retryQueue  = retryable  || 1000;
+
+  const hn = document.getElementById('hint-normal');
+  const hr = document.getElementById('hint-retry');
+  if (hn) hn.textContent = `every ${Math.round(60/normalRpm)}s · ${enrichTimeEstimate(normalQueue, normalRpm)} for ${normalQueue.toLocaleString()} items`;
+  if (hr) hr.textContent = `every ${Math.round(60/retryRpm)}s · ${enrichTimeEstimate(retryQueue, retryRpm)} for ${retryQueue.toLocaleString()} items`;
+}
+
+function renderSettings() {
+  const lastSyncStr = state.lastSync ? new Date(state.lastSync).toLocaleString() : 'Never';
+  const unenriched = state.items.filter(i => i.enrichStatus === 'pending').length;
+
+  return `
+    <div class="section-title" style="margin-bottom:16px">Settings</div>
+
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">☁️ Cloud Sync (Supabase)</div>
+      <div class="sync-status">
+        <div class="status-dot ${state.syncStatus}"></div>
+        <span>${state.syncStatus === 'connected' ? 'Connected' : state.syncStatus === 'syncing' ? 'Syncing...' : 'Not connected'}</span>
+        ${state.lastSync ? `<span style="margin-left:auto;color:var(--text-muted);font-size:11px">Last: ${lastSyncStr}</span>` : ''}
+      </div>
+      <div class="form-group">
+        <label>Supabase Project URL</label>
+        <input class="input" id="sb-url" placeholder="https://xxxx.supabase.co" value="${escHtml(state.supabaseUrl)}">
+      </div>
+      <div class="form-group">
+        <label>Supabase Anon Key</label>
+        <input class="input" id="sb-key" type="password" placeholder="eyJhbGc..." value="${escHtml(state.supabaseKey)}">
+      </div>
+      <button class="btn btn-primary" onclick="saveSupabaseConfig()" style="width:100%;justify-content:center">Save & Test Connection</button>
+      ${state.supabaseUrl ? `
+        <button class="btn btn-secondary" onclick="pushAllToSupabase()" style="width:100%;justify-content:center;margin-top:8px">
+          ☁️ Push all local data to cloud
+        </button>
+      ` : ''}
+    </div>
+
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:4px">📡 Reddit Feed Sync</div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
+        Sync new saves directly from Reddit — no extension needed. Works on mobile.
+        Get your private feed URL from <strong style="color:var(--text)">old.reddit.com/prefs/feeds/</strong> → enable private RSS feeds → copy the <strong style="color:var(--text)">saved.json</strong> URL.
+      </p>
+      <div class="form-group">
+        <label>Private Feed URL</label>
+        <input class="input" id="feed-url" placeholder="https://old.reddit.com/saved.json?feed=…&user=…"
+          value="${escHtml(state.redditFeedUrl)}" style="font-size:12px">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" onclick="saveFeedUrl()" style="flex:1;justify-content:center">Save URL</button>
+        <button class="btn btn-primary" onclick="syncFromFeed()" style="flex:1;justify-content:center"
+          ${state.feedSyncing ? 'disabled' : ''}>
+          ${state.feedSyncing ? '⏳ Syncing…' : '🔄 Sync Now'}
+        </button>
+      </div>
+      ${state.feedSyncResult ? `
+        <div style="margin-top:10px;font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:8px;padding:10px;line-height:2">
+          ${state.feedSyncResult.error
+            ? `<span style="color:var(--danger)">❌ ${escHtml(state.feedSyncResult.error)}</span>`
+            : `✅ <strong style="color:var(--text)">${state.feedSyncResult.added}</strong> new · 
+               <strong style="color:var(--text)">${state.feedSyncResult.skipped}</strong> already saved · 
+               <strong style="color:var(--text)">${state.feedSyncResult.pages}</strong> page${state.feedSyncResult.pages !== 1 ? 's' : ''} fetched`
+          }
+        </div>
+      ` : ''}
+    </div>
+
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">💾 Local Backup</div>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Export all your data as a JSON backup. Use to transfer between devices or as a safety backup.</p>
+      <button class="btn btn-secondary" onclick="exportJSON()" style="width:100%;justify-content:center">⬇️ Export Backup JSON</button>
+    </div>
+
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">📊 Library Stats</div>
+      <div style="font-size:13px;line-height:2.2">
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Total items</span><span>${state.items.length.toLocaleString()}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Posts</span><span>${state.items.filter(i=>i.type==='post').length.toLocaleString()}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Comments</span><span>${state.items.filter(i=>i.type==='comment').length.toLocaleString()}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Folders</span><span>${state.folders.length}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unfiled</span><span>${state.items.filter(i=>!i.folder).length}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Need enrichment</span>
+          <span style="${unenriched>0?'color:var(--warning)':''}">${unenriched}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unavailable (dead)</span>
+          <span style="${state.items.filter(i=>i.enrichStatus==='dead').length>0?'color:var(--text-muted)':''}">${state.items.filter(i=>i.enrichStatus==='dead').length.toLocaleString()}</span>
+        </div>
+      </div>
+      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:12px"
+        onclick="repairItemTypes()" title="Re-evaluates post vs comment type for all items from their permalink">
+        🔧 Repair Post/Comment Types
+      </button>
+      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:8px"
+        onclick="if(confirm('This will normalise CSV item IDs, merge duplicates with extension items, and queue affected items for re-enrichment. Continue?'))repairCSVDuplicates()"
+        title="Fix duplicate items caused by CSV imports having bare IDs vs extension t3_/t1_ prefixed IDs">
+        🔧 Repair CSV Duplicates & Re-enrich
+      </button>
+      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:8px"
+        onclick="if(confirm('Reset ALL items to pending enrichment so they are re-fetched from Reddit with corrected type detection. This will queue everything — only do this if your enriched data looks wrong.'))resetAllEnrichment()"
+        title="Re-queue all items for enrichment">
+        🔄 Re-enrich Entire Library
+      </button>
+    </div>
+
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px;color:var(--danger)">⚠️ Danger Zone</div>
+      <button class="btn btn-danger" style="width:100%;justify-content:center" onclick="if(confirm('Delete ALL local data? Make sure you have a backup first!'))clearAllData()">Clear All Local Data</button>
+    </div>
+
+    <div style="text-align:center;padding:16px 0 4px;font-size:12px;color:var(--border)">
+      RedditVault v${APP_VERSION} &nbsp;·&nbsp; DB schema v${db.verno}
+    </div>
+  `;
+}
+
+// ─── MODALS ──────────────────────────────────────────────────────────────────
+function showModal(html) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal"><div class="modal-handle"></div>${html}</div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+  document.body.appendChild(overlay);
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay')?.remove();
+}
+
+function showCreateFolder() {
+  const ICONS = ['📁','🔖','⭐','🎮','💻','🎵','🎬','📚','🏋️','🍕','✈️','💡','🔬','💼','🌿','🎨','🏠','💰','🗺️','🎯'];
+  showModal(`
+    <div class="modal-title">New Folder</div>
+    <div class="form-group">
+      <label>Folder Name</label>
+      <input class="input" id="folder-name" placeholder="e.g. Recipes, Work, Gaming..." autofocus>
+    </div>
+    <div class="form-group">
+      <label>Icon</label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px" id="icon-picker">
+        ${ICONS.map((icon,i) => `<button onclick="selectIcon('${icon}',this)" class="icon-btn" style="font-size:24px;padding:6px;border-radius:8px;background:${i===0?'var(--accent2)':'var(--surface2)'};border:1px solid var(--border);cursor:pointer">${icon}</button>`).join('')}
+      </div>
+      <input type="hidden" id="folder-icon" value="📁">
+    </div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;justify-content:center">Cancel</button>
+      <button class="btn btn-primary" onclick="doCreateFolder()" style="flex:1;justify-content:center">Create</button>
+    </div>
+  `);
+}
+
+function selectIcon(icon, btn) {
+  document.querySelectorAll('.icon-btn').forEach(b => b.style.background = 'var(--surface2)');
+  btn.style.background = 'var(--accent2)';
+  document.getElementById('folder-icon').value = icon;
+}
+
+async function doCreateFolder() {
+  const name = document.getElementById('folder-name')?.value?.trim();
+  const icon = document.getElementById('folder-icon')?.value || '📁';
+  if (!name) { showToast('Please enter a folder name', 'error'); return; }
+  closeModal();
+  await createFolder(name, icon);
+}
+
+function showFolderMenu(itemId) {
+  const item = state.items.find(i => i.id === itemId);
+  if (!item) return;
+  const shortTitle = (item.title || 'this item').substring(0, 60);
+  showModal(`
+    <div class="modal-title">Move to Folder</div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">${escHtml(shortTitle)}${item.title?.length > 60 ? '...' : ''}</p>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button class="btn btn-secondary" onclick="assignFolder(${itemId},null);closeModal()" style="justify-content:flex-start">
+        📭 Remove from folder
+      </button>
+      ${state.folders.map(f => `
+        <button class="btn ${item.folder===f.name?'btn-primary':'btn-secondary'}" onclick="assignFolder(${itemId},'${escAttr(f.name)}');closeModal()" style="justify-content:flex-start">
+          ${f.icon} ${escHtml(f.name)} ${item.folder===f.name?'✓':''}
+        </button>
+      `).join('')}
+      <button class="btn btn-ghost" onclick="closeModal();showCreateFolder()" style="justify-content:flex-start">+ Create New Folder</button>
+    </div>
+    <div style="margin-top:12px">
+      <button class="btn btn-ghost" onclick="closeModal()" style="width:100%;justify-content:center">Cancel</button>
+    </div>
+  `);
+}
+
+// ─── EVENT LISTENERS ──────────────────────────────────────────────────────────
+function attachEventListeners() {
+  const fileInput = document.getElementById('csv-file');
+  if (fileInput) {
+    fileInput.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      await handleFileImport(file);
+    };
+  }
+
+  const dropZone = document.getElementById('drop-zone');
+  if (dropZone) {
+    dropZone.ondragover = e => { e.preventDefault(); dropZone.classList.add('drag-over'); };
+    dropZone.ondragleave = () => dropZone.classList.remove('drag-over');
+    dropZone.ondrop = async e => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file) await handleFileImport(file);
+    };
+  }
+}
+
+async function handleFileImport(file) {
+  const progress = document.getElementById('import-progress');
+  const fill = document.getElementById('progress-fill');
+  const label = document.getElementById('progress-label');
+  if (progress) progress.style.display = 'block';
+  if (fill) fill.style.width = '30%';
+  if (label) label.textContent = 'Reading file...';
+
+  try {
+    let result;
+    if (file.name.endsWith('.json')) {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (fill) fill.style.width = '60%';
+      if (label) label.textContent = 'Importing...';
+      result = await handleJSONImport(data);
+    } else {
+      if (fill) fill.style.width = '60%';
+      if (label) label.textContent = 'Importing...';
+      result = await handleCSVImport(file);
+    }
+    if (fill) fill.style.width = '100%';
+
+    const needsEnrich = state.items.filter(i => !i.enriched).length;
+    if (label) label.textContent = `Done! Added ${result.added} items (${result.dupes} duplicates skipped)${needsEnrich > 0 ? `. ${needsEnrich} items need enrichment.` : ''}`;
+    showToast(`✓ Imported ${result.added} new items`, 'success');
+
+    // Re-render import page to show enrichment prompt
+    setTimeout(() => render(), 1000);
+  } catch(e) {
+    if (label) label.textContent = 'Error: ' + e.message;
+    showToast('Import failed: ' + e.message, 'error');
+  }
+}
+
+async function saveSupabaseConfig() {
+  const url = document.getElementById('sb-url')?.value?.trim();
+  const key = document.getElementById('sb-key')?.value?.trim();
+  if (!url || !key) { showToast('Please fill in both fields', 'error'); return; }
+  await db.config.put({ key: 'supabaseUrl', value: url });
+  await db.config.put({ key: 'supabaseKey', value: key });
+  state.supabaseUrl = url;
+  state.supabaseKey = key;
+  showToast('Saved! Testing connection...', 'success');
+  await syncFromSupabase();
+}
+
+async function saveFeedUrl() {
+  const raw = document.getElementById('feed-url')?.value?.trim();
+  if (!raw) { showToast('Please paste your Reddit feed URL', 'error'); return; }
+  // Accept full URL or just the feed=...&user=... params
+  let feedUrl = raw;
+  // Normalise: ensure it ends with .json and has correct base
+  if (!feedUrl.includes('saved.json')) {
+    showToast('URL should contain "saved.json" — copy it from old.reddit.com/prefs/feeds/', 'error');
+    return;
+  }
+  await db.config.put({ key: 'redditFeedUrl', value: feedUrl });
+  state.redditFeedUrl = feedUrl;
+  showToast('Feed URL saved!', 'success');
+  render();
+}
+
+async function syncFromFeed() {
+  if (!state.redditFeedUrl) { showToast('No feed URL configured', 'error'); return; }
+  if (state.feedSyncing) return;
+  state.feedSyncing = true;
+  state.feedSyncResult = null;
+  render();
+
+  let added = 0, skipped = 0, pages = 0;
+  let after = null;
+  const MAX_PAGES = 40; // safety cap — 40 × 25 = 1000 items
+
+  // Build set of existing reddit_ids for fast dedup
+  const existing = new Set(state.items.map(i => i.reddit_id));
+
+  try {
+    while (pages < MAX_PAGES) {
+      // Build URL — append after param for pagination
+      let url = state.redditFeedUrl;
+      url += (url.includes('?') ? '&' : '?') + 'limit=25';
+      if (after) url += `&after=${encodeURIComponent(after)}`;
+
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status} — check your feed URL is correct`);
+      const json = await res.json();
+
+      const children = json?.data?.children || [];
+      if (children.length === 0) break; // no more items
+      pages++;
+
+      const newItems = [];
+      for (const child of children) {
+        const d = child.data;
+        const kind = child.kind; // t3 = post, t1 = comment
+        const redditId = d.name; // already prefixed e.g. t3_abc123
+
+        if (existing.has(redditId)) {
+          skipped++;
+          continue;
+        }
+
+        // Derive type from kind or permalink
+        const type = kind === 't1' ? 'comment' : 'post';
+
+        // Build item — data is already fully enriched from the feed
+        const item = {
+          reddit_id: redditId,
+          type,
+          title: d.title || (type === 'comment' ? `Comment in r/${d.subreddit}` : ''),
+          body: type === 'comment' ? (d.body || '') : (d.selftext || ''),
+          author: d.author || '',
+          subreddit: d.subreddit || '',
+          url: d.url || `https://reddit.com${d.permalink}`,
+          permalink: d.permalink ? `https://reddit.com${d.permalink}` : '',
+          score: d.score || 0,
+          saved_at: new Date().toISOString(), // time of this sync
+          post_created_at: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,
+          folder: '',
+          enriched: true,
+          enrichStatus: 'done',
+          source: 'feed',
+        };
+
+        newItems.push(item);
+        existing.add(redditId);
+      }
+
+      if (newItems.length > 0) {
+        const ids = await db.items.bulkAdd(newItems, { allKeys: true });
+        // Push to Supabase if connected
+        if (state.supabaseUrl && state.supabaseKey) {
+          const withIds = newItems.map((item, i) => ({ ...item, id: ids[i] }));
+          for (const item of withIds) {
+            try { await supabaseUpsert('/reddit_saves', [item]); } catch(e) {}
+          }
+        }
+        added += newItems.length;
+      }
+
+      // Pagination — stop if no more pages or we hit all-known items
+      after = json?.data?.after;
+      if (!after) break;
+
+      // If entire page was skipped (all known), stop — we've reached existing saves
+      if (newItems.length === 0 && children.length > 0) break;
+
+      await sleep(300); // be gentle
+    }
+
+    await loadData();
+    state.feedSyncResult = { added, skipped, pages };
+    if (added > 0) showToast(`✅ Sync complete — ${added} new item${added !== 1 ? 's' : ''} added`, 'success');
+    else showToast(`✅ Up to date — no new items found`, 'success');
+
+  } catch(e) {
+    state.feedSyncResult = { added, skipped, pages, error: e.message };
+    showToast(`Sync failed: ${e.message}`, 'error');
+  }
+
+  state.feedSyncing = false;
+  render();
+}
+
+async function clearAllData() {
+  await db.items.clear();
+  await db.folders.clear();
+  await loadData();
+  render();
+  showToast('All local data cleared', 'success');
+}
+
+// ─── UTILITIES ────────────────────────────────────────────────────────────────
+function getFolderIcon(name) {
+  return state.folders.find(f => f.name === name)?.icon || '📁';
+}
+
+function escHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function escAttr(str) {
+  if (!str) return '';
+  return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+function fmtDate(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch(e) { return ''; }
+}
+
+function showToast(msg, type='success') {
+  const container = document.getElementById('toasts');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = msg;
+  container.appendChild(toast);
+  setTimeout(() => toast.remove(), 4000);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ─── SERVICE WORKER ───────────────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+init();
+</script>
+</body>
+</html>
