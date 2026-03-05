@@ -1,5 +1,4 @@
 {
-  "rootDirectory": "",
   "outputDirectory": "pwa",
   "functions": {
     "api/*.js": {
