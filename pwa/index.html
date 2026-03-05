@@ -406,6 +406,9 @@ let state = {
   filterFavourite: false, // show only favourited items
   sortBy: 'postCreatedAt', // savedAt | postCreatedAt | score | subreddit | title
   sortDir: 'desc',       // asc | desc
+  redditFeedUrl: '',     // private Reddit JSON feed URL (from old.reddit.com/prefs/feeds)
+  feedSyncing: false,    // true while feed sync is running
+  feedSyncResult: null,  // { added, skipped, pages, error } from last run
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -441,6 +444,8 @@ async function loadConfig() {
     const favs = await db.config.get('favoriteSearches');
     if (recents) state.recentSearches = recents.value || [];
     if (favs) state.favoriteSearches = favs.value || [];
+    const feedUrl = await db.config.get('redditFeedUrl');
+    if (feedUrl) state.redditFeedUrl = feedUrl.value;
   } catch(e) {}
 }
 
@@ -1402,7 +1407,22 @@ function renderHome() {
 
 function renderMarkdown(text) {
   if (!text) return '';
+
+  // Extract markdown links BEFORE escaping so brackets/parens aren't mangled.
+  // Replace [text](url) with a placeholder, restore as <a> after escaping.
+  const linkPlaceholders = [];
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_, linkText, url) => {
+    const idx = linkPlaceholders.length;
+    const safeUrl = url.replace(/'/g, '%27').replace(/"/g, '%22');
+    const safeText = linkText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    linkPlaceholders.push(`<a href="${safeUrl}" onclick="openLink(event,'${safeUrl}')">${safeText}</a>`);
+    return `\x00LINK${idx}\x00`;
+  });
+
   let html = escHtml(text);
+
+  // Restore link placeholders
+  html = html.replace(/\x00LINK(\d+)\x00/g, (_, i) => linkPlaceholders[+i]);
 
   // Code blocks (``` ... ```) — must come before inline code
   html = html.replace(/```([\s\S]*?)```/g, (_, code) =>
@@ -1440,15 +1460,11 @@ function renderMarkdown(text) {
     return `<ol>${items}</ol>`;
   });
 
-  // Links [text](url)
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, url) => {
-    const safe = url.replace(/"/g, '%22');
-    return `<a href="${safe}" onclick="openLink(event,'${safe}')">${text}</a>`;
+  // Auto-links (bare URLs — don't double-wrap URLs already inside <a> tags)
+  html = html.replace(/(<a [^>]+>[\s\S]*?<\/a>)|(https?:\/\/[^\s<>"]+)/g, (match, anchor, url) => {
+    if (anchor) return anchor; // already an <a> tag, leave it alone
+    return `<a href="${url}" onclick="openLink(event,'${url}')">${url}</a>`;
   });
-
-  // Auto-links (bare URLs)
-  html = html.replace(/(https?:\/\/[^\s<>"]+)/g, url =>
-    `<a href="${url}" onclick="openLink(event,'${url}')">${url}</a>`);
 
   // Paragraphs — wrap double-newline separated blocks
   html = html.split(/\n\n+/).map(block => {
@@ -2567,6 +2583,36 @@ function renderSettings() {
     </div>
 
     <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:4px">📡 Reddit Feed Sync</div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
+        Sync new saves directly from Reddit — no extension needed. Works on mobile.
+        Get your private feed URL from <strong style="color:var(--text)">old.reddit.com/prefs/feeds/</strong> → enable private RSS feeds → copy the <strong style="color:var(--text)">saved.json</strong> URL.
+      </p>
+      <div class="form-group">
+        <label>Private Feed URL</label>
+        <input class="input" id="feed-url" placeholder="https://old.reddit.com/saved.json?feed=…&user=…"
+          value="${escHtml(state.redditFeedUrl)}" style="font-size:12px">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary" onclick="saveFeedUrl()" style="flex:1;justify-content:center">Save URL</button>
+        <button class="btn btn-primary" onclick="syncFromFeed()" style="flex:1;justify-content:center"
+          ${state.feedSyncing ? 'disabled' : ''}>
+          ${state.feedSyncing ? '⏳ Syncing…' : '🔄 Sync Now'}
+        </button>
+      </div>
+      ${state.feedSyncResult ? `
+        <div style="margin-top:10px;font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:8px;padding:10px;line-height:2">
+          ${state.feedSyncResult.error
+            ? `<span style="color:var(--danger)">❌ ${escHtml(state.feedSyncResult.error)}</span>`
+            : `✅ <strong style="color:var(--text)">${state.feedSyncResult.added}</strong> new · 
+               <strong style="color:var(--text)">${state.feedSyncResult.skipped}</strong> already saved · 
+               <strong style="color:var(--text)">${state.feedSyncResult.pages}</strong> page${state.feedSyncResult.pages !== 1 ? 's' : ''} fetched`
+          }
+        </div>
+      ` : ''}
+    </div>
+
+    <div class="config-section">
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">💾 Local Backup</div>
       <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">Export all your data as a JSON backup. Use to transfer between devices or as a safety backup.</p>
       <button class="btn btn-secondary" onclick="exportJSON()" style="width:100%;justify-content:center">⬇️ Export Backup JSON</button>
@@ -2757,6 +2803,124 @@ async function saveSupabaseConfig() {
   state.supabaseKey = key;
   showToast('Saved! Testing connection...', 'success');
   await syncFromSupabase();
+}
+
+async function saveFeedUrl() {
+  const raw = document.getElementById('feed-url')?.value?.trim();
+  if (!raw) { showToast('Please paste your Reddit feed URL', 'error'); return; }
+  // Accept full URL or just the feed=...&user=... params
+  let feedUrl = raw;
+  // Normalise: ensure it ends with .json and has correct base
+  if (!feedUrl.includes('saved.json')) {
+    showToast('URL should contain "saved.json" — copy it from old.reddit.com/prefs/feeds/', 'error');
+    return;
+  }
+  await db.config.put({ key: 'redditFeedUrl', value: feedUrl });
+  state.redditFeedUrl = feedUrl;
+  showToast('Feed URL saved!', 'success');
+  render();
+}
+
+async function syncFromFeed() {
+  if (!state.redditFeedUrl) { showToast('No feed URL configured', 'error'); return; }
+  if (state.feedSyncing) return;
+  state.feedSyncing = true;
+  state.feedSyncResult = null;
+  render();
+
+  let added = 0, skipped = 0, pages = 0;
+  let after = null;
+  const MAX_PAGES = 40; // safety cap — 40 × 25 = 1000 items
+
+  // Build set of existing reddit_ids for fast dedup
+  const existing = new Set(state.items.map(i => i.reddit_id));
+
+  try {
+    while (pages < MAX_PAGES) {
+      // Build URL — append after param for pagination
+      let url = state.redditFeedUrl;
+      url += (url.includes('?') ? '&' : '?') + 'limit=25';
+      if (after) url += `&after=${encodeURIComponent(after)}`;
+
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status} — check your feed URL is correct`);
+      const json = await res.json();
+
+      const children = json?.data?.children || [];
+      if (children.length === 0) break; // no more items
+      pages++;
+
+      const newItems = [];
+      for (const child of children) {
+        const d = child.data;
+        const kind = child.kind; // t3 = post, t1 = comment
+        const redditId = d.name; // already prefixed e.g. t3_abc123
+
+        if (existing.has(redditId)) {
+          skipped++;
+          continue;
+        }
+
+        // Derive type from kind or permalink
+        const type = kind === 't1' ? 'comment' : 'post';
+
+        // Build item — data is already fully enriched from the feed
+        const item = {
+          reddit_id: redditId,
+          type,
+          title: d.title || (type === 'comment' ? `Comment in r/${d.subreddit}` : ''),
+          body: type === 'comment' ? (d.body || '') : (d.selftext || ''),
+          author: d.author || '',
+          subreddit: d.subreddit || '',
+          url: d.url || `https://reddit.com${d.permalink}`,
+          permalink: d.permalink ? `https://reddit.com${d.permalink}` : '',
+          score: d.score || 0,
+          saved_at: new Date().toISOString(), // time of this sync
+          post_created_at: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,
+          folder: '',
+          enriched: true,
+          enrichStatus: 'done',
+          source: 'feed',
+        };
+
+        newItems.push(item);
+        existing.add(redditId);
+      }
+
+      if (newItems.length > 0) {
+        const ids = await db.items.bulkAdd(newItems, { allKeys: true });
+        // Push to Supabase if connected
+        if (state.supabaseUrl && state.supabaseKey) {
+          const withIds = newItems.map((item, i) => ({ ...item, id: ids[i] }));
+          for (const item of withIds) {
+            try { await supabaseUpsert('/reddit_saves', [item]); } catch(e) {}
+          }
+        }
+        added += newItems.length;
+      }
+
+      // Pagination — stop if no more pages or we hit all-known items
+      after = json?.data?.after;
+      if (!after) break;
+
+      // If entire page was skipped (all known), stop — we've reached existing saves
+      if (newItems.length === 0 && children.length > 0) break;
+
+      await sleep(300); // be gentle
+    }
+
+    await loadData();
+    state.feedSyncResult = { added, skipped, pages };
+    if (added > 0) showToast(`✅ Sync complete — ${added} new item${added !== 1 ? 's' : ''} added`, 'success');
+    else showToast(`✅ Up to date — no new items found`, 'success');
+
+  } catch(e) {
+    state.feedSyncResult = { added, skipped, pages, error: e.message };
+    showToast(`Sync failed: ${e.message}`, 'error');
+  }
+
+  state.feedSyncing = false;
+  render();
 }
 
 async function clearAllData() {
