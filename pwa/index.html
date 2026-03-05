@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.17';
+const APP_VERSION = '0.7.18';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2613,6 +2613,10 @@ function renderSettings() {
           ${state.feedSyncing ? '⏳ Syncing…' : '🔄 Sync Now'}
         </button>
       </div>
+      ${state.items.some(i => i.source === 'feed') ? `
+        <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-top:8px;color:var(--danger)"
+          onclick="removeFeedItems()">🗑️ Remove all feed-imported items (${state.items.filter(i => i.source === 'feed').length})</button>
+      ` : ''}
       ${state.feedSyncResult ? `
         <div style="margin-top:10px;font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:8px;padding:10px;line-height:2">
           ${state.feedSyncResult.error
@@ -2943,6 +2947,28 @@ async function syncFromFeed() {
 
   state.feedSyncing = false;
   render();
+}
+
+async function removeFeedItems() {
+  const feedItems = state.items.filter(i => i.source === 'feed');
+  if (!feedItems.length) { showToast('No feed-imported items found', 'error'); return; }
+  if (!confirm(`Delete ${feedItems.length} item${feedItems.length !== 1 ? 's' : ''} imported via feed sync? This cannot be undone.`)) return;
+  const ids = feedItems.map(i => i.id);
+  await db.items.bulkDelete(ids);
+  // Remove from Supabase too
+  if (state.supabaseUrl && state.supabaseKey) {
+    const redditIds = feedItems.map(i => i.redditId).filter(Boolean);
+    for (let i = 0; i < redditIds.length; i += 50) {
+      const chunk = redditIds.slice(i, i + 50);
+      try {
+        await supabaseFetch(`/reddit_saves?reddit_id=in.(${chunk.map(id => `"${id}"`).join(',')})`, 'DELETE', null);
+      } catch(e) {}
+    }
+  }
+  await loadData();
+  state.feedSyncResult = null;
+  render();
+  showToast(`Deleted ${feedItems.length} feed-imported items`, 'success');
 }
 
 async function clearAllData() {
