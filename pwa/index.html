@@ -341,7 +341,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.7.12';
+const APP_VERSION = '0.7.13';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2842,13 +2842,17 @@ async function syncFromFeed() {
 
   try {
     while (pages < MAX_PAGES) {
-      // Route through our Vercel proxy to avoid CORS — Reddit blocks direct cross-origin fetches
+      // Fetch directly — the feed token in the URL is the auth, no cookies needed.
+      // Use minimal fetch options to avoid triggering a CORS preflight.
       let feedUrl = state.redditFeedUrl;
+      // Normalise to www.reddit.com which has CORS headers; old.reddit.com does not
+      feedUrl = feedUrl
+        .replace('https://old.reddit.com', 'https://www.reddit.com')
+        .replace('https://reddit.com', 'https://www.reddit.com');
       feedUrl += (feedUrl.includes('?') ? '&' : '?') + 'limit=25';
       if (after) feedUrl += `&after=${encodeURIComponent(after)}`;
-      const url = `/api/reddit-feed?url=${encodeURIComponent(feedUrl)}`;
 
-      const res = await fetch(url);
+      const res = await fetch(feedUrl);  // simple GET, no custom headers
       if (!res.ok) throw new Error(`HTTP ${res.status} — check your feed URL is correct`);
       const json = await res.json();
 
