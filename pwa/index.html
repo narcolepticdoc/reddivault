@@ -844,15 +844,49 @@ async function saveEnrichSettings() {
 // ─── PREFERENCES SYNC ────────────────────────────────────────────────────────
 
 async function markDirty() {
+  if (!state.supabaseUrl || !state.supabaseKey) return; // no cloud, no point tracking
   state.localDirty = true;
   await db.config.put({ key: 'localDirty', value: true });
   renderHeaderActions();
+  scheduleRetry();
+}
+
+let _retryTimer = null;
+let _retryCount = 0;
+const RETRY_DELAYS = [30000, 60000, 120000]; // 30s, 1min, 2min
+
+function scheduleRetry() {
+  if (_retryTimer) return; // already scheduled
+  if (_retryCount >= RETRY_DELAYS.length) return; // give up after 3 attempts
+  const delay = RETRY_DELAYS[_retryCount];
+  _retryTimer = setTimeout(async () => {
+    _retryTimer = null;
+    if (!state.localDirty) { _retryCount = 0; return; } // already clean
+    _retryCount++;
+    try {
+      await pushAllDirty();
+    } catch(e) {
+      if (state.localDirty) scheduleRetry(); // still dirty, try again
+    }
+  }, delay);
+}
+
+// Lightweight push of just the things that could be dirty —
+// avoids a full 3000-item push on retry.
+async function pushAllDirty() {
+  if (!state.supabaseUrl || !state.supabaseKey || !state.localDirty) return;
+  await pushListsToSupabase();
+  // Item-level changes (ratings, favourites, trash) are already pushed inline.
+  // If those failed, we can't easily know which items changed, so we skip
+  // a full re-push here — the user can use "Push to Cloud" in Settings for that.
 }
 
 async function markClean(pushedAt) {
   const ts = pushedAt || new Date().toISOString();
   state.localDirty = false;
   state.lastPushedAt = ts;
+  _retryCount = 0;
+  if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
   await db.config.put({ key: 'localDirty', value: false });
   await db.config.put({ key: 'lastPushedAt', value: ts });
   // Write timestamp to cloud so other devices can detect they're behind
@@ -1810,7 +1844,9 @@ async function pushItemUpdate(id, fields) {
   try {
     await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', fields);
     await markClean();
-  } catch(e) {}
+  } catch(e) {
+    console.warn('pushItemUpdate failed, will retry:', e.message);
+  }
 }
 
 function setSort(by) {
@@ -3003,6 +3039,7 @@ async function deleteList(id) {
   await db.item_lists.where('listId').equals(id).delete();
   if (state.listView === id) state.listView = 'all';
   await loadData();
+  await markDirty();
   if (list) await deleteListFromSupabase(list.name);
   render();
 }
