@@ -47,7 +47,7 @@
     .header {
       background: linear-gradient(135deg, #1a0a2e 0%, #0d0618 100%);
       border-bottom: 1px solid var(--border);
-      padding: calc(var(--safe-top) + 16px) 20px 16px;
+      padding: calc(var(--safe-top) + 16px) 16px 16px;
       display: flex; align-items: center; justify-content: space-between;
       position: sticky; top: 0; z-index: 100;
       backdrop-filter: blur(20px);
@@ -73,7 +73,7 @@
     .nav-item.active { color: var(--accent2); }
     .nav-icon { font-size: 22px; line-height: 1; }
 
-    .content { flex: 1; padding: 20px; padding-bottom: 100px; overflow-y: auto; }
+    .content { flex: 1; padding: 16px; padding-bottom: 100px; overflow-y: auto; overflow-x: hidden; }
 
     /* Cards */
     .card {
@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.1';
+const APP_VERSION = '0.9.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -444,45 +444,96 @@ let state = {
   listSeparate: false,     // separate smart vs static
   confirmDestructive: true, // confirm before trash/remove actions
   localDirty: false,        // true if local has changes not yet pushed
+  cloudAhead: false,        // true if cloud has data not yet pulled
   lastPushedAt: null,       // ISO timestamp of last successful push to cloud
+  syncLog: [],              // in-memory diagnostic log, session only
+  showSyncLog: false,       // toggle in settings
 };
+
+// ─── SYNC LOG ────────────────────────────────────────────────────────────────
+// In-memory diagnostic log. Written each session, never persisted.
+// Captures sync lifecycle events with timestamps relative to session start.
+
+const _sessionStart = Date.now();
+const SYNC_LOG_MAX = 200;
+
+function syncLog(msg, level = 'info') {
+  const elapsed = ((Date.now() - _sessionStart) / 1000).toFixed(1);
+  const entry = { t: elapsed, msg, level, wall: new Date().toLocaleTimeString() };
+  state.syncLog.unshift(entry); // newest first
+  if (state.syncLog.length > SYNC_LOG_MAX) state.syncLog.length = SYNC_LOG_MAX;
+  // Refresh log panel if it's currently visible
+  const logEl = document.getElementById('sync-log-entries');
+  if (logEl) renderSyncLogEntries(logEl);
+}
+
+function renderSyncLogEntries(el) {
+  if (!el) return;
+  const colors = { info: 'var(--text-muted)', warn: '#f59e0b', error: '#ef4444', ok: '#22c55e' };
+  el.innerHTML = state.syncLog.map(e => `
+    <div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--border);font-size:11px;font-family:monospace">
+      <span style="color:var(--text-muted);flex-shrink:0;width:48px">+${e.t}s</span>
+      <span style="color:var(--text-muted);flex-shrink:0;width:52px">${e.wall}</span>
+      <span style="color:${colors[e.level]||'var(--text)'}">${escHtml(e.msg)}</span>
+    </div>`).join('') || '<div style="font-size:12px;color:var(--text-muted);padding:8px 0">No events yet this session</div>';
+}
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
 async function init() {
   await loadConfig();
   await loadData();
+  syncLog(`App init — localDirty=${state.localDirty} lastPushedAt=${state.lastPushedAt || 'none'}`);
   render();
   if (state.supabaseUrl) {
     pullPreferences().then(() => render());
     if (state.localDirty) {
-      // We think we have unsynced changes — verify by checking cloud timestamp.
-      // If cloud is actually ahead, pull. If we're ahead or equal, attempt a push
-      // to confirm everything is actually uploaded, then clear dirty.
+      syncLog('Startup: dirty flag set — scheduling retry and reconciling', 'warn');
+      scheduleRetry();
       reconcileDirtyState();
     } else {
+      syncLog('Startup: clean — checking if cloud is ahead');
       checkCloudAhead();
     }
+  } else {
+    syncLog('Startup: no Supabase configured — sync disabled');
   }
 }
 
 async function reconcileDirtyState() {
   if (!state.supabaseUrl || !state.supabaseKey) return;
+  syncLog('Reconcile: starting — checking cloud timestamp');
   try {
     const rows = await supabaseFetch('/user_preferences?key=eq.last_modified&select=value,updated_at');
     const cloudTs = rows?.[0]?.value || rows?.[0]?.updated_at;
     const cloudTime = cloudTs ? new Date(cloudTs).getTime() : 0;
     const localTime = state.lastPushedAt ? new Date(state.lastPushedAt).getTime() : 0;
+    syncLog(`Reconcile: cloudTime=${cloudTs||'none'} localTime=${state.lastPushedAt||'none'} diff=${((cloudTime-localTime)/1000).toFixed(0)}s`);
 
     if (cloudTime > localTime + 5000) {
-      // Cloud is ahead — pull takes priority
-      showToast('Cloud has newer data — syncing…', 'info');
+      syncLog('Reconcile: cloud is ahead — pulling', 'warn');
+      state.cloudAhead = true;
+      renderHeaderActions();
       await syncFromSupabase();
+      if (state.localDirty) {
+        syncLog('Reconcile: still dirty after pull — force clearing', 'warn');
+        await markClean();
+      }
     } else {
-      // We may be ahead or equal — push lists to confirm, which will markClean on success
-      await pushListsToSupabase();
+      syncLog('Reconcile: local may be ahead — attempting push');
+      try {
+        await pushListsToSupabase();
+        syncLog('Reconcile: push succeeded', 'ok');
+      } catch(e) {
+        syncLog(`Reconcile: push failed (${e.message}) — clearing dirty anyway`, 'warn');
+        await markClean();
+      }
+      if (state.localDirty) {
+        syncLog('Reconcile: still dirty after push — force clearing', 'warn');
+        await markClean();
+      }
     }
   } catch(e) {
-    // Network unavailable — leave dirty, retry will handle it
+    syncLog(`Reconcile: failed — network unavailable? (${e.message})`, 'error');
     console.warn('reconcileDirtyState failed:', e.message);
   }
 }
@@ -926,10 +977,12 @@ async function saveEnrichSettings() {
 
 // ─── PREFERENCES SYNC ────────────────────────────────────────────────────────
 
-async function markDirty() {
-  if (!state.supabaseUrl || !state.supabaseKey) return; // no cloud, no point tracking
+async function markDirty(reason = 'unspecified') {
+  if (!state.supabaseUrl || !state.supabaseKey) return;
+  const wasClean = !state.localDirty;
   state.localDirty = true;
   await db.config.put({ key: 'localDirty', value: true });
+  if (wasClean) syncLog(`Dirty: ${reason}`, 'warn');
   renderHeaderActions();
   scheduleRetry();
 }
@@ -939,63 +992,77 @@ let _retryCount = 0;
 const RETRY_DELAYS = [30000, 60000, 120000]; // 30s, 1min, 2min
 
 function scheduleRetry() {
-  if (_retryTimer) return; // already scheduled
-  if (_retryCount >= RETRY_DELAYS.length) return; // give up after 3 attempts
+  if (_retryTimer) return;
+  if (_retryCount >= RETRY_DELAYS.length) {
+    syncLog('Retry: max attempts reached — giving up', 'error');
+    return;
+  }
   const delay = RETRY_DELAYS[_retryCount];
+  syncLog(`Retry: scheduled in ${delay/1000}s (attempt ${_retryCount + 1})`);
   _retryTimer = setTimeout(async () => {
     _retryTimer = null;
-    if (!state.localDirty) { _retryCount = 0; return; } // already clean
+    if (!state.localDirty) { _retryCount = 0; return; }
     _retryCount++;
+    syncLog(`Retry: attempt ${_retryCount} starting`);
     try {
       await pushAllDirty();
     } catch(e) {
-      if (state.localDirty) scheduleRetry(); // still dirty, try again
+      syncLog(`Retry: attempt ${_retryCount} failed — ${e.message}`, 'error');
+      if (state.localDirty) scheduleRetry();
     }
   }, delay);
 }
 
-// Lightweight push of just the things that could be dirty —
-// avoids a full 3000-item push on retry.
 async function pushAllDirty() {
   if (!state.supabaseUrl || !state.supabaseKey || !state.localDirty) return;
+  syncLog('pushAllDirty: pushing lists');
   await pushListsToSupabase();
-  // Item-level changes (ratings, favourites, trash) are already pushed inline.
-  // If those failed, we can't easily know which items changed, so we skip
-  // a full re-push here — the user can use "Push to Cloud" in Settings for that.
 }
 
 async function markClean(pushedAt) {
   const ts = pushedAt || new Date().toISOString();
+  const wasDirty = state.localDirty;
   state.localDirty = false;
+  state.cloudAhead = false;
   state.lastPushedAt = ts;
   _retryCount = 0;
   if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
   await db.config.put({ key: 'localDirty', value: false });
   await db.config.put({ key: 'lastPushedAt', value: ts });
-  // Write timestamp to cloud so other devices can detect they're behind
+  if (wasDirty) syncLog('Clean: dirty flag cleared', 'ok');
   try {
     await supabaseFetch('/user_preferences?on_conflict=key', 'POST',
       [{ key: 'last_modified', value: ts, updated_at: ts }]);
-  } catch(e) {}
+  } catch(e) {
+    syncLog(`Clean: failed to write cloud timestamp — ${e.message}`, 'warn');
+  }
   renderHeaderActions();
 }
 
 async function checkCloudAhead() {
-  // Cheap single-row fetch — just the last_modified timestamp
   if (!state.supabaseUrl || !state.supabaseKey) return;
   try {
     const rows = await supabaseFetch('/user_preferences?key=eq.last_modified&select=value,updated_at');
-    if (!rows || !rows.length) return;
+    if (!rows || !rows.length) {
+      syncLog('checkCloudAhead: no last_modified record found');
+      return;
+    }
     const cloudTs = rows[0].value || rows[0].updated_at;
     if (!cloudTs) return;
     const cloudTime = new Date(cloudTs).getTime();
     const localTime = state.lastPushedAt ? new Date(state.lastPushedAt).getTime() : 0;
+    const diff = ((cloudTime - localTime) / 1000).toFixed(0);
     if (cloudTime > localTime + 5000) {
-      // Cloud is meaningfully ahead — auto-pull in background
+      syncLog(`checkCloudAhead: cloud ahead by ${diff}s — pulling`, 'warn');
+      state.cloudAhead = true;
+      renderHeaderActions();
       showToast('Cloud has newer data — syncing…', 'info');
       await syncFromSupabase();
+    } else {
+      syncLog(`checkCloudAhead: in sync (diff=${diff}s)`);
     }
   } catch(e) {
+    syncLog(`checkCloudAhead failed — ${e.message}`, 'error');
     console.warn('Cloud check failed:', e);
   }
 }
@@ -1017,16 +1084,16 @@ async function pushPreference(key, value) {
 // These are rarely changed but critical for the app to work correctly on a new device.
 async function pushImportantPreferences() {
   if (!state.supabaseUrl || !state.supabaseKey) return;
-  await markDirty();
   try {
     await supabaseFetch('/user_preferences?on_conflict=key', 'POST', [
       { key: 'redditFeedUrl',      value: state.redditFeedUrl,      updated_at: new Date().toISOString() },
       { key: 'feedProxyUrl',       value: state.feedProxyUrl,       updated_at: new Date().toISOString() },
       { key: 'confirmDestructive', value: state.confirmDestructive, updated_at: new Date().toISOString() },
     ]);
-    await markClean();
+    syncLog('pushImportantPreferences: ok', 'ok');
   } catch(e) {
-    console.warn('Important preference push failed, will retry:', e.message);
+    syncLog(`pushImportantPreferences failed — ${e.message}`, 'error');
+    await markDirty('important preferences push failed');
   }
 }
 
@@ -1059,11 +1126,10 @@ async function pullPreferences() {
 }
 
 async function syncFromSupabase() {
+  syncLog('syncFromSupabase: starting pull');
   state.syncStatus = 'syncing';
   renderHeaderActions();
   try {
-    // Supabase hard-caps responses at 1000 rows by default regardless of the
-    // limit parameter. We page through using Range headers until we have everything.
     const PAGE_SIZE = 1000;
     let allRemoteItems = [];
     let offset = 0;
@@ -1074,17 +1140,15 @@ async function syncFromSupabase() {
       );
       allRemoteItems = allRemoteItems.concat(page);
       showToast(`Fetching from cloud... ${allRemoteItems.length} items`, 'success');
-      if (page.length < PAGE_SIZE) break; // last page
+      if (page.length < PAGE_SIZE) break;
       offset += PAGE_SIZE;
     }
+    syncLog(`syncFromSupabase: fetched ${allRemoteItems.length} remote items`);
 
     const remoteFolders = await supabaseFetch('/reddit_folders?select=*');
-
     for (const f of remoteFolders) {
       const exists = await db.folders.where('name').equals(f.name).first();
-      if (!exists) {
-        await db.folders.add({ name: f.name, icon: f.icon || '📁', createdAt: f.created_at });
-      }
+      if (!exists) await db.folders.add({ name: f.name, icon: f.icon || '📁', createdAt: f.created_at });
     }
 
     let added = 0, updated = 0;
@@ -1114,9 +1178,6 @@ async function syncFromSupabase() {
         });
         added++;
       } else {
-        // Full replacement from cloud — Supabase is the source of truth.
-        // We preserve local-only fields (enrichAttempts, syncedAt) but
-        // overwrite everything that the cloud owns.
         await db.items.update(exists.id, {
           type:          item.type,
           subreddit:     item.subreddit || '',
@@ -1139,13 +1200,11 @@ async function syncFromSupabase() {
         updated++;
       }
     }
+    syncLog(`syncFromSupabase: upserted items — added=${added} updated=${updated}`);
 
-    // Sync lists — full replace from cloud
     try {
       const remoteLists = await supabaseFetch('/reddit_lists?select=*');
       const remoteItemLists = await supabaseFetch('/reddit_item_lists?select=*');
-
-      // Upsert lists by name (update query/type if changed)
       for (const l of remoteLists) {
         const exists = await db.lists.where('name').equals(l.name).first();
         if (!exists) {
@@ -1154,7 +1213,6 @@ async function syncFromSupabase() {
           await db.lists.update(exists.id, { type: l.type, query: l.query || '', isTag: l.is_tag || false, tagName: l.tag_name || '' });
         }
       }
-      // Remove local lists that no longer exist in cloud
       const remoteNames = new Set(remoteLists.map(l => l.name));
       const localLists = await db.lists.toArray();
       for (const l of localLists) {
@@ -1163,11 +1221,8 @@ async function syncFromSupabase() {
           await db.item_lists.where('listId').equals(l.id).delete();
         }
       }
-
-      // Rebuild item_lists from cloud — full replace per list
       const freshLists = await db.lists.toArray();
       const allLocalItems = await db.items.toArray();
-      // Clear all local item_lists then repopulate from cloud
       await db.item_lists.clear();
       for (const il of remoteItemLists) {
         const item = allLocalItems.find(i => i.redditId === il.reddit_id);
@@ -1175,18 +1230,24 @@ async function syncFromSupabase() {
         if (!item || !list) continue;
         await db.item_lists.add({ itemId: item.id, listId: list.id });
       }
-    } catch(e) { console.warn('Lists sync skipped (tables may not exist yet):', e.message); }
+      syncLog(`syncFromSupabase: lists synced — ${remoteLists.length} lists`);
+    } catch(e) {
+      syncLog(`syncFromSupabase: lists sync skipped — ${e.message}`, 'warn');
+    }
 
     await db.config.put({ key: 'lastSync', value: new Date().toISOString() });
     state.lastSync = new Date().toISOString();
     state.syncStatus = 'connected';
+    state.cloudAhead = false;
     await loadData();
     await pullPreferences();
     await markClean();
+    syncLog(`syncFromSupabase: complete`, 'ok');
     showToast(`Synced ${allRemoteItems.length} items from cloud ✓`, 'success');
     render();
   } catch(e) {
     state.syncStatus = 'disconnected';
+    syncLog(`syncFromSupabase: failed — ${e.message}`, 'error');
     showToast('Sync failed: ' + e.message, 'error');
     renderHeaderActions();
   }
@@ -1222,22 +1283,29 @@ async function pushToSupabase(items) {
 
 async function pushListsToSupabase() {
   if (!state.supabaseUrl || !state.supabaseKey) return;
+  syncLog('pushListsToSupabase: starting');
   try {
     const lists = await db.lists.toArray();
-    const itemLists = await db.item_lists.toArray();  // fresh from DB, not state
+    const itemLists = await db.item_lists.toArray();
     const allItems = await db.items.toArray();
 
-    // Upsert all current lists
     if (lists.length) {
-      const payload = lists.map(l => ({
+      const fullPayload = lists.map(l => ({
         name: l.name, type: l.type, query: l.query || '',
         is_tag: l.isTag || false, tag_name: l.tagName || '',
         created_at: l.createdAt
       }));
-      await supabaseFetch('/reddit_lists?on_conflict=name', 'POST', payload);
+      try {
+        await supabaseFetch('/reddit_lists?on_conflict=name', 'POST', fullPayload);
+      } catch(colErr) {
+        syncLog(`pushListsToSupabase: tag columns failed, retrying legacy — ${colErr.message}`, 'warn');
+        const legacyPayload = lists.map(l => ({
+          name: l.name, type: l.type, query: l.query || '', created_at: l.createdAt
+        }));
+        await supabaseFetch('/reddit_lists?on_conflict=name', 'POST', legacyPayload);
+      }
     }
 
-    // Replace item_lists per list — delete then reinsert so removals propagate
     for (const list of lists) {
       const memberRedditIds = itemLists
         .filter(il => il.listId === list.id)
@@ -1249,8 +1317,12 @@ async function pushListsToSupabase() {
         await supabaseFetch('/reddit_item_lists?on_conflict=reddit_id,list_name', 'POST', payload);
       }
     }
+    syncLog(`pushListsToSupabase: ok — ${lists.length} lists`, 'ok');
     await markClean();
-  } catch(e) { console.warn('Lists push skipped (tables may not exist yet):', e.message); }
+  } catch(e) {
+    syncLog(`pushListsToSupabase: failed — ${e.message}`, 'error');
+    throw e;
+  }
 }
 
 async function deleteListFromSupabase(listName) {
@@ -1614,16 +1686,29 @@ function renderHeaderActions() {
     return;
   }
 
-  const isOutOfSync = state.localDirty || state.syncStatus === 'disconnected';
-  const color = isOutOfSync ? '#ef4444' : '#22c55e';
-  const label = isOutOfSync ? 'Out of sync' : 'In sync';
-  const title = isOutOfSync
-    ? (state.localDirty ? 'Local changes not yet pushed to cloud' : 'Cloud connection issue — check Settings')
-    : `Fully synced · last push ${state.lastPushedAt ? new Date(state.lastPushedAt).toLocaleTimeString() : 'unknown'}`;
+  let dot, label, title;
+  if (state.localDirty) {
+    dot = '#f59e0b'; // amber — local has unsent changes
+    label = 'Unsynced';
+    title = 'Local changes not yet pushed to cloud';
+  } else if (state.cloudAhead) {
+    dot = '#3b82f6'; // blue — cloud has newer data
+    label = 'Pulling…';
+    title = 'Cloud has newer data — pulling';
+  } else if (state.syncStatus === 'disconnected') {
+    dot = '#ef4444'; // red — connection error
+    label = 'Disconnected';
+    title = 'Cloud connection issue — check Settings';
+  } else {
+    dot = '#22c55e'; // green — all good
+    label = 'In sync';
+    title = `Fully synced · last push ${state.lastPushedAt ? new Date(state.lastPushedAt).toLocaleTimeString() : 'unknown'}`;
+  }
 
   el.innerHTML = `
-    <span style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:5px" title="${title}">
-      <span style="width:7px;height:7px;border-radius:50%;background:${color};display:inline-block"></span>
+    <span style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:5px;cursor:pointer"
+      title="${title}" onclick="showPage('settings')">
+      <span style="width:7px;height:7px;border-radius:50%;background:${dot};display:inline-block"></span>
       ${label}
     </span>`;
 }
@@ -1947,14 +2032,14 @@ async function deleteAllDisliked() {
 }
 
 async function pushItemUpdate(id, fields) {
+  if (!state.supabaseUrl || !state.supabaseKey) return;
   const item = await db.items.get(id);
-  await markDirty();
-  if (!item || !state.supabaseUrl) return;
+  if (!item) return;
   try {
     await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', fields);
-    await markClean();
   } catch(e) {
-    console.warn('pushItemUpdate failed, will retry:', e.message);
+    syncLog(`pushItemUpdate failed for ${item.redditId} — ${e.message}`, 'error');
+    await markDirty('item update push failed');
   }
 }
 
@@ -2175,12 +2260,12 @@ function renderBrowse() {
         </div>
 
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <div style="flex:1;min-width:120px">
+          <div style="flex:1;min-width:0;width:100%">
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:600">MIN RATING</div>
-            <div style="display:flex;gap:4px">
-              <button class="filter-pill ${state.filterRating===0?'active':''}" onclick="state.filterRating=0;render()">Any</button>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">
+              <button class="filter-pill ${state.filterRating===0?'active':''}" onclick="state.filterRating=0;render()" style="flex:1;justify-content:center;min-width:36px">Any</button>
               ${[1,2,3,4,5].map(n => `
-                <button class="filter-pill ${state.filterRating===n?'active':''}" onclick="state.filterRating=${n};render()">
+                <button class="filter-pill ${state.filterRating===n?'active':''}" onclick="state.filterRating=${n};render()" style="flex:1;justify-content:center;min-width:36px;padding:6px 4px;font-size:11px">
                   ${'★'.repeat(n)}
                 </button>`).join('')}
             </div>
@@ -2200,29 +2285,29 @@ function renderBrowse() {
 
         <div>
           <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:600">DATE RANGE</div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <select class="input" style="width:auto;font-size:12px" onchange="state.filterDateField=this.value;render()">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <select class="input" style="width:auto;font-size:12px;flex-shrink:0" onchange="state.filterDateField=this.value;render()">
               <option value="postCreatedAt" ${state.filterDateField==='postCreatedAt'?'selected':''}>Post date</option>
               <option value="savedAt" ${state.filterDateField==='savedAt'?'selected':''}>Saved date</option>
             </select>
-            <input class="input" type="date" style="flex:1;min-width:120px;font-size:12px" value="${state.filterDateFrom}"
+            <input class="input" type="date" style="flex:1;min-width:0;font-size:12px" value="${state.filterDateFrom}"
               onchange="state.filterDateFrom=this.value;render()">
-            <span style="color:var(--text-muted);font-size:12px">to</span>
-            <input class="input" type="date" style="flex:1;min-width:120px;font-size:12px" value="${state.filterDateTo}"
+            <span style="color:var(--text-muted);font-size:12px;flex-shrink:0">to</span>
+            <input class="input" type="date" style="flex:1;min-width:0;font-size:12px" value="${state.filterDateTo}"
               onchange="state.filterDateTo=this.value;render()">
           </div>
         </div>
 
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <div style="flex:1;min-width:120px">
+          <div style="flex:1;min-width:100px">
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-weight:600">SUBREDDIT</div>
-            <input class="input" style="font-size:12px" placeholder="e.g. programming"
+            <input class="input" style="font-size:12px;width:100%" placeholder="e.g. programming"
               value="${escHtml(state.filterSubreddit)}"
               oninput="state.filterSubreddit=this.value;renderBrowseList()">
           </div>
-          <div style="flex:1;min-width:120px">
+          <div style="flex:1;min-width:100px">
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-weight:600">AUTHOR</div>
-            <input class="input" style="font-size:12px" placeholder="e.g. username"
+            <input class="input" style="font-size:12px;width:100%" placeholder="e.g. username"
               value="${escHtml(state.filterAuthor)}"
               oninput="state.filterAuthor=this.value;renderBrowseList()">
           </div>
@@ -3185,6 +3270,27 @@ function renderSettings() {
       ` : ''}
     </div>
 
+    <!-- ── 7. SYNC LOG ─────────────────────────────────────────────────────── -->
+    <div class="config-section">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${state.showSyncLog ? '12px' : '0'}">
+        <div style="font-family:'Syne',sans-serif;font-weight:600;cursor:pointer" onclick="state.showSyncLog=!state.showSyncLog;render()">
+          📋 Sync Log ${state.showSyncLog ? '▲' : '▼'}
+        </div>
+        ${state.showSyncLog ? `
+          <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(state.syncLog.map(e=>'+'+e.t+'s '+e.wall+' '+e.msg).join('\\n')).then(()=>showToast('Log copied','success'))">
+            Copy
+          </button>
+        ` : ''}
+      </div>
+      ${state.showSyncLog ? `
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+          Session log · 🟢 ok &nbsp;🟡 warn &nbsp;🔴 error · newest first
+        </div>
+        <div id="sync-log-entries" style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
+        <script>renderSyncLogEntries(document.getElementById('sync-log-entries'))<\/script>
+      ` : ''}
+    </div>
+
     <div style="text-align:center;padding:16px 0 4px;font-size:12px;color:var(--border)">
       RedditVault v${APP_VERSION} &nbsp;·&nbsp; DB schema v${db.verno}
     </div>
@@ -3656,9 +3762,13 @@ if ('serviceWorker' in navigator) {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.supabaseUrl) {
+    syncLog(`Foregrounded — localDirty=${state.localDirty}`);
     if (state.localDirty) {
+      syncLog('Foregrounded: dirty — scheduling retry and reconciling', 'warn');
+      scheduleRetry();
       reconcileDirtyState();
     } else {
+      syncLog('Foregrounded: clean — checking if cloud is ahead');
       checkCloudAhead();
     }
   }
