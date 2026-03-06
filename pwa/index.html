@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.8.7';
+const APP_VERSION = '0.8.8';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1007,25 +1007,40 @@ async function syncFromSupabase() {
       }
     }
 
-    // Sync lists
+    // Sync lists — full replace from cloud
     try {
       const remoteLists = await supabaseFetch('/reddit_lists?select=*');
+      const remoteItemLists = await supabaseFetch('/reddit_item_lists?select=*');
+
+      // Upsert lists by name (update query/type if changed)
       for (const l of remoteLists) {
-        const exists = await db.lists.get(l.local_id) ||
-                       await db.lists.where('name').equals(l.name).first();
+        const exists = await db.lists.where('name').equals(l.name).first();
         if (!exists) {
           await db.lists.add({ name: l.name, type: l.type, query: l.query || '', createdAt: l.created_at });
+        } else {
+          await db.lists.update(exists.id, { type: l.type, query: l.query || '' });
         }
       }
-      const remoteItemLists = await supabaseFetch('/reddit_item_lists?select=*');
-      const localItems = await db.items.toArray();
+      // Remove local lists that no longer exist in cloud
+      const remoteNames = new Set(remoteLists.map(l => l.name));
       const localLists = await db.lists.toArray();
+      for (const l of localLists) {
+        if (!remoteNames.has(l.name)) {
+          await db.lists.delete(l.id);
+          await db.item_lists.where('listId').equals(l.id).delete();
+        }
+      }
+
+      // Rebuild item_lists from cloud — full replace per list
+      const freshLists = await db.lists.toArray();
+      const allLocalItems = await db.items.toArray();
+      // Clear all local item_lists then repopulate from cloud
+      await db.item_lists.clear();
       for (const il of remoteItemLists) {
-        const item = localItems.find(i => i.redditId === il.reddit_id);
-        const list = localLists.find(l => l.name === il.list_name);
+        const item = allLocalItems.find(i => i.redditId === il.reddit_id);
+        const list = freshLists.find(l => l.name === il.list_name);
         if (!item || !list) continue;
-        const exists = await db.item_lists.where('itemId').equals(item.id).and(r => r.listId === list.id).first();
-        if (!exists) await db.item_lists.add({ itemId: item.id, listId: list.id });
+        await db.item_lists.add({ itemId: item.id, listId: list.id });
       }
     } catch(e) { console.warn('Lists sync skipped (tables may not exist yet):', e.message); }
 
@@ -1076,24 +1091,38 @@ async function pushListsToSupabase() {
   if (!state.supabaseUrl || !state.supabaseKey) return;
   try {
     const lists = await db.lists.toArray();
+    const itemLists = await db.item_lists.toArray();  // fresh from DB, not state
+    const allItems = await db.items.toArray();
+
+    // Upsert all current lists
     if (lists.length) {
       const payload = lists.map(l => ({ name: l.name, type: l.type, query: l.query || '', created_at: l.createdAt }));
       await supabaseFetch('/reddit_lists?on_conflict=name', 'POST', payload);
     }
-    const itemLists = await db.item_lists.toArray();
-    const allItems = await db.items.toArray();
-    const allLists = await db.lists.toArray();
-    if (itemLists.length) {
-      const payload = itemLists.map(il => {
-        const item = allItems.find(i => i.id === il.itemId);
-        const list = allLists.find(l => l.id === il.listId);
-        if (!item || !list) return null;
-        return { reddit_id: item.redditId, list_name: list.name };
-      }).filter(Boolean);
-      if (payload.length) await supabaseFetch('/reddit_item_lists?on_conflict=reddit_id,list_name', 'POST', payload);
+
+    // Replace item_lists per list — delete then reinsert so removals propagate
+    for (const list of lists) {
+      const memberRedditIds = itemLists
+        .filter(il => il.listId === list.id)
+        .map(il => allItems.find(i => i.id === il.itemId)?.redditId)
+        .filter(Boolean);
+      await supabaseFetch(`/reddit_item_lists?list_name=eq.${encodeURIComponent(list.name)}`, 'DELETE', null);
+      if (memberRedditIds.length) {
+        const payload = memberRedditIds.map(reddit_id => ({ reddit_id, list_name: list.name }));
+        await supabaseFetch('/reddit_item_lists?on_conflict=reddit_id,list_name', 'POST', payload);
+      }
     }
     await markClean();
   } catch(e) { console.warn('Lists push skipped (tables may not exist yet):', e.message); }
+}
+
+async function deleteListFromSupabase(listName) {
+  if (!state.supabaseUrl || !state.supabaseKey) return;
+  try {
+    await supabaseFetch(`/reddit_item_lists?list_name=eq.${encodeURIComponent(listName)}`, 'DELETE', null);
+    await supabaseFetch(`/reddit_lists?name=eq.${encodeURIComponent(listName)}`, 'DELETE', null);
+    await markClean();
+  } catch(e) { console.warn('List delete from cloud failed:', e.message); }
 }
 
 // ─── IMPORT ──────────────────────────────────────────────────────────────────
@@ -1504,6 +1533,24 @@ function renderHome() {
 }
 
 // ─── MARKDOWN RENDERER ───────────────────────────────────────────────────────
+// Strips trailing punctuation from URLs, but preserves ) if it balances an open paren.
+function stripUrlPunct(url) {
+  // Remove truncated HTML entities at the end first
+  url = url.replace(/&(?:[a-z]+|#\d+)?$/, '');
+  while (url.length > 0) {
+    const last = url[url.length - 1];
+    if (/[.,!?:;\]'"']/.test(last)) {
+      url = url.slice(0, -1);
+    } else if (last === ')') {
+      const opens  = (url.match(/\(/g) || []).length;
+      const closes = (url.match(/\)/g) || []).length;
+      if (closes > opens) url = url.slice(0, -1);
+      else break;
+    } else break;
+  }
+  return url;
+}
+
 // Renders Reddit's markdown subset to safe HTML.
 // Handles: headers, bold, italic, code blocks, inline code, blockquotes,
 //          ordered/unordered lists, horizontal rules, links, and paragraphs.
@@ -1512,9 +1559,10 @@ function renderMarkdown(text) {
   if (!text) return '';
 
   // Extract markdown links BEFORE escaping so brackets/parens aren't mangled.
-  // Replace [text](url) with a placeholder, restore as <a> after escaping.
+  // The URL part allows one level of balanced parens (common in Wikipedia links).
   const linkPlaceholders = [];
-  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_, linkText, url) => {
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/(?:[^()]+|\([^()]*\))+)\)/g, (_, linkText, url) => {
+    url = stripUrlPunct(url);
     const idx = linkPlaceholders.length;
     const safeUrl = url.replace(/'/g, '%27').replace(/"/g, '%22');
     const safeText = linkText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -1565,8 +1613,10 @@ function renderMarkdown(text) {
 
   // Auto-links (bare URLs — don't double-wrap URLs already inside <a> tags)
   html = html.replace(/(<a [^>]+>[\s\S]*?<\/a>)|(https?:\/\/[^\s<>"]+)/g, (match, anchor, url) => {
-    if (anchor) return anchor; // already an <a> tag, leave it alone
-    return `<a href="${url}" onclick="openLink(event,'${url}')">${url}</a>`;
+    if (anchor) return anchor;
+    url = stripUrlPunct(url);
+    const display = url.length > 50 ? url.slice(0, 47) + '…' : url;
+    return `<a href="${url}" onclick="openLink(event,'${url}')">${display}</a>`;
   });
 
   // Paragraphs — wrap double-newline separated blocks
@@ -2946,10 +2996,12 @@ async function doCreateList(type) {
 }
 
 async function deleteList(id) {
+  const list = state.lists.find(l => l.id === id);
   await db.lists.delete(id);
   await db.item_lists.where('listId').equals(id).delete();
   if (state.listView === id) state.listView = 'all';
   await loadData();
+  if (list) await deleteListFromSupabase(list.name);
   render();
 }
 
@@ -3323,6 +3375,12 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.supabaseUrl) {
+    checkCloudAhead();
+  }
+});
 
 init();
 </script>
