@@ -1595,18 +1595,22 @@ function renderMarkdown(text) {
   if (!text) return '';
 
   // Extract markdown links BEFORE escaping so brackets/parens aren't mangled.
-  // The URL part allows one level of balanced parens (common in Wikipedia links).
+  // Pre-process \[ and \] into placeholders so they don't interfere with link detection,
+  // then restore them in the matched link text.
   const linkPlaceholders = [];
-  text = text.replace(/\[((?:[^\]\\]|\\.)+)\]\((https?:\/\/(?:[^()]+|\([^()]*\))+)\)/g, (_, linkText, url) => {
+  const ESC_OPEN = '\x01', ESC_CLOSE = '\x02';
+  text = text.replace(/\\\[/g, ESC_OPEN).replace(/\\\]/g, ESC_CLOSE);
+  text = text.replace(/\[([^\]]{1,300}?)\]\((https?:\/\/(?:[^()]+|\([^()]*\))+)\)/g, (_, linkText, url) => {
     url = stripUrlPunct(url);
     const idx = linkPlaceholders.length;
     const safeUrl = url.replace(/'/g, '%27').replace(/"/g, '%22');
-    const safeText = linkText
-      .replace(/\\(.)/g, '$1')  // unescape \[ \] etc
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const displayText = linkText.replace(/\x01/g, '[').replace(/\x02/g, ']');
+    const safeText = displayText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     linkPlaceholders.push(`<a href="${safeUrl}" onclick="openLink(event,'${safeUrl}')">${safeText}</a>`);
     return `\x00LINK${idx}\x00`;
   });
+  // Restore any escaped brackets that weren't part of a link
+  text = text.replace(/\x01/g, '[').replace(/\x02/g, ']');
 
   let html = escHtml(text);
 
