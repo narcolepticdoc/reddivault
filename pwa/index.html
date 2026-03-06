@@ -432,9 +432,37 @@ async function init() {
   await loadData();
   render();
   if (state.supabaseUrl) {
-    // Pull preferences first (cheap), then check if cloud has newer data
     pullPreferences().then(() => render());
-    checkCloudAhead();
+    if (state.localDirty) {
+      // We think we have unsynced changes — verify by checking cloud timestamp.
+      // If cloud is actually ahead, pull. If we're ahead or equal, attempt a push
+      // to confirm everything is actually uploaded, then clear dirty.
+      reconcileDirtyState();
+    } else {
+      checkCloudAhead();
+    }
+  }
+}
+
+async function reconcileDirtyState() {
+  if (!state.supabaseUrl || !state.supabaseKey) return;
+  try {
+    const rows = await supabaseFetch('/user_preferences?key=eq.last_modified&select=value,updated_at');
+    const cloudTs = rows?.[0]?.value || rows?.[0]?.updated_at;
+    const cloudTime = cloudTs ? new Date(cloudTs).getTime() : 0;
+    const localTime = state.lastPushedAt ? new Date(state.lastPushedAt).getTime() : 0;
+
+    if (cloudTime > localTime + 5000) {
+      // Cloud is ahead — pull takes priority
+      showToast('Cloud has newer data — syncing…', 'info');
+      await syncFromSupabase();
+    } else {
+      // We may be ahead or equal — push lists to confirm, which will markClean on success
+      await pushListsToSupabase();
+    }
+  } catch(e) {
+    // Network unavailable — leave dirty, retry will handle it
+    console.warn('reconcileDirtyState failed:', e.message);
   }
 }
 
@@ -919,16 +947,31 @@ async function checkCloudAhead() {
 
 async function pushPreference(key, value) {
   if (!state.supabaseUrl) return;
-  await markDirty();
   try {
     await supabaseFetch(
       '/user_preferences?on_conflict=key',
       'POST',
       [{ key, value, updated_at: new Date().toISOString() }]
     );
+  } catch(e) {
+    console.warn('Preference push failed:', e);
+  }
+}
+
+// Pushes the small set of important config preferences with dirty/clean tracking.
+// These are rarely changed but critical for the app to work correctly on a new device.
+async function pushImportantPreferences() {
+  if (!state.supabaseUrl || !state.supabaseKey) return;
+  await markDirty();
+  try {
+    await supabaseFetch('/user_preferences?on_conflict=key', 'POST', [
+      { key: 'redditFeedUrl',      value: state.redditFeedUrl,      updated_at: new Date().toISOString() },
+      { key: 'feedProxyUrl',       value: state.feedProxyUrl,       updated_at: new Date().toISOString() },
+      { key: 'confirmDestructive', value: state.confirmDestructive, updated_at: new Date().toISOString() },
+    ]);
     await markClean();
   } catch(e) {
-    console.warn('Preference push failed, will retry:', e);
+    console.warn('Important preference push failed, will retry:', e.message);
   }
 }
 
@@ -954,6 +997,10 @@ async function pullPreferences() {
       if (row.key === 'feedProxyUrl' && row.value) {
         state.feedProxyUrl = row.value;
         await db.config.put({ key: 'feedProxyUrl', value: row.value });
+      }
+      if (row.key === 'confirmDestructive' && row.value !== undefined) {
+        state.confirmDestructive = row.value;
+        await db.config.put({ key: 'confirmDestructive', value: row.value });
       }
     }
   } catch(e) {
@@ -2951,7 +2998,7 @@ function renderSettings() {
           <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Shows a confirmation prompt on destructive card actions</div>
         </span>
         <input type="checkbox" ${state.confirmDestructive ? 'checked' : ''}
-          onchange="state.confirmDestructive=this.checked;db.config.put({key:'confirmDestructive',value:this.checked})"
+          onchange="state.confirmDestructive=this.checked;db.config.put({key:'confirmDestructive',value:this.checked});pushImportantPreferences()"
           style="width:18px;height:18px;margin-left:16px;flex-shrink:0">
       </label>
     </div>
@@ -3247,8 +3294,7 @@ async function saveFeedUrl() {
   state.feedProxyUrl = proxyRaw;
 
   // Sync to cloud
-  await pushPreference('redditFeedUrl', feedUrl);
-  await pushPreference('feedProxyUrl', proxyRaw);
+  await pushImportantPreferences();
 
   showToast('Settings saved!', 'success');
   render();
@@ -3423,7 +3469,11 @@ if ('serviceWorker' in navigator) {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && state.supabaseUrl) {
-    checkCloudAhead();
+    if (state.localDirty) {
+      reconcileDirtyState();
+    } else {
+      checkCloudAhead();
+    }
   }
 });
 
