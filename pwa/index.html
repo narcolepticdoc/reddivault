@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.2.2';
+const APP_VERSION = '0.9.2.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1988,6 +1988,7 @@ async function toggleFavourite(id) {
   if (!item) return;
   const val = !item.isFavourite;
   await db.items.update(id, { isFavourite: val });
+  syncLog(`toggleFavourite: ${item.redditId} → ${val}`);
   await pushItemUpdate(id, { is_favourite: val });
   await loadData();
   renderBrowseList();
@@ -1996,23 +1997,29 @@ async function toggleFavourite(id) {
 async function setRating(id, rating) {
   const item = await db.items.get(id);
   if (!item) return;
-  // Clicking the same rating again clears it
   const val = item.rating === rating ? null : rating;
   await db.items.update(id, { rating: val });
+  syncLog(`setRating: ${item.redditId} → ${val}`);
   await pushItemUpdate(id, { rating: val });
   await loadData();
   renderBrowseList();
 }
 
 async function dislikeItem(id) {
+  const item = await db.items.get(id);
+  if (!item) return;
   await db.items.update(id, { isDisliked: true, isFavourite: false, rating: null });
+  syncLog(`dislikeItem (trash): ${item.redditId}`);
   await pushItemUpdate(id, { is_disliked: true, is_favourite: false, rating: null });
   await loadData();
   renderBrowseList();
 }
 
 async function restoreItem(id) {
+  const item = await db.items.get(id);
+  if (!item) return;
   await db.items.update(id, { isDisliked: false });
+  syncLog(`restoreItem: ${item.redditId}`);
   await pushItemUpdate(id, { is_disliked: false });
   await loadData();
   renderBrowseList();
@@ -2022,25 +2029,32 @@ async function deleteItemPermanently(id) {
   const item = await db.items.get(id);
   if (!item) return;
   await db.items.delete(id);
-  if (state.supabaseUrl && item.redditId) {
-    try {
-      await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'DELETE', null);
-    } catch(e) {}
-  }
   await loadData();
   renderBrowseList();
+  syncLog(`deleteItemPermanently: ${item.redditId}`);
+  await pushItemDelete(item.redditId);
 }
 
 async function deleteAllDisliked() {
   const disliked = state.items.filter(i => i.isDisliked);
   if (!disliked.length) return;
   if (!confirm(`Permanently delete ${disliked.length} item${disliked.length!==1?'s':''} from your library and cloud? This cannot be undone.`)) return;
+  syncLog(`deleteAllDisliked: removing ${disliked.length} items`);
+  _setSyncing(true);
   for (const item of disliked) {
     await db.items.delete(item.id);
     if (state.supabaseUrl && item.redditId) {
-      try { await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'DELETE', null); } catch(e) {}
+      try {
+        await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'DELETE', null);
+      } catch(e) {
+        syncLog(`deleteAllDisliked: failed for ${item.redditId} — ${e.message}`, 'error');
+        await markDirty('bulk delete push failed');
+      }
     }
   }
+  state.syncStatus = 'connected';
+  _setSyncing(false);
+  syncLog(`deleteAllDisliked: complete`, 'ok');
   await loadData();
   render();
 }
@@ -2049,12 +2063,48 @@ async function pushItemUpdate(id, fields) {
   if (!state.supabaseUrl || !state.supabaseKey) return;
   const item = await db.items.get(id);
   if (!item) return;
+  _setSyncing(true);
   try {
     await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', fields);
     state.syncStatus = 'connected';
+    _setSyncing(false);
   } catch(e) {
     syncLog(`pushItemUpdate failed for ${item.redditId} — ${e.message}`, 'error');
+    _setSyncing(false);
     await markDirty('item update push failed');
+  }
+}
+
+async function pushItemDelete(redditId) {
+  if (!state.supabaseUrl || !state.supabaseKey) return;
+  _setSyncing(true);
+  try {
+    await supabaseFetch(`/reddit_saves?reddit_id=eq.${redditId}`, 'DELETE', null);
+    state.syncStatus = 'connected';
+    syncLog(`pushItemDelete: ok — ${redditId}`, 'ok');
+    _setSyncing(false);
+  } catch(e) {
+    syncLog(`pushItemDelete failed for ${redditId} — ${e.message}`, 'error');
+    _setSyncing(false);
+    await markDirty('item delete push failed');
+  }
+}
+
+// Brief syncing pulse on the indicator without entering full dirty state.
+let _syncingTimer = null;
+function _setSyncing(on) {
+  if (on) {
+    state.syncStatus = 'syncing';
+    renderHeaderActions();
+    if (_syncingTimer) clearTimeout(_syncingTimer);
+  } else {
+    _syncingTimer = setTimeout(() => {
+      if (state.syncStatus === 'syncing') {
+        state.syncStatus = 'connected';
+        renderHeaderActions();
+      }
+      _syncingTimer = null;
+    }, 600);
   }
 }
 
