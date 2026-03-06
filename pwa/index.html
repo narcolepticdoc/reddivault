@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.0';
+const APP_VERSION = '0.9.1';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -418,6 +418,7 @@ let state = {
   // Tag chips — active smart list tags applied to search
   activeTagIds: [],     // list ids of active tag chips
   tagMode: 'AND',       // 'AND' | 'OR'
+  tagCache: new Map(),  // Map<listId, { count, itemIds: Set }>
   showTrash: false,
   showAuthorList: false,
   filterFavourite: false,
@@ -530,6 +531,42 @@ async function loadData() {
     if (!item.author || item.author === '[deleted]' || item.author === 'AutoModerator') continue;
     if (item.isDisliked || item.enrichStatus === 'dead') continue;
     state.authorFreq[item.author] = (state.authorFreq[item.author] || 0) + 1;
+  }
+  rebuildTagCache();
+}
+
+// ─── TAG CACHE ───────────────────────────────────────────────────────────────
+// Pre-computes matching item sets for all smart list tags so render and
+// filteredItems() can do cheap Set.has() lookups instead of re-running
+// token matching on every render.
+// Rebuilt after any DB change (loadData), and incrementally for a single
+// list when its query is created or edited.
+
+// Map<listId, { count: number, itemIds: Set<number> }>
+state.tagCache = new Map();
+
+function rebuildTagCache(onlyListId = null) {
+  const visibleItems = state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead');
+  const listsToRebuild = onlyListId
+    ? state.lists.filter(l => l.id === onlyListId)
+    : state.lists.filter(l => l.type === 'smart');
+
+  for (const list of listsToRebuild) {
+    const tokens = parseSearchQuery(list.query || '');
+    const matchingIds = new Set(
+      visibleItems
+        .filter(i => tokens.length === 0 || itemMatchesTokens(i, tokens))
+        .map(i => i.id)
+    );
+    state.tagCache.set(list.id, { count: matchingIds.size, itemIds: matchingIds });
+  }
+
+  // Remove cache entries for lists that no longer exist
+  if (!onlyListId) {
+    const listIds = new Set(state.lists.map(l => l.id));
+    for (const id of state.tagCache.keys()) {
+      if (!listIds.has(id)) state.tagCache.delete(id);
+    }
   }
 }
 
@@ -1926,24 +1963,23 @@ function setSort(by) {
     state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
   } else {
     state.sortBy = by;
-    state.sortDir = by === 'title' || by === 'subreddit' ? 'asc' : 'desc';
+    state.sortDir = (by === 'title' || by === 'subreddit') ? 'asc' : 'desc';
   }
   renderBrowseList();
-  // Re-render the sort control too
   const sc = document.getElementById('sort-control');
   if (sc) sc.outerHTML = renderSortControl();
 }
 
-function renderSortControl() {
+function renderSortControl(onChangeFn = 'setSort') {
   const opts = [
-    { key: 'savedAt', label: 'Date saved' },
-    { key: 'postCreatedAt', label: 'Date posted' },
-    { key: 'score', label: 'Score' },
-    { key: 'rating', label: 'Rating' },
-    { key: 'subreddit', label: 'Subreddit' },
-    { key: 'title', label: 'Title' },
+    { key: 'affinity',     label: '✦ Affinity' },
+    { key: 'savedAt',      label: 'Date saved' },
+    { key: 'postCreatedAt',label: 'Date posted' },
+    { key: 'score',        label: 'Score' },
+    { key: 'rating',       label: 'Rating' },
+    { key: 'subreddit',    label: 'Subreddit' },
+    { key: 'title',        label: 'Title' },
   ];
-  const cur = opts.find(o => o.key === state.sortBy);
   const arrow = state.sortDir === 'desc' ? '↓' : '↑';
   const optHtml = opts.map(o =>
     `<option value="${o.key}" ${o.key === state.sortBy ? 'selected' : ''}>${o.label}</option>`
@@ -1951,13 +1987,23 @@ function renderSortControl() {
   return `<div id="sort-control" style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted)">
     <span>Sort:</span>
     <select style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:12px;padding:2px 6px;cursor:pointer"
-      onchange="state.sortBy=this.value;state.sortDir=(this.value==='title'||this.value==='subreddit')?'asc':'desc';renderBrowseList();this.closest('#sort-control').outerHTML=renderSortControl()">
+      onchange="${onChangeFn}(this.value)">
       ${optHtml}
     </select>
     <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:14px;padding:0 2px"
-      onclick="state.sortDir=state.sortDir==='desc'?'asc':'desc';renderBrowseList();this.closest('#sort-control').outerHTML=renderSortControl()"
+      onclick="state.sortDir=state.sortDir==='desc'?'asc':'desc';${onChangeFn==='setSort'?'renderBrowseList()':'render()'};this.closest('#sort-control').outerHTML=renderSortControl('${onChangeFn}')"
       title="Toggle direction">${arrow}</button>
   </div>`;
+}
+
+function setSortList(by) {
+  if (state.sortBy === by) {
+    state.sortDir = state.sortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    state.sortBy = by;
+    state.sortDir = (by === 'title' || by === 'subreddit') ? 'asc' : 'desc';
+  }
+  render();
 }
 
 function renderTrashView() {
@@ -2063,7 +2109,8 @@ function renderBrowse() {
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           ${tagLists.map(l => {
             const active = state.activeTagIds.includes(+l.id);
-            const count = state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && (parseSearchQuery(l.query||'').length === 0 || itemMatchesTokens(i, parseSearchQuery(l.query||'')))).length;
+            const cached = state.tagCache.get(l.id);
+            const count = cached ? cached.count : 0;
             return `<button
               style="display:inline-flex;align-items:center;gap:5px;background:${active?'var(--accent2)':'var(--surface)'};border:1px solid ${active?'var(--accent2)':'var(--border)'};border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer;color:${active?'#fff':'var(--text)'};font-weight:${active?'600':'400'}"
               onclick="toggleTagChip(${l.id})">
@@ -2280,10 +2327,26 @@ function itemMatchesTokens(item, tokens) {
   return true;
 }
 
+// ─── AFFINITY SCORE ──────────────────────────────────────────────────────────
+// Scores items on personal curation signals:
+//   rating    → 0–50 pts (unrated = 10 neutral baseline so unrated items stay discoverable)
+//   favourite → 30 pts flat bonus
+//   author    → 0–15 pts, log-scaled from authorFreq so no single author dominates
+function affinityScore(item) {
+  const ratingPts = item.rating ? (item.rating / 5) * 50 : 10;
+  const favPts = item.isFavourite ? 30 : 0;
+  const freq = item.author ? (state.authorFreq[item.author] || 0) : 0;
+  const maxFreq = Math.max(1, ...Object.values(state.authorFreq).length ? Object.values(state.authorFreq) : [1]);
+  const authorPts = (Math.log(freq + 1) / Math.log(maxFreq + 1)) * 15;
+  return ratingPts + favPts + authorPts;
+}
+
 function sortItems(items, applyAuthorBoost = false) {
   const dir = state.sortDir === 'asc' ? 1 : -1;
   const sorted = [...items].sort((a, b) => {
     switch (state.sortBy) {
+      case 'affinity':
+        return dir * (affinityScore(a) - affinityScore(b));
       case 'postCreatedAt':
         return dir * ((new Date(a.postCreatedAt||0)) - (new Date(b.postCreatedAt||0)));
       case 'score':
@@ -2299,14 +2362,13 @@ function sortItems(items, applyAuthorBoost = false) {
     }
   });
 
-  // When searching, boost results from frequently-saved authors (3+ saves)
-  // within the sorted result — they float to the top of each "tier"
-  if (applyAuthorBoost && state.search.trim()) {
+  // Author boost only applies when searching and not already using affinity
+  if (applyAuthorBoost && state.search.trim() && state.sortBy !== 'affinity') {
     const BOOST_THRESHOLD = 3;
     return sorted.sort((a, b) => {
       const freqA = (a.author && state.authorFreq[a.author] >= BOOST_THRESHOLD) ? 1 : 0;
       const freqB = (b.author && state.authorFreq[b.author] >= BOOST_THRESHOLD) ? 1 : 0;
-      return freqB - freqA; // boosted items first, stable within each group
+      return freqB - freqA;
     });
   }
   return sorted;
@@ -2329,19 +2391,36 @@ function filteredItems() {
   // Favourite filter
   if (state.filterFavourite) items = items.filter(i => i.isFavourite);
 
-  // Active tag chips
+  // Active tag chips — use pre-computed cache for fast Set lookups
   if (state.activeTagIds.length > 0) {
-    const tagLists = state.activeTagIds
-      .map(id => state.lists.find(l => l.id === id))
-      .filter(Boolean);
-    if (tagLists.length > 0) {
-      const tagTokenSets = tagLists.map(l => parseSearchQuery(l.query || ''));
-      if (state.tagMode === 'OR') {
-        // OR: item must match at least one tag's query
-        items = items.filter(i => tagTokenSets.some(tokens => tokens.length === 0 || itemMatchesTokens(i, tokens)));
-      } else {
-        // AND: item must match all tags' queries
-        items = items.filter(i => tagTokenSets.every(tokens => tokens.length === 0 || itemMatchesTokens(i, tokens)));
+    if (state.tagMode === 'OR') {
+      const unionIds = new Set();
+      for (const id of state.activeTagIds) {
+        const cached = state.tagCache.get(id);
+        if (cached) cached.itemIds.forEach(iid => unionIds.add(iid));
+        else {
+          // Fallback if cache missing
+          const list = state.lists.find(l => l.id === id);
+          if (list) {
+            const tokens = parseSearchQuery(list.query || '');
+            items.forEach(i => { if (tokens.length === 0 || itemMatchesTokens(i, tokens)) unionIds.add(i.id); });
+          }
+        }
+      }
+      items = items.filter(i => unionIds.has(i.id));
+    } else {
+      // AND: item must be in every tag's set
+      for (const id of state.activeTagIds) {
+        const cached = state.tagCache.get(id);
+        if (cached) {
+          items = items.filter(i => cached.itemIds.has(i.id));
+        } else {
+          const list = state.lists.find(l => l.id === id);
+          if (list) {
+            const tokens = parseSearchQuery(list.query || '');
+            items = items.filter(i => tokens.length === 0 || itemMatchesTokens(i, tokens));
+          }
+        }
       }
     }
   }
@@ -2714,10 +2793,9 @@ function renderLists() {
 
   const renderListCard = (list) => {
     const isSmart = list.type === 'smart';
-    const itemIds = isSmart
-      ? (() => { const tokens = parseSearchQuery(list.query || ''); return state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && (tokens.length === 0 || itemMatchesTokens(i, tokens))).map(i => i.id); })()
-      : state.itemLists.filter(il => il.listId === list.id).map(il => il.itemId);
-    const count = itemIds.length;
+    const count = isSmart
+      ? (state.tagCache.get(list.id)?.count ?? 0)
+      : state.itemLists.filter(il => il.listId === list.id).length;
     return `
       <div class="card" style="cursor:pointer" onclick="state.listView=${list.id};render()">
         <div style="display:flex;align-items:center;justify-content:space-between">
@@ -2747,18 +2825,22 @@ function renderLists() {
     const pinnedIds = new Set(state.itemLists.filter(il => il.listId === list.id).map(il => il.itemId));
 
     let smartItems = [];
-    let extraPinnedItems = []; // pinned items that don't match the smart query
+    let extraPinnedItems = [];
 
     if (isSmart) {
-      const allMatching = state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && (tokens.length === 0 || itemMatchesTokens(i, tokens)));
+      const cached = state.tagCache.get(list.id);
+      const allMatching = cached
+        ? state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && cached.itemIds.has(i.id))
+        : state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && (tokens.length === 0 || itemMatchesTokens(i, tokens)));
       const matchingIds = new Set(allMatching.map(i => i.id));
-      extraPinnedItems = state.items.filter(i => pinnedIds.has(i.id) && !matchingIds.has(i.id) && !i.isDisliked && i.enrichStatus !== 'dead');
-      smartItems = allMatching;
+      extraPinnedItems = sortItems(state.items.filter(i => pinnedIds.has(i.id) && !matchingIds.has(i.id) && !i.isDisliked && i.enrichStatus !== 'dead'));
+      smartItems = sortItems(allMatching);
     }
 
-    const staticItems = isSmart ? [] : state.items.filter(i => pinnedIds.has(i.id) && !i.isDisliked && i.enrichStatus !== 'dead');
+    const staticItems = isSmart ? [] : sortItems(state.items.filter(i => pinnedIds.has(i.id) && !i.isDisliked && i.enrichStatus !== 'dead'));
 
     const renderListCard = (i) => renderItemCard(i, true, list.id);
+    const itemCount = (isSmart ? smartItems : staticItems).length + extraPinnedItems.length;
 
     return `
       <div class="section-header">
@@ -2767,6 +2849,11 @@ function renderLists() {
         <button class="btn btn-ghost btn-sm" onclick="editList(${list.id})">✏️</button>
       </div>
       ${isSmart && list.query ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;padding:8px 12px;background:rgba(168,85,247,0.08);border-radius:8px">✦ Smart: ${escHtml(list.query)}</div>` : ''}
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;min-height:24px">
+        <span style="font-size:12px;color:var(--text-muted)">${itemCount.toLocaleString()} item${itemCount!==1?'s':''}</span>
+        ${renderSortControl('setSortList')}
+      </div>
 
       ${extraPinnedItems.length > 0 ? `
         <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">📌 PINNED</div>
@@ -3162,6 +3249,7 @@ async function doCreateList(type) {
   closeModal();
   const id = await db.lists.add({ name, type, query, isTag, tagName, createdAt: new Date().toISOString() });
   await loadData();
+  if (type === 'smart') rebuildTagCache(id);
   await markDirty();
   await pushListsToSupabase();
   state.listView = id;
@@ -3228,6 +3316,7 @@ async function doEditList(id) {
   await db.lists.update(id, updates);
   closeModal();
   await loadData();
+  if (updates.query !== undefined) rebuildTagCache(id);
   await markDirty();
   await pushListsToSupabase();
   render();
