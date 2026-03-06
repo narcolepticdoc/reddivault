@@ -919,14 +919,16 @@ async function checkCloudAhead() {
 
 async function pushPreference(key, value) {
   if (!state.supabaseUrl) return;
+  await markDirty();
   try {
     await supabaseFetch(
       '/user_preferences?on_conflict=key',
       'POST',
       [{ key, value, updated_at: new Date().toISOString() }]
     );
+    await markClean();
   } catch(e) {
-    console.warn('Preference push failed:', e);
+    console.warn('Preference push failed, will retry:', e);
   }
 }
 
@@ -1595,11 +1597,13 @@ function renderMarkdown(text) {
   // Extract markdown links BEFORE escaping so brackets/parens aren't mangled.
   // The URL part allows one level of balanced parens (common in Wikipedia links).
   const linkPlaceholders = [];
-  text = text.replace(/\[([^\]]+)\]\((https?:\/\/(?:[^()]+|\([^()]*\))+)\)/g, (_, linkText, url) => {
+  text = text.replace(/\[((?:[^\]\\]|\\.)+)\]\((https?:\/\/(?:[^()]+|\([^()]*\))+)\)/g, (_, linkText, url) => {
     url = stripUrlPunct(url);
     const idx = linkPlaceholders.length;
     const safeUrl = url.replace(/'/g, '%27').replace(/"/g, '%22');
-    const safeText = linkText.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const safeText = linkText
+      .replace(/\\(.)/g, '$1')  // unescape \[ \] etc
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     linkPlaceholders.push(`<a href="${safeUrl}" onclick="openLink(event,'${safeUrl}')">${safeText}</a>`);
     return `\x00LINK${idx}\x00`;
   });
@@ -3234,15 +3238,13 @@ async function saveFeedUrl() {
   await db.config.put({ key: 'redditFeedUrl', value: feedUrl });
   state.redditFeedUrl = feedUrl;
 
-  const proxyRaw = document.getElementById('feed-proxy-url')?.value?.trim();
-  if (proxyRaw) {
-    await db.config.put({ key: 'feedProxyUrl', value: proxyRaw });
-    state.feedProxyUrl = proxyRaw;
-  }
+  const proxyRaw = document.getElementById('feed-proxy-url')?.value?.trim() || '';
+  await db.config.put({ key: 'feedProxyUrl', value: proxyRaw });
+  state.feedProxyUrl = proxyRaw;
 
   // Sync to cloud
   await pushPreference('redditFeedUrl', feedUrl);
-  if (proxyRaw) await pushPreference('feedProxyUrl', proxyRaw);
+  await pushPreference('feedProxyUrl', proxyRaw);
 
   showToast('Settings saved!', 'success');
   render();
