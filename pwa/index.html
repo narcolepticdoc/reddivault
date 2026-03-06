@@ -1572,9 +1572,6 @@ function renderMarkdown(text) {
 
   let html = escHtml(text);
 
-  // Restore link placeholders
-  html = html.replace(/\x00LINK(\d+)\x00/g, (_, i) => linkPlaceholders[+i]);
-
   // Code blocks (``` ... ```) — must come before inline code
   html = html.replace(/```([\s\S]*?)```/g, (_, code) =>
     `<pre><code>${code.trim()}</code></pre>`);
@@ -1587,7 +1584,8 @@ function renderMarkdown(text) {
   html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
   html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
 
-  // Bold and italic
+  // Bold and italic — run BEFORE restoring link placeholders so underscores
+  // and asterisks inside URLs are never touched by these regexes.
   html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
@@ -1610,6 +1608,10 @@ function renderMarkdown(text) {
     const items = match.split('\n').map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`).join('');
     return `<ol>${items}</ol>`;
   });
+
+  // Restore link placeholders — after all inline formatting so URL contents
+  // are never processed by bold/italic/code regexes.
+  html = html.replace(/\x00LINK(\d+)\x00/g, (_, i) => linkPlaceholders[+i]);
 
   // Auto-links (bare URLs — don't double-wrap URLs already inside <a> tags)
   html = html.replace(/(<a [^>]+>[\s\S]*?<\/a>)|(https?:\/\/[^\s<>"]+)/g, (match, anchor, url) => {
