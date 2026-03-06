@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.8.8';
+const APP_VERSION = '0.9.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2229,7 +2229,8 @@ function renderBrowse() {
 
 function parseSearchQuery(raw) {
   const tokens = [];
-  let str = raw.trim();
+  // Normalise curly/smart quotes to straight quotes (iOS autocorrect)
+  let str = raw.trim().replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"');
 
   // Extract OR groups first: (a, b, c)
   str = str.replace(/\(([^)]+)\)/g, (_, inner) => {
