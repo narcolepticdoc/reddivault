@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.2.1';
+const APP_VERSION = '0.9.2.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -404,7 +404,7 @@ let state = {
   supabaseUrl: '',
   supabaseKey: '',
   lastSync: null,
-  syncStatus: 'disconnected',
+  syncStatus: 'unknown',
   enriching: false,
   enrichProgress: { done: 0, total: 0 },
   enrichReqPerMin: 8,
@@ -1061,6 +1061,8 @@ async function checkCloudAhead() {
       await syncFromSupabase();
     } else {
       syncLog(`checkCloudAhead: in sync (diff=${diff}s)`);
+      state.syncStatus = 'connected';
+      renderHeaderActions();
     }
   } catch(e) {
     syncLog(`checkCloudAhead failed — ${e.message}`, 'error');
@@ -1319,6 +1321,7 @@ async function pushListsToSupabase() {
       }
     }
     syncLog(`pushListsToSupabase: ok — ${lists.length} lists`, 'ok');
+    state.syncStatus = 'connected';
     await markClean();
   } catch(e) {
     syncLog(`pushListsToSupabase: failed — ${e.message}`, 'error');
@@ -2048,6 +2051,7 @@ async function pushItemUpdate(id, fields) {
   if (!item) return;
   try {
     await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', fields);
+    state.syncStatus = 'connected';
   } catch(e) {
     syncLog(`pushItemUpdate failed for ${item.redditId} — ${e.message}`, 'error');
     await markDirty('item update push failed');
@@ -3366,7 +3370,7 @@ async function doCreateList(type) {
   const id = await db.lists.add({ name, type, query, isTag, tagName, createdAt: new Date().toISOString() });
   await loadData();
   if (type === 'smart') rebuildTagCache(id);
-  await markDirty();
+  await markDirty(`list created: "${name}"`);
   await pushListsToSupabase();
   state.listView = id;
   render();
@@ -3381,7 +3385,7 @@ async function deleteList(id) {
   // Remove from active tag chips if it was one
   state.activeTagIds = state.activeTagIds.filter(tid => tid !== id);
   await loadData();
-  await markDirty();
+  await markDirty(`list deleted: "${list?.name}"`);
   if (list) await deleteListFromSupabase(list.name);
   render();
 }
@@ -3433,7 +3437,7 @@ async function doEditList(id) {
   closeModal();
   await loadData();
   if (updates.query !== undefined) rebuildTagCache(id);
-  await markDirty();
+  await markDirty(`list edited: "${name}"`);
   await pushListsToSupabase();
   render();
 }
@@ -3494,7 +3498,7 @@ async function toggleItemList(itemId, listId) {
     await db.item_lists.add({ itemId, listId });
   }
   await loadData();
-  await markDirty();
+  await markDirty('item list membership changed');
   // Sync to Supabase
   try { await pushListsToSupabase(); } catch(e) {}
   const inListIds = new Set(state.itemLists.filter(il => il.itemId === itemId).map(il => il.listId));
