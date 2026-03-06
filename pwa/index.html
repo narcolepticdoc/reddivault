@@ -372,6 +372,25 @@ db.version(6).stores({
   item_lists: '++id, itemId, listId',
   config: 'key'
 });
+// Version 7: adds tagName and isTag to lists; migrates favoriteSearches to smart lists.
+db.version(7).stores({
+  items: '++id, redditId, type, subreddit, title, url, folder, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt',
+  folders: '++id, name, icon, createdAt',
+  lists: '++id, name, type, createdAt, isTag',
+  item_lists: '++id, itemId, listId',
+  config: 'key'
+}).upgrade(async tx => {
+  // Migrate existing favoriteSearches → smart lists
+  const favConfig = await tx.table('config').get('favoriteSearches');
+  const favs = favConfig?.value || [];
+  for (const query of favs) {
+    const name = query.length > 30 ? query.slice(0, 30) + '…' : query;
+    const exists = await tx.table('lists').where('name').equals(name).first();
+    if (!exists) {
+      await tx.table('lists').add({ name, type: 'smart', query, createdAt: new Date().toISOString(), isTag: false, tagName: '' });
+    }
+  }
+});
 
 // ─── STATE ──────────────────────────────────────────────────────────────────
 let state = {
@@ -395,9 +414,10 @@ let state = {
   lastRunRateLimitHits: null,
   authorFreq: {},
   recentSearches: [],
-  favoriteSearches: [],
   searchFocused: false,
-  editingFavs: false,
+  // Tag chips — active smart list tags applied to search
+  activeTagIds: [],     // list ids of active tag chips
+  tagMode: 'AND',       // 'AND' | 'OR'
   showTrash: false,
   showAuthorList: false,
   filterFavourite: false,
@@ -485,9 +505,7 @@ async function loadConfig() {
     if (maxAttempts) state.enrichMaxAttempts = maxAttempts.value;
     if (lastRunRL) state.lastRunRateLimitHits = lastRunRL.value;
     const recents = await db.config.get('recentSearches');
-    const favs = await db.config.get('favoriteSearches');
     if (recents) state.recentSearches = recents.value || [];
-    if (favs) state.favoriteSearches = favs.value || [];
     const feedUrl = await db.config.get('redditFeedUrl');
     if (feedUrl) state.redditFeedUrl = feedUrl.value;
     const proxyUrl = await db.config.get('feedProxyUrl');
@@ -980,11 +998,6 @@ async function pullPreferences() {
   try {
     const rows = await supabaseFetch('/user_preferences?select=*');
     for (const row of rows) {
-      if (row.key === 'favoriteSearches' && Array.isArray(row.value)) {
-        const merged = [...new Set([...row.value, ...state.favoriteSearches])];
-        state.favoriteSearches = merged;
-        await db.config.put({ key: 'favoriteSearches', value: merged });
-      }
       if (row.key === 'recentSearches' && Array.isArray(row.value)) {
         const merged = [...new Set([...row.value, ...state.recentSearches])].slice(0, 20);
         state.recentSearches = merged;
@@ -1099,9 +1112,9 @@ async function syncFromSupabase() {
       for (const l of remoteLists) {
         const exists = await db.lists.where('name').equals(l.name).first();
         if (!exists) {
-          await db.lists.add({ name: l.name, type: l.type, query: l.query || '', createdAt: l.created_at });
+          await db.lists.add({ name: l.name, type: l.type, query: l.query || '', isTag: l.is_tag || false, tagName: l.tag_name || '', createdAt: l.created_at });
         } else {
-          await db.lists.update(exists.id, { type: l.type, query: l.query || '' });
+          await db.lists.update(exists.id, { type: l.type, query: l.query || '', isTag: l.is_tag || false, tagName: l.tag_name || '' });
         }
       }
       // Remove local lists that no longer exist in cloud
@@ -1179,7 +1192,11 @@ async function pushListsToSupabase() {
 
     // Upsert all current lists
     if (lists.length) {
-      const payload = lists.map(l => ({ name: l.name, type: l.type, query: l.query || '', created_at: l.createdAt }));
+      const payload = lists.map(l => ({
+        name: l.name, type: l.type, query: l.query || '',
+        is_tag: l.isTag || false, tag_name: l.tagName || '',
+        created_at: l.createdAt
+      }));
       await supabaseFetch('/reddit_lists?on_conflict=name', 'POST', payload);
     }
 
@@ -2033,35 +2050,37 @@ function renderBrowse() {
   if (state.showAuthorList) return renderAuthorList();
 
   const items = filteredItems();
-  const favs = state.favoriteSearches;
   const q = state.search.trim();
-  const isFav = favs.includes(q);
   const deadCount = state.items.filter(i => i.enrichStatus === 'dead').length;
   const trashCount = state.items.filter(i => i.isDisliked).length;
   const favCount = state.items.filter(i => i.isFavourite).length;
+  const tagLists = state.lists.filter(l => l.isTag && l.type === 'smart');
 
   return `
-    <!-- ── Favorite searches ─────────────────────────────────────────────── -->
-    ${favs.length > 0 ? `
-      <div style="margin-bottom:12px">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-          <span style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em">★ SAVED SEARCHES</span>
-          ${state.editingFavs ? `
-            <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2)" onclick="state.editingFavs=false;render()">Done</button>
-          ` : `
-            <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text-muted)" onclick="state.editingFavs=true;render()">Edit</button>
-          `}
-        </div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px">
-          ${favs.map(s => { const i = _sl(s); return `
-            <div style="display:inline-flex;align-items:center;gap:4px;background:${q===s?'rgba(245,158,11,0.15)':'var(--surface)'};border:1px solid ${q===s?'rgba(245,158,11,0.5)':'var(--border)'};border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer"
-              onmousedown="event.preventDefault();runSavedSearch(${i})">
-              <span style="color:${q===s?'#f59e0b':'var(--text)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px">${escHtml(s)}</span>
-              ${state.editingFavs ? `
-                <button style="background:none;border:none;cursor:pointer;color:var(--danger);font-size:13px;padding:0 0 0 4px;line-height:1"
-                  onmousedown="event.preventDefault();event.stopPropagation();toggleFavByIndex(${i})">✕</button>
-              ` : ''}
-            </div>`; }).join('')}
+    <!-- ── Tag chip tray ─────────────────────────────────────────────────── -->
+    ${tagLists.length > 0 ? `
+      <div style="margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          ${tagLists.map(l => {
+            const active = state.activeTagIds.includes(l.id);
+            const count = state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && (parseSearchQuery(l.query||'').length === 0 || itemMatchesTokens(i, parseSearchQuery(l.query||'')))).length;
+            return `<button
+              style="display:inline-flex;align-items:center;gap:5px;background:${active?'var(--accent2)':'var(--surface)'};border:1px solid ${active?'var(--accent2)':'var(--border)'};border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer;color:${active?'#fff':'var(--text)'};font-weight:${active?'600':'400'}"
+              onclick="toggleTagChip(${l.id})">
+              #${escHtml(l.tagName || l.name)}
+              <span style="font-size:10px;opacity:0.75">${count}</span>
+            </button>`;
+          }).join('')}
+          ${state.activeTagIds.length > 0 ? `
+            <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);margin-left:4px;cursor:pointer;user-select:none">
+              <input type="checkbox" ${state.tagMode==='OR'?'checked':''}
+                onchange="state.tagMode=this.checked?'OR':'AND';renderBrowseList()"
+                style="width:14px;height:14px">
+              OR
+            </label>
+            <button style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text-muted);padding:2px 6px"
+              onclick="state.activeTagIds=[];renderBrowseList();render()">Clear</button>
+          ` : ''}
         </div>
       </div>
     ` : ''}
@@ -2177,10 +2196,9 @@ function renderBrowse() {
       </span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
         ${q ? `
-          <button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 4px;white-space:nowrap"
-            onclick="toggleFavoriteSearch(state.search.trim())">
-            ${isFav ? '★ Saved' : '☆ Save'}
-          </button>` : ''}
+          <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
+            onclick="saveCurrentSearchAsList()">
+            + Save as list</button>` : ''}
         ${renderSortControl()}
       </div>
     </div>
@@ -2310,6 +2328,23 @@ function filteredItems() {
   // Favourite filter
   if (state.filterFavourite) items = items.filter(i => i.isFavourite);
 
+  // Active tag chips
+  if (state.activeTagIds.length > 0) {
+    const tagLists = state.activeTagIds
+      .map(id => state.lists.find(l => l.id === id))
+      .filter(Boolean);
+    if (tagLists.length > 0) {
+      const tagTokenSets = tagLists.map(l => parseSearchQuery(l.query || ''));
+      if (state.tagMode === 'OR') {
+        // OR: item must match at least one tag's query
+        items = items.filter(i => tagTokenSets.some(tokens => tokens.length === 0 || itemMatchesTokens(i, tokens)));
+      } else {
+        // AND: item must match all tags' queries
+        items = items.filter(i => tagTokenSets.every(tokens => tokens.length === 0 || itemMatchesTokens(i, tokens)));
+      }
+    }
+  }
+
   // Type filter (panel or search token)
   let typeOverride = null;
   if (state.search.trim()) {
@@ -2367,20 +2402,46 @@ async function commitSearch(query) {
   await pushPreference('recentSearches', state.recentSearches);
 }
 
-async function toggleFavoriteSearch(query) {
-  const q = query.trim();
-  if (!q) return;
-  const isFav = state.favoriteSearches.includes(q);
-  if (isFav) {
-    state.favoriteSearches = state.favoriteSearches.filter(s => s !== q);
+function toggleTagChip(listId) {
+  if (state.activeTagIds.includes(listId)) {
+    state.activeTagIds = state.activeTagIds.filter(id => id !== listId);
   } else {
-    state.favoriteSearches = [q, ...state.favoriteSearches];
-    // Also add to recents so it appears in history
-    await commitSearch(q);
+    state.activeTagIds = [...state.activeTagIds, listId];
   }
-  await db.config.put({ key: 'favoriteSearches', value: state.favoriteSearches });
-  await pushPreference('favoriteSearches', state.favoriteSearches);
+  renderBrowseList();
   render();
+}
+
+async function saveCurrentSearchAsList() {
+  const q = state.search.trim();
+  if (!q) return;
+  const name = q.length > 40 ? q.slice(0, 40) + '…' : q;
+  showModal(`
+    <div class="modal-title">✦ Save as Smart List</div>
+    <div class="form-group">
+      <label>List name</label>
+      <input class="input" id="list-name" value="${escHtml(name)}" placeholder="My saved search" autofocus>
+    </div>
+    <div class="form-group">
+      <label>Query</label>
+      <input class="input" id="list-query" value="${escHtml(q)}" placeholder="search terms">
+    </div>
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:4px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+        <input type="checkbox" id="list-is-tag" style="width:16px;height:16px">
+        <span style="font-size:13px;font-weight:600">Show as tag chip in search</span>
+      </label>
+      <div class="form-group" style="margin:0">
+        <label style="font-size:11px">Short tag name (optional)</label>
+        <input class="input" id="list-tag-name" placeholder="e.g. js, audio, fav" style="font-size:13px">
+        <span style="font-size:11px;color:var(--text-muted)">Shown as #name in the tag tray. Uses list name if blank.</span>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:16px">
+      <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;justify-content:center">Cancel</button>
+      <button class="btn btn-primary" onclick="doCreateList('smart')" style="flex:1;justify-content:center">Save</button>
+    </div>
+  `);
 }
 
 async function removeRecentSearch(query) {
@@ -2393,9 +2454,7 @@ async function removeRecentSearch(query) {
 function applySearch(query) {
   state.search = query;
   state.searchFocused = false;
-  state.editingFavs = false;
   if (query.trim()) commitSearch(query);
-  // Full re-render so favorites section updates (active highlight, save button)
   render();
 }
 
@@ -2414,44 +2473,28 @@ function runSavedSearch(i) {
 function removeSavedSearchByIndex(i) {
   removeRecentSearch(_searchLookup[i] || '');
 }
-function toggleFavByIndex(i) {
-  toggleFavoriteSearch(_searchLookup[i] || '');
-}
 
 // ─── SEARCH DEBOUNCE ─────────────────────────────────────────────────────────
-// Only trigger a live search update when:
-//   - The query is empty (clear results immediately)
-//   - A space has been typed (first/next word is complete)
-//   - The current word being typed is >= 4 characters
-// This avoids hammering the filter on every keystroke for short words like
-// "b", "bi", "big" — the search fires when you type "big " or "bigg".
-
 let _searchDebounceTimer = null;
 
 function handleSearchInput(value) {
   state.search = value;
   renderRecentSearches();
 
-  // Always clear immediately
   if (!value.trim()) {
     renderBrowseList();
     return;
   }
 
-  // Check trigger conditions
   const lastChar = value[value.length - 1];
   const words = value.trim().split(/\s+/);
   const currentWord = words[words.length - 1];
-  // Strip field prefixes and quotes for length check
   const bareWord = currentWord.replace(/^[-"r\/u\:]*/,'').replace(/"/g,'');
 
-  const shouldTrigger =
-    lastChar === ' ' ||          // completed a word
-    bareWord.length >= 4;        // current word is long enough
+  const shouldTrigger = lastChar === ' ' || bareWord.length >= 4;
 
   clearTimeout(_searchDebounceTimer);
   if (shouldTrigger) {
-    // Small debounce to batch rapid keystrokes
     _searchDebounceTimer = setTimeout(() => renderBrowseList(), 120);
   }
 }
@@ -2459,8 +2502,7 @@ function handleSearchInput(value) {
 function renderRecentSearches() {
   const el = document.getElementById('recent-searches-row');
   if (!el) return;
-  const favSet = new Set(state.favoriteSearches);
-  const recents = state.recentSearches.filter(s => !favSet.has(s));
+  const recents = state.recentSearches;
   const show = state.searchFocused && !state.search.trim() && recents.length > 0;
   if (!show) { el.style.display = 'none'; return; }
   el.style.display = 'block';
@@ -2500,9 +2542,9 @@ function renderBrowseList() {
         ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
       </span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-        ${q ? `<button style="background:none;border:none;cursor:pointer;font-size:12px;color:${isFav?'#f59e0b':'var(--text-muted)'};padding:2px 4px;white-space:nowrap"
-          onclick="toggleFavoriteSearch(state.search.trim())">
-          ${isFav ? '★ Saved' : '☆ Save'}
+      ${q ? `<button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
+          onclick="saveCurrentSearchAsList()">
+          + Save as list
         </button>` : ''}
         ${renderSortControl()}
       </div>`;
@@ -2658,6 +2700,7 @@ function renderLists() {
             <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px">${escHtml(list.name)}</div>
             <div style="font-size:12px;color:var(--text-muted);margin-top:3px">
               ${isSmart ? `<span style="color:var(--accent2)">✦ Smart</span> · ` : ''}${count} item${count!==1?'s':''}
+              ${list.isTag ? `<span style="margin-left:6px;background:var(--accent2);color:#fff;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600">#${escHtml(list.tagName || list.name)}</span>` : ''}
             </div>
           </div>
           <div style="display:flex;gap:6px">
@@ -3066,6 +3109,17 @@ function showCreateList(type) {
         <input class="input" id="list-query" placeholder='e.g. r:MachineLearning (pytorch, tensorflow)'>
         <span style="font-size:11px;color:var(--text-muted)">Uses the same syntax as the search bar</span>
       </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:4px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+          <input type="checkbox" id="list-is-tag" style="width:16px;height:16px">
+          <span style="font-size:13px;font-weight:600">Show as tag chip in search</span>
+        </label>
+        <div class="form-group" style="margin:0">
+          <label style="font-size:11px">Short tag name (optional)</label>
+          <input class="input" id="list-tag-name" placeholder="e.g. js, audio, fav" style="font-size:13px">
+          <span style="font-size:11px;color:var(--text-muted)">Shown as #name in the tag tray. Uses list name if blank.</span>
+        </div>
+      </div>
     ` : ''}
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;justify-content:center">Cancel</button>
@@ -3078,8 +3132,10 @@ async function doCreateList(type) {
   const name = document.getElementById('list-name')?.value?.trim();
   if (!name) { showToast('Please enter a name', 'error'); return; }
   const query = type === 'smart' ? (document.getElementById('list-query')?.value?.trim() || '') : '';
+  const isTag = document.getElementById('list-is-tag')?.checked || false;
+  const tagName = document.getElementById('list-tag-name')?.value?.trim() || '';
   closeModal();
-  const id = await db.lists.add({ name, type, query, createdAt: new Date().toISOString() });
+  const id = await db.lists.add({ name, type, query, isTag, tagName, createdAt: new Date().toISOString() });
   await loadData();
   await markDirty();
   await pushListsToSupabase();
@@ -3093,6 +3149,8 @@ async function deleteList(id) {
   await db.lists.delete(id);
   await db.item_lists.where('listId').equals(id).delete();
   if (state.listView === id) state.listView = 'all';
+  // Remove from active tag chips if it was one
+  state.activeTagIds = state.activeTagIds.filter(tid => tid !== id);
   await loadData();
   await markDirty();
   if (list) await deleteListFromSupabase(list.name);
@@ -3113,6 +3171,17 @@ function editList(id) {
         <label>Search query</label>
         <input class="input" id="edit-list-query" value="${escHtml(list.query || '')}">
       </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:4px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+          <input type="checkbox" id="edit-list-is-tag" ${list.isTag ? 'checked' : ''} style="width:16px;height:16px">
+          <span style="font-size:13px;font-weight:600">Show as tag chip in search</span>
+        </label>
+        <div class="form-group" style="margin:0">
+          <label style="font-size:11px">Short tag name (optional)</label>
+          <input class="input" id="edit-list-tag-name" value="${escHtml(list.tagName || '')}" placeholder="e.g. js, audio, fav" style="font-size:13px">
+          <span style="font-size:11px;color:var(--text-muted)">Shown as #name in the tag tray. Uses list name if blank.</span>
+        </div>
+      </div>
     ` : ''}
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;justify-content:center">Cancel</button>
@@ -3125,8 +3194,12 @@ async function doEditList(id) {
   const name = document.getElementById('edit-list-name')?.value?.trim();
   if (!name) { showToast('Name required', 'error'); return; }
   const query = document.getElementById('edit-list-query')?.value?.trim() ?? undefined;
+  const isTagEl = document.getElementById('edit-list-is-tag');
+  const tagNameEl = document.getElementById('edit-list-tag-name');
   const updates = { name };
   if (query !== undefined) updates.query = query;
+  if (isTagEl) updates.isTag = isTagEl.checked;
+  if (tagNameEl) updates.tagName = tagNameEl.value.trim();
   await db.lists.update(id, updates);
   closeModal();
   await loadData();
