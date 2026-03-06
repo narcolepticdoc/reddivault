@@ -2062,7 +2062,7 @@ function renderBrowse() {
       <div style="margin-bottom:10px">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           ${tagLists.map(l => {
-            const active = state.activeTagIds.includes(l.id);
+            const active = state.activeTagIds.includes(+l.id);
             const count = state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && (parseSearchQuery(l.query||'').length === 0 || itemMatchesTokens(i, parseSearchQuery(l.query||'')))).length;
             return `<button
               style="display:inline-flex;align-items:center;gap:5px;background:${active?'var(--accent2)':'var(--surface)'};border:1px solid ${active?'var(--accent2)':'var(--border)'};border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer;color:${active?'#fff':'var(--text)'};font-weight:${active?'600':'400'}"
@@ -2074,12 +2074,12 @@ function renderBrowse() {
           ${state.activeTagIds.length > 0 ? `
             <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted);margin-left:4px;cursor:pointer;user-select:none">
               <input type="checkbox" ${state.tagMode==='OR'?'checked':''}
-                onchange="state.tagMode=this.checked?'OR':'AND';renderBrowseList()"
+                onchange="state.tagMode=this.checked?'OR':'AND';renderBrowseList();render()"
                 style="width:14px;height:14px">
               OR
             </label>
             <button style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text-muted);padding:2px 6px"
-              onclick="state.activeTagIds=[];renderBrowseList();render()">Clear</button>
+              onclick="state.activeTagIds=[];state.tagMode='AND';renderBrowseList();render()">Clear</button>
           ` : ''}
         </div>
       </div>
@@ -2403,6 +2403,7 @@ async function commitSearch(query) {
 }
 
 function toggleTagChip(listId) {
+  listId = +listId; // coerce to number — HTML onclick passes strings
   if (state.activeTagIds.includes(listId)) {
     state.activeTagIds = state.activeTagIds.filter(id => id !== listId);
   } else {
@@ -2481,6 +2482,29 @@ function handleSearchInput(value) {
   state.search = value;
   renderRecentSearches();
 
+  // Always update the save button immediately (cheap, no filtering needed)
+  const countEl = document.getElementById('search-result-info');
+  if (countEl) {
+    const q = value.trim();
+    // Just update the save button visibility — leave count alone until filter runs
+    const saveBtn = countEl.querySelector('.save-as-list-btn');
+    if (q && !saveBtn) {
+      // Re-render the whole count area to show the button
+      const items = filteredItems();
+      countEl.innerHTML = `
+        <span style="font-size:12px;color:var(--text-muted);flex-shrink:0">
+          ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
+        </span>
+        <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+          <button class="save-as-list-btn" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
+            onclick="saveCurrentSearchAsList()">+ Save as list</button>
+          ${renderSortControl()}
+        </div>`;
+    } else if (!q && saveBtn) {
+      renderBrowseList();
+    }
+  }
+
   if (!value.trim()) {
     renderBrowseList();
     return;
@@ -2536,13 +2560,13 @@ function renderBrowseList() {
   const countEl = document.getElementById('search-result-info');
   if (countEl) {
     const q = state.search.trim();
-    const isFav = state.favoriteSearches.includes(q);
+    const hasActivity = q || state.activeTagIds.length > 0;
     countEl.innerHTML = `
       <span style="font-size:12px;color:var(--text-muted);flex-shrink:0">
         ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
       </span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-      ${q ? `<button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
+      ${q ? `<button class="save-as-list-btn" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
           onclick="saveCurrentSearchAsList()">
           + Save as list
         </button>` : ''}
