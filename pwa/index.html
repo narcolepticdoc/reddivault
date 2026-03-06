@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.8.5';
+const APP_VERSION = '0.8.7';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -422,6 +422,8 @@ let state = {
   listView: 'all',         // 'all' | list id
   listSeparate: false,     // separate smart vs static
   confirmDestructive: true, // confirm before trash/remove actions
+  localDirty: false,        // true if local has changes not yet pushed
+  lastPushedAt: null,       // ISO timestamp of last successful push to cloud
 };
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
@@ -429,9 +431,10 @@ async function init() {
   await loadConfig();
   await loadData();
   render();
-  // Pull cloud preferences in background after initial render
   if (state.supabaseUrl) {
+    // Pull preferences first (cheap), then check if cloud has newer data
     pullPreferences().then(() => render());
+    checkCloudAhead();
   }
 }
 
@@ -463,6 +466,10 @@ async function loadConfig() {
     if (proxyUrl) state.feedProxyUrl = proxyUrl.value;
     const confirmDestructive = await db.config.get('confirmDestructive');
     if (confirmDestructive) state.confirmDestructive = confirmDestructive.value;
+    const localDirty = await db.config.get('localDirty');
+    if (localDirty) state.localDirty = localDirty.value;
+    const lastPushedAt = await db.config.get('lastPushedAt');
+    if (lastPushedAt) state.lastPushedAt = lastPushedAt.value;
   } catch(e) {}
 }
 
@@ -836,6 +843,46 @@ async function saveEnrichSettings() {
 
 // ─── PREFERENCES SYNC ────────────────────────────────────────────────────────
 
+async function markDirty() {
+  state.localDirty = true;
+  await db.config.put({ key: 'localDirty', value: true });
+  renderHeaderActions();
+}
+
+async function markClean(pushedAt) {
+  const ts = pushedAt || new Date().toISOString();
+  state.localDirty = false;
+  state.lastPushedAt = ts;
+  await db.config.put({ key: 'localDirty', value: false });
+  await db.config.put({ key: 'lastPushedAt', value: ts });
+  // Write timestamp to cloud so other devices can detect they're behind
+  try {
+    await supabaseFetch('/user_preferences?on_conflict=key', 'POST',
+      [{ key: 'last_modified', value: ts, updated_at: ts }]);
+  } catch(e) {}
+  renderHeaderActions();
+}
+
+async function checkCloudAhead() {
+  // Cheap single-row fetch — just the last_modified timestamp
+  if (!state.supabaseUrl || !state.supabaseKey) return;
+  try {
+    const rows = await supabaseFetch('/user_preferences?key=eq.last_modified&select=value,updated_at');
+    if (!rows || !rows.length) return;
+    const cloudTs = rows[0].value || rows[0].updated_at;
+    if (!cloudTs) return;
+    const cloudTime = new Date(cloudTs).getTime();
+    const localTime = state.lastPushedAt ? new Date(state.lastPushedAt).getTime() : 0;
+    if (cloudTime > localTime + 5000) {
+      // Cloud is meaningfully ahead — auto-pull in background
+      showToast('Cloud has newer data — syncing…', 'info');
+      await syncFromSupabase();
+    }
+  } catch(e) {
+    console.warn('Cloud check failed:', e);
+  }
+}
+
 async function pushPreference(key, value) {
   if (!state.supabaseUrl) return;
   try {
@@ -987,6 +1034,7 @@ async function syncFromSupabase() {
     state.syncStatus = 'connected';
     await loadData();
     await pullPreferences();
+    await markClean();
     showToast(`Synced ${allRemoteItems.length} items from cloud ✓`, 'success');
     render();
   } catch(e) {
@@ -1018,6 +1066,7 @@ async function pushToSupabase(items) {
   }));
   try {
     await supabaseFetch('/reddit_saves?on_conflict=reddit_id', 'POST', payload);
+    await markClean();
   } catch(e) {
     console.warn('Push failed:', e);
   }
@@ -1043,6 +1092,7 @@ async function pushListsToSupabase() {
       }).filter(Boolean);
       if (payload.length) await supabaseFetch('/reddit_item_lists?on_conflict=reddit_id,list_name', 'POST', payload);
     }
+    await markClean();
   } catch(e) { console.warn('Lists push skipped (tables may not exist yet):', e.message); }
 }
 
@@ -1380,18 +1430,36 @@ function render() {
 }
 
 function renderHeaderActions() {
-  // Version badge — always visible in header
   const versionEl = document.getElementById('app-version');
   if (versionEl) versionEl.textContent = `v${APP_VERSION}`;
 
   const el = document.getElementById('header-actions');
-  if (state.syncStatus === 'syncing') {
-    el.innerHTML = `<span style="font-size:12px;color:var(--warning)">🔄 Syncing...</span>`;
-  } else if (state.supabaseUrl && state.supabaseKey) {
-    el.innerHTML = `<button class="btn btn-sm btn-ghost" onclick="syncFromSupabase()">🟢 Sync</button>`;
-  } else {
+  if (!state.supabaseUrl || !state.supabaseKey) {
     el.innerHTML = '';
+    return;
   }
+
+  if (state.syncStatus === 'syncing') {
+    el.innerHTML = `
+      <span style="font-size:11px;color:var(--warning);display:flex;align-items:center;gap:5px">
+        <span style="width:7px;height:7px;border-radius:50%;background:var(--warning);display:inline-block;animation:pulse 1s infinite"></span>
+        Syncing
+      </span>`;
+    return;
+  }
+
+  const isOutOfSync = state.localDirty || state.syncStatus === 'disconnected';
+  const color = isOutOfSync ? '#ef4444' : '#22c55e';
+  const label = isOutOfSync ? 'Out of sync' : 'In sync';
+  const title = isOutOfSync
+    ? (state.localDirty ? 'Local changes not yet pushed to cloud' : 'Cloud connection issue — check Settings')
+    : `Fully synced · last push ${state.lastPushedAt ? new Date(state.lastPushedAt).toLocaleTimeString() : 'unknown'}`;
+
+  el.innerHTML = `
+    <span style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:5px" title="${title}">
+      <span style="width:7px;height:7px;border-radius:50%;background:${color};display:inline-block"></span>
+      ${label}
+    </span>`;
 }
 
 function renderHome() {
@@ -1685,9 +1753,11 @@ async function deleteAllDisliked() {
 
 async function pushItemUpdate(id, fields) {
   const item = await db.items.get(id);
+  await markDirty();
   if (!item || !state.supabaseUrl) return;
   try {
     await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', fields);
+    await markClean();
   } catch(e) {}
 }
 
@@ -2762,6 +2832,9 @@ function renderSettings() {
       <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center;margin-bottom:16px">Save Feed Settings</button>
 
       <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;letter-spacing:0.04em">SUPABASE CLOUD DB</div>
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;padding:8px 10px;background:rgba(245,158,11,0.08);border-radius:8px;border:1px solid rgba(245,158,11,0.2)">
+        ⚠️ Designed for single-user use. Using the same database from two devices simultaneously may cause list sync conflicts.
+      </div>
       <div class="form-group">
         <label>Project URL</label>
         <input class="input" id="sb-url" placeholder="https://xxxx.supabase.co" value="${escHtml(state.supabaseUrl)}">
@@ -2865,6 +2938,7 @@ async function doCreateList(type) {
   closeModal();
   const id = await db.lists.add({ name, type, query, createdAt: new Date().toISOString() });
   await loadData();
+  await markDirty();
   await pushListsToSupabase();
   state.listView = id;
   render();
@@ -2910,6 +2984,7 @@ async function doEditList(id) {
   await db.lists.update(id, updates);
   closeModal();
   await loadData();
+  await markDirty();
   await pushListsToSupabase();
   render();
 }
@@ -2970,6 +3045,7 @@ async function toggleItemList(itemId, listId) {
     await db.item_lists.add({ itemId, listId });
   }
   await loadData();
+  await markDirty();
   // Sync to Supabase
   try { await pushListsToSupabase(); } catch(e) {}
   const inListIds = new Set(state.itemLists.filter(il => il.itemId === itemId).map(il => il.listId));
