@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.2.8';
+const APP_VERSION = '0.9.2.9';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1925,10 +1925,34 @@ async function showPreview(itemId) {
   overlay.id = 'preview-overlay';
   overlay.addEventListener('click', e => { if (e.target === overlay) closePreview(); });
 
-  const openUrl = fullUrl((item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '');
   const permalinkUrl = fullUrl(item.permalink || item.url || '');
   const hasBody = !!(item.body && item.body.trim());
-  const isLinkPost = !hasBody && item.url && !item.url.includes('reddit.com');
+
+  // Collect all external links for the "Open link" button/picker
+  const externalLinks = [];
+  // 1. Post-level URL (link posts)
+  if (item.url && !item.url.includes('reddit.com')) {
+    externalLinks.push({ label: item.url.length > 60 ? item.url.slice(0, 57) + '…' : item.url, url: fullUrl(item.url) });
+  }
+  // 2. Links from body text
+  if (item.body) {
+    // Named markdown links [text](url)
+    const mdLinks = [...item.body.matchAll(/\[([^\]]{1,200})\]\((https?:\/\/[^)]+)\)/g)];
+    for (const m of mdLinks) {
+      const url = fullUrl(m[2]);
+      if (!externalLinks.find(l => l.url === url)) {
+        externalLinks.push({ label: m[1].slice(0, 60), url });
+      }
+    }
+    // Bare URLs
+    const bareLinks = [...item.body.matchAll(/(?<!\()(https?:\/\/[^\s)>"\]]+)/g)];
+    for (const m of bareLinks) {
+      const url = fullUrl(stripUrlPunct(m[1]));
+      if (!externalLinks.find(l => l.url === url)) {
+        externalLinks.push({ label: url.length > 60 ? url.slice(0, 57) + '…' : url, url });
+      }
+    }
+  }
 
   const metaHtml = `
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
@@ -1945,16 +1969,25 @@ async function showPreview(itemId) {
 
   const bodyHtml = hasBody
     ? renderMarkdown(item.body)
-    : isLinkPost
+    : externalLinks.length
       ? `<div style="text-align:center;padding:40px 20px">
            <div style="font-size:48px;margin-bottom:16px">🔗</div>
-           <div style="font-size:14px;color:var(--text-muted);margin-bottom:20px;word-break:break-all">${escHtml(item.url)}</div>
-           <button class="btn btn-primary" onclick="openLink(event,'${item.url.replace(/'/g,"\'")}')">Open link</button>
+           <div style="font-size:14px;color:var(--text-muted);word-break:break-all">${escHtml(externalLinks[0].url)}</div>
          </div>`
       : `<div style="text-align:center;padding:40px 20px;color:var(--text-muted)">
            <div style="font-size:48px;margin-bottom:12px">📄</div>
            No local content — open on Reddit to read.
          </div>`;
+
+  // Open link button: single link opens directly, multiple shows picker
+  let openLinkBtn = '';
+  if (externalLinks.length === 1) {
+    openLinkBtn = `<a class="btn btn-primary" style="flex:1;justify-content:center;text-decoration:none"
+      href="${escHtml(externalLinks[0].url)}" target="_blank" rel="noopener">🔗 Open link ↗</a>`;
+  } else if (externalLinks.length > 1) {
+    openLinkBtn = `<button class="btn btn-primary" style="flex:1;justify-content:center"
+      onclick="showLinkPicker(${item.id})">🔗 Open link (${externalLinks.length}) ↗</button>`;
+  }
 
   overlay.innerHTML = `
     <div class="preview-sheet">
@@ -1972,14 +2005,9 @@ async function showPreview(itemId) {
         ${bodyHtml}
       </div>
       <div class="preview-footer">
-        ${openUrl ? `<a class="btn btn-primary" style="flex:1;justify-content:center;text-decoration:none"
-          href="${escHtml(openUrl)}" target="_blank" rel="noopener">
-          ${item.type==='comment' ? '💬 Open thread' : (openUrl && !openUrl.includes('reddit.com')) ? '🔗 Open link' : '📖 Open on Reddit'} ↗
-        </a>` : ''}
-        ${item.type !== 'comment' && permalinkUrl !== openUrl ? `
-          <a class="btn btn-ghost" style="justify-content:center;text-decoration:none"
-            href="${escHtml(permalinkUrl)}" target="_blank" rel="noopener">💬 Thread</a>
-        ` : ''}
+        ${openLinkBtn}
+        <a class="btn ${openLinkBtn ? 'btn-ghost' : 'btn-primary'}" style="flex:1;justify-content:center;text-decoration:none"
+          href="${escHtml(permalinkUrl)}" target="_blank" rel="noopener">📖 Open on Reddit ↗</a>
         <button class="btn btn-ghost" onclick="closePreview()">Close</button>
       </div>
     </div>`;
@@ -1989,6 +2017,50 @@ async function showPreview(itemId) {
 
 function closePreview() {
   document.getElementById('preview-overlay')?.remove();
+}
+
+async function showLinkPicker(itemId) {
+  const item = await db.items.get(itemId);
+  if (!item) return;
+
+  // Re-derive links the same way showPreview does
+  const links = [];
+  if (item.url && !item.url.includes('reddit.com')) {
+    links.push({ label: item.url.length > 70 ? item.url.slice(0, 67) + '…' : item.url, url: fullUrl(item.url) });
+  }
+  if (item.body) {
+    const mdLinks = [...item.body.matchAll(/\[([^\]]{1,200})\]\((https?:\/\/[^)]+)\)/g)];
+    for (const m of mdLinks) {
+      const url = fullUrl(m[2]);
+      if (!links.find(l => l.url === url)) links.push({ label: m[1].slice(0, 70), url });
+    }
+    const bareLinks = [...item.body.matchAll(/(?<!\()(https?:\/\/[^\s)>"\]]+)/g)];
+    for (const m of bareLinks) {
+      const url = fullUrl(stripUrlPunct(m[1]));
+      if (!links.find(l => l.url === url)) {
+        links.push({ label: url.length > 70 ? url.slice(0, 67) + '…' : url, url });
+      }
+    }
+  }
+
+  const sheet = document.createElement('div');
+  sheet.id = 'link-picker-overlay';
+  sheet.style.cssText = 'position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,0.6);display:flex;align-items:flex-end';
+  sheet.addEventListener('click', e => { if (e.target === sheet) sheet.remove(); });
+  sheet.innerHTML = `
+    <div style="background:var(--surface);border-radius:20px 20px 0 0;width:100%;padding:20px;max-height:70vh;overflow-y:auto">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:16px;font-size:16px">Choose a link</div>
+      ${links.map((l, i) => `
+        <a href="${escHtml(l.url)}" target="_blank" rel="noopener"
+          style="display:block;padding:12px;border-radius:10px;background:var(--surface2);margin-bottom:8px;text-decoration:none;color:var(--text)"
+          onclick="document.getElementById('link-picker-overlay')?.remove()">
+          <div style="font-size:13px;color:var(--text);margin-bottom:2px">${escHtml(l.label)}</div>
+          <div style="font-size:11px;color:var(--accent2);word-break:break-all">${escHtml(l.url)}</div>
+        </a>`).join('')}
+      <button class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:4px"
+        onclick="document.getElementById('link-picker-overlay')?.remove()">Cancel</button>
+    </div>`;
+  document.body.appendChild(sheet);
 }
 
 // ─── ITEM ACTIONS ────────────────────────────────────────────────────────────
