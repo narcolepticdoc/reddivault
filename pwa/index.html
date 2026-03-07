@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.2.5';
+const APP_VERSION = '0.9.2.6';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1876,13 +1876,23 @@ function renderMarkdown(text) {
 
 // ─── LINK HANDLER ────────────────────────────────────────────────────────────
 
+// Ensure a URL is absolute — reddit permalinks are sometimes stored as relative paths
+function fullUrl(url) {
+  if (!url) return '';
+  if (url.startsWith('http')) return url;
+  if (url.startsWith('/')) return 'https://www.reddit.com' + url;
+  return url;
+}
+
 function openLink(event, url) {
   event.preventDefault();
-  if (!url) return;
+  event.stopPropagation();
+  const resolved = fullUrl(url);
+  if (!resolved) return;
 
-  // Check if it's a reddit post link we have locally — open preview instead
-  if (url.includes('reddit.com')) {
-    const match = url.match(/comments\/([a-z0-9]+)/i);
+  // Check if it's a reddit thread we have locally — open preview instead
+  if (resolved.includes('reddit.com')) {
+    const match = resolved.match(/comments\/([a-z0-9]+)/i);
     if (match) {
       const redditId = match[1];
       const localItem = state.items.find(i =>
@@ -1898,8 +1908,8 @@ function openLink(event, url) {
     }
   }
 
-  // Let the OS handle it — on iOS standalone this opens the in-app Safari sheet
-  window.location.href = url;
+  // Open externally — window.open works in iOS PWA standalone mode
+  window.open(resolved, '_blank', 'noopener');
 }
 
 // ─── POST PREVIEW ─────────────────────────────────────────────────────────────
@@ -1915,8 +1925,8 @@ async function showPreview(itemId) {
   overlay.id = 'preview-overlay';
   overlay.addEventListener('click', e => { if (e.target === overlay) closePreview(); });
 
-  const openUrl = (item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '';
-  const permalinkUrl = item.permalink || item.url || '';
+  const openUrl = fullUrl((item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '');
+  const permalinkUrl = fullUrl(item.permalink || item.url || '');
   const hasBody = !!(item.body && item.body.trim());
   const isLinkPost = !hasBody && item.url && !item.url.includes('reddit.com');
 
@@ -2168,7 +2178,7 @@ function renderTrashView() {
     ${items.length === 0 ? `
       <div class="empty"><div class="empty-icon">🗑️</div><h3>Trash is empty</h3><p>Items you dislike will appear here.</p></div>
     ` : items.map(item => {
-      const openUrl = (item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '#';
+      const openUrl = fullUrl((item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '');
       return `
         <div class="card" style="border-color:rgba(239,68,68,0.2)">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
@@ -2853,8 +2863,8 @@ function renderItemCard(item, showActions, removeFromListId = null) {
 
   // Open link: prefer permalink for comments (goes to comment context),
   // use url for link posts (goes to external destination)
-  const openUrl = (item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '#';
-  const permalinkUrl = item.permalink || item.url || '#';
+  const openUrl = fullUrl((item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '');
+  const permalinkUrl = fullUrl(item.permalink || item.url || '');
 
   // Star rating display (1-5)
   const ratingHtml = showActions ? `
