@@ -130,8 +130,8 @@
     .input::placeholder { color: var(--text-muted); }
 
     /* Search */
-    .search-wrap { position: relative; margin-bottom: 16px; }
-    .search-wrap .input { padding-left: 42px; }
+    .search-wrap { position: relative; }
+    .search-wrap .input { padding-left: 42px; height: 44px; }
     .search-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
       font-size: 18px; color: var(--text-muted); pointer-events: none; }
 
@@ -263,8 +263,7 @@
     .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
     /* Filter pills */
-    .filter-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; margin-bottom: 16px; scrollbar-width: none; }
-    .filter-row::-webkit-scrollbar { display: none; }
+    .filter-row { display: flex; gap: 8px; flex-wrap: wrap; padding-bottom: 4px; margin-bottom: 16px; }
     .filter-pill {
       display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
       padding: 6px 14px; border-radius: 20px; font-size: 13px; cursor: pointer;
@@ -338,7 +337,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.3';
+const APP_VERSION = '0.9.3.1';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2260,6 +2259,31 @@ async function deleteAllDisliked() {
   render();
 }
 
+async function trashAllDead() {
+  const dead = state.items.filter(i => i.enrichStatus === 'dead' && !i.isDisliked);
+  if (!dead.length) return;
+  if (!confirm(`Move ${dead.length} unavailable item${dead.length!==1?'s':''} to trash?`)) return;
+  syncLog(`trashAllDead: moving ${dead.length} items to trash`);
+  _setSyncing(true);
+  for (const item of dead) {
+    await db.items.update(item.id, { isDisliked: true });
+    if (state.supabaseUrl && item.redditId) {
+      try {
+        await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', { is_disliked: true });
+        state.syncStatus = 'connected';
+      } catch(e) {
+        syncLog(`trashAllDead: push failed for ${item.redditId} — ${e.message}`, 'error');
+        await markDirty('trashAllDead push failed');
+      }
+    }
+  }
+  _setSyncing(false);
+  state.showDead = false;
+  syncLog(`trashAllDead: complete`, 'ok');
+  await loadData();
+  render();
+}
+
 async function pushItemUpdate(id, fields) {
   if (!state.supabaseUrl || !state.supabaseKey) return;
   const item = await db.items.get(id);
@@ -2479,8 +2503,8 @@ function renderBrowse() {
     ` : ''}
 
     <!-- ── Search input + filter toggle ────────────────────────────────── -->
-    <div style="display:flex;gap:8px;align-items:center">
-      <div class="search-wrap" style="position:relative;flex:1">
+    <div style="display:flex;gap:8px;align-items:stretch;margin-bottom:8px">
+      <div class="search-wrap" style="flex:1;min-width:0">
         <span class="search-icon">🔍</span>
         <input class="input" id="search-input"
           placeholder='Search… "phrase"  (a,b,c)  r:sub  u:name  -exclude'
@@ -2489,14 +2513,14 @@ function renderBrowse() {
           onfocus="state.searchFocused=true;renderRecentSearches()"
           onblur="setTimeout(()=>{state.searchFocused=false;renderRecentSearches()},300)"
           onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderBrowseList();renderRecentSearches()}"
-          style="padding-right:${state.search ? '36px' : '12px'}">
+          style="width:100%;padding-right:${state.search ? '36px' : '12px'}">
         ${state.search ? `
           <button style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1;padding:0"
             onclick="applySearch('')">✕</button>
         ` : ''}
       </div>
       <button onclick="state.showFilters=!state.showFilters;render()"
-        style="background:${hasActiveFilters()?'var(--accent2)':'var(--surface)'};border:1px solid ${hasActiveFilters()?'var(--accent2)':'var(--border)'};border-radius:10px;padding:0 12px;height:44px;cursor:pointer;font-size:13px;color:${hasActiveFilters()?'#fff':'var(--text-muted)'};white-space:nowrap;flex-shrink:0">
+        style="background:${hasActiveFilters()?'var(--accent2)':'var(--surface)'};border:1px solid ${hasActiveFilters()?'var(--accent2)':'var(--border)'};border-radius:10px;padding:0 14px;height:44px;cursor:pointer;font-size:13px;color:${hasActiveFilters()?'#fff':'var(--text-muted)'};white-space:nowrap;flex-shrink:0;align-self:stretch">
         ${hasActiveFilters() ? '⚙️ Filters ●' : '⚙️ Filters'}
       </button>
     </div>
@@ -2599,6 +2623,7 @@ function renderBrowse() {
     <!-- ── Quick filter pills ───────────────────────────────────────────── -->
     <div class="filter-row">
       ${deadCount > 0 ? `<button class="filter-pill ${state.showDead?'active':''}" onclick="setFilter('dead')" style="${state.showDead?'':'opacity:0.6'}">⚰️ ${state.showDead ? 'Unavailable ✕' : `Unavailable (${deadCount})`}</button>` : ''}
+      ${state.showDead && deadCount > 0 ? `<button class="filter-pill" onclick="trashAllDead()" style="color:var(--danger);border-color:var(--danger);opacity:0.85">🗑️ Trash all (${deadCount})</button>` : ''}
       ${trashCount > 0 ? `<button class="filter-pill" onclick="state.showTrash=true;render()" style="opacity:0.7">🗑️ Trash (${trashCount})</button>` : ''}
       <button class="filter-pill" onclick="state.showAuthorList=true;render()" style="opacity:0.8">👤 Authors</button>
     </div>
