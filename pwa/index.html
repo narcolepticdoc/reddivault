@@ -324,7 +324,7 @@
       <span class="nav-icon">🏠</span><span>Home</span>
     </button>
     <button class="nav-item" onclick="showPage('browse')" id="nav-browse">
-      <span class="nav-icon">📋</span><span>All Saves</span>
+      <span class="nav-icon">🔍</span><span>Search</span>
     </button>
     <button class="nav-item" onclick="showPage('lists')" id="nav-lists">
       <span class="nav-icon">📋</span><span>Lists</span>
@@ -338,7 +338,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.2.9';
+const APP_VERSION = '0.9.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1729,42 +1729,157 @@ function renderHeaderActions() {
 
 function renderHome() {
   const total = state.items.length;
-  const posts = state.items.filter(i => i.type === 'post').length;
+  const starred = state.items.filter(i => i.isFavourite).length;
+  const rated = state.items.filter(i => i.rating).length;
   const needsEnrich = state.items.filter(i => i.enrichStatus === 'pending').length;
-  const recent = state.items.slice(0, 5);
+
+  // Items saved in last 7 days
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const recentItems = state.items
+    .filter(i => i.savedAt && i.savedAt > sevenDaysAgo)
+    .sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''))
+    .slice(0, 5);
+
+  // Tag tiles — isTag smart lists sorted by recency then count, cap at 6
+  const tagLists = state.lists
+    .filter(l => l.isTag && l.type === 'smart')
+    .map(l => ({
+      ...l,
+      count: state.tagCache.get(l.id)?.count ?? 0,
+      lastAccessedAt: l.lastAccessedAt || null
+    }))
+    .sort((a, b) => {
+      // Recently accessed first, then by count
+      if (a.lastAccessedAt && !b.lastAccessedAt) return -1;
+      if (!a.lastAccessedAt && b.lastAccessedAt) return 1;
+      if (a.lastAccessedAt && b.lastAccessedAt) {
+        const diff = b.lastAccessedAt.localeCompare(a.lastAccessedAt);
+        if (diff !== 0) return diff;
+      }
+      return b.count - a.count;
+    });
+  const visibleTags = tagLists.slice(0, 6);
+  const hiddenTagCount = tagLists.length - visibleTags.length;
+
+  function tagRecencyLabel(t) {
+    if (!t.lastAccessedAt) return null;
+    const ms = Date.now() - new Date(t.lastAccessedAt).getTime();
+    const mins = ms / 60000;
+    if (mins < 60) return 'just now';
+    const hrs = mins / 60;
+    if (hrs < 24) return 'today';
+    const days = hrs / 24;
+    if (days < 2) return '1d ago';
+    if (days < 7) return `${Math.floor(days)}d ago`;
+    if (days < 14) return '1w ago';
+    return `${Math.floor(days/7)}w ago`;
+  }
+
+  function recentItemAge(savedAt) {
+    if (!savedAt) return '';
+    const ms = Date.now() - new Date(savedAt).getTime();
+    const hrs = ms / 3600000;
+    if (hrs < 1) return '<1h';
+    if (hrs < 24) return `${Math.floor(hrs)}h`;
+    const days = hrs / 24;
+    if (days < 7) return `${Math.floor(days)}d`;
+    return `${Math.floor(days/7)}w`;
+  }
+
+  if (total === 0) return `
+    <div class="empty">
+      <div class="empty-icon">📥</div>
+      <h3>No saved items yet</h3>
+      <p>Import your Reddit saved posts CSV or sync from the cloud to get started.</p>
+      <br>
+      <button class="btn btn-primary" onclick="showPage('settings')">Import CSV</button>
+    </div>`;
 
   return `
-    <div class="stats-row">
-      <div class="stat-card"><div class="stat-num">${total.toLocaleString()}</div><div class="stat-label">Saved Items</div></div>
-      <div class="stat-card"><div class="stat-num">${posts.toLocaleString()}</div><div class="stat-label">Posts</div></div>
-      <div class="stat-card"><div class="stat-num">${state.folders.length}</div><div class="stat-label">Folders</div></div>
-    </div>
-
     ${needsEnrich > 0 ? `
       <div class="enrich-banner">
         <div class="enrich-banner-text">
           <strong>⚡ ${needsEnrich} items need enrichment</strong>
-          <span>Missing titles, subreddits, or post dates from CSV import</span>
+          <span>Missing titles, subreddits, or post dates</span>
         </div>
         <button class="btn btn-warning btn-sm" onclick="showPage('settings')" style="white-space:nowrap">Enrich Now</button>
       </div>
     ` : ''}
 
-    ${total === 0 ? `
-      <div class="empty">
-        <div class="empty-icon">📥</div>
-        <h3>No saved items yet</h3>
-        <p>Import your Reddit saved posts CSV or sync from the cloud to get started.</p>
-        <br>
-        <button class="btn btn-primary" onclick="showPage('settings')">Import CSV</button>
+    <!-- Library pulse -->
+    <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:10px">Library</div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:24px">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 8px;text-align:center">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:20px;line-height:1;color:var(--text)">${total.toLocaleString()}</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;line-height:1.2">Saved</div>
       </div>
-    ` : `
-      <div class="section-header">
-        <div class="section-title">Recently Saved</div>
-        <button class="btn btn-ghost btn-sm" onclick="showPage('browse')">See all →</button>
+      <div style="background:var(--surface);border:1px solid rgba(168,85,247,0.3);border-radius:14px;padding:12px 8px;text-align:center;background:rgba(168,85,247,0.08)">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:20px;line-height:1;color:var(--accent2)">${starred.toLocaleString()}</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;line-height:1.2">Starred</div>
       </div>
-      ${recent.map(item => renderItemCard(item, false)).join('')}
-    `}
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 8px;text-align:center">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:20px;line-height:1;color:var(--text)">${rated.toLocaleString()}</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;line-height:1.2">Rated</div>
+      </div>
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:12px 8px;text-align:center">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:20px;line-height:1;color:var(--text)">${recentItems.length}</div>
+        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;line-height:1.2">This week</div>
+      </div>
+    </div>
+
+    <!-- Tag launchpad -->
+    ${visibleTags.length > 0 ? `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted)">Your tags</div>
+        ${hiddenTagCount > 0 ? `<button class="btn btn-ghost btn-sm" onclick="showPage('lists')" style="font-size:11px">+${hiddenTagCount} more →</button>` : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:24px">
+        ${visibleTags.map(t => {
+          const recency = tagRecencyLabel(t);
+          const isRecent = recency && ['just now','today','1d ago'].includes(recency);
+          const displayName = t.tagName || t.name;
+          return `
+          <div onclick="state.activeTagIds=[${t.id}];db.lists.update(${t.id},{lastAccessedAt:new Date().toISOString()});showPage('browse')"
+            style="background:var(--surface);border:1px solid ${isRecent ? 'rgba(124,58,237,0.35)' : 'var(--border)'};border-radius:16px;padding:14px;cursor:pointer;display:flex;flex-direction:column;gap:8px;-webkit-tap-highlight-color:transparent">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:6px">
+              <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:14px;color:var(--text);line-height:1.2">
+                <span style="color:var(--accent2)">#</span>${escHtml(displayName)}
+              </div>
+              ${recency ? `<div style="font-size:10px;color:${isRecent ? 'var(--accent2)' : 'var(--text-muted)'};background:${isRecent ? 'rgba(124,58,237,0.15)' : 'var(--surface2)'};border-radius:6px;padding:2px 6px;flex-shrink:0;white-space:nowrap">${recency}</div>` : ''}
+            </div>
+            <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:22px;color:var(--text-muted);line-height:1">
+              ${t.count.toLocaleString()}<span style="font-size:11px;font-weight:400;margin-left:3px">items</span>
+            </div>
+          </div>`;
+        }).join('')}
+      </div>
+    ` : ''}
+
+    <!-- Saved this week -->
+    ${recentItems.length > 0 ? `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted)">Saved this week</div>
+        <button class="btn btn-ghost btn-sm" onclick="showPage('browse')" style="font-size:11px">See all →</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${recentItems.map(item => `
+          <div onclick="showPreview(${item.id})"
+            style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px;display:flex;align-items:flex-start;gap:10px;cursor:pointer;-webkit-tap-highlight-color:transparent">
+            <div style="font-size:14px;flex-shrink:0;margin-top:1px">${item.type === 'comment' ? '💬' : '📝'}</div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:500;color:var(--text);line-height:1.3;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">
+                ${escHtml(item.title || 'Untitled')}
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:8px;flex-wrap:wrap">
+                ${item.subreddit ? `<span>r/${escHtml(item.subreddit)}</span>` : ''}
+                ${item.isFavourite ? '<span>⭐</span>' : ''}
+                ${item.rating ? `<span style="color:#f59e0b">${'★'.repeat(item.rating)}</span>` : ''}
+              </div>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);flex-shrink:0;margin-top:1px">${recentItemAge(item.savedAt)}</div>
+          </div>`).join('')}
+      </div>
+    ` : ''}
   `;
 }
 
@@ -2714,11 +2829,15 @@ async function commitSearch(query) {
 }
 
 function toggleTagChip(listId) {
-  listId = +listId; // coerce to number — HTML onclick passes strings
+  listId = +listId;
   if (state.activeTagIds.includes(listId)) {
     state.activeTagIds = state.activeTagIds.filter(id => id !== listId);
   } else {
     state.activeTagIds = [...state.activeTagIds, listId];
+    // Track last access for home screen recency sorting
+    db.lists.update(listId, { lastAccessedAt: new Date().toISOString() });
+    const list = state.lists.find(l => l.id === listId);
+    if (list) list.lastAccessedAt = new Date().toISOString();
   }
   renderBrowseList();
   render();
