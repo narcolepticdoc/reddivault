@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.5.6';
+const APP_VERSION = '0.9.5.7';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2624,17 +2624,25 @@ function renderBrowse() {
         </div>
 
         <div>
-          <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:600">DATE RANGE</div>
-          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <select class="input" style="width:auto;font-size:16px;flex-shrink:0" onchange="state.filterDateField=this.value;render()">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+            <div style="font-size:11px;color:var(--text-muted);font-weight:600">DATE RANGE</div>
+            <select class="input" style="width:auto;font-size:13px;padding:4px 8px;height:auto" onchange="state.filterDateField=this.value;render()">
               <option value="postCreatedAt" ${state.filterDateField==='postCreatedAt'?'selected':''}>Post date</option>
               <option value="savedAt" ${state.filterDateField==='savedAt'?'selected':''}>Saved date</option>
             </select>
-            <input class="input" type="date" style="flex:1;min-width:0;font-size:16px" value="${state.filterDateFrom}"
-              onchange="state.filterDateFrom=this.value;render()">
-            <span style="color:var(--text-muted);font-size:12px;flex-shrink:0">to</span>
-            <input class="input" type="date" style="flex:1;min-width:0;font-size:16px" value="${state.filterDateTo}"
-              onchange="state.filterDateTo=this.value;render()">
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <div style="flex:1;display:flex;flex-direction:column;gap:2px">
+              <div style="font-size:10px;color:var(--text-muted);font-weight:600;letter-spacing:0.04em">FROM</div>
+              <input class="input" type="date" style="width:100%;font-size:16px;padding:8px 10px" value="${state.filterDateFrom}"
+                onchange="state.filterDateFrom=this.value;render()">
+            </div>
+            <div style="color:var(--text-muted);font-size:14px;padding-top:16px">—</div>
+            <div style="flex:1;display:flex;flex-direction:column;gap:2px">
+              <div style="font-size:10px;color:var(--text-muted);font-weight:600;letter-spacing:0.04em">TO</div>
+              <input class="input" type="date" style="width:100%;font-size:16px;padding:8px 10px" value="${state.filterDateTo}"
+                onchange="state.filterDateTo=this.value;render()">
+            </div>
           </div>
         </div>
 
