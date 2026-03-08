@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.6.4';
+const APP_VERSION = '0.9.7';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1138,7 +1138,17 @@ async function pullPreferences() {
 }
 
 async function syncFromSupabase() {
-  syncLog('syncFromSupabase: starting pull');
+  // Record pull start time BEFORE fetching — any row modified during a slow pull
+  // will have updated_at >= pullStartedAt, so it won't be missed next time.
+  const pullStartedAt = new Date().toISOString();
+
+  // Delta sync: only fetch rows modified since our last successful pull.
+  // Falls back to full scan if no lastSync timestamp exists (first-time setup).
+  const lastSync = state.lastSync || null;
+  const isDelta = !!lastSync;
+  const deltaFilter = isDelta ? `&updated_at=gt.${encodeURIComponent(lastSync)}` : '';
+
+  syncLog(`syncFromSupabase: starting ${isDelta ? 'delta' : 'full'} pull${isDelta ? ` (since ${lastSync})` : ''}`);
   state.syncStatus = 'syncing';
   renderHeaderActions();
   try {
@@ -1147,15 +1157,19 @@ async function syncFromSupabase() {
     let offset = 0;
     while (true) {
       const page = await supabaseFetchRange(
-        '/reddit_saves?select=*&order=saved_at.desc',
+        `/reddit_saves?select=*&order=updated_at.desc${deltaFilter}`,
         offset, offset + PAGE_SIZE - 1
       );
       allRemoteItems = allRemoteItems.concat(page);
-      showToast(`Fetching from cloud... ${allRemoteItems.length} items`, 'success');
+      if (isDelta) {
+        showToast(`Fetching changes... ${allRemoteItems.length} items`, 'success');
+      } else {
+        showToast(`Fetching from cloud... ${allRemoteItems.length} items`, 'success');
+      }
       if (page.length < PAGE_SIZE) break;
       offset += PAGE_SIZE;
     }
-    syncLog(`syncFromSupabase: fetched ${allRemoteItems.length} remote items`);
+    syncLog(`syncFromSupabase: fetched ${allRemoteItems.length} ${isDelta ? 'changed' : 'total'} items`);
 
     let added = 0, updated = 0;
     for (const item of allRemoteItems) {
@@ -1215,48 +1229,90 @@ async function syncFromSupabase() {
     }
     syncLog(`syncFromSupabase: upserted items — added=${added} updated=${updated}`);
 
+    // Lists sync: delta on list records, full rebuild of memberships only when lists changed.
+    let changedLists = [];
     try {
-      const remoteLists = await supabaseFetch('/reddit_lists?select=*');
-      const remoteItemLists = await supabaseFetch('/reddit_item_lists?select=*');
-      for (const l of remoteLists) {
-        const exists = await db.lists.where('name').equals(l.name).first();
-        if (!exists) {
-          await db.lists.add({ name: l.name, type: l.type, query: l.query || '', isTag: l.is_tag || false, tagName: l.tag_name || '', createdAt: l.created_at });
-        } else {
-          await db.lists.update(exists.id, { type: l.type, query: l.query || '', isTag: l.is_tag || false, tagName: l.tag_name || '' });
+      const listsDeltaFilter = isDelta ? `&updated_at=gt.${encodeURIComponent(lastSync)}` : '';
+      changedLists = await supabaseFetch(`/reddit_lists?select=*${listsDeltaFilter}`);
+      const listsChanged = !isDelta || changedLists.length > 0;
+
+      if (!isDelta) {
+        // Full sync: reconcile all lists against remote
+        const allRemoteLists = changedLists;
+        for (const l of allRemoteLists) {
+          const exists = await db.lists.where('name').equals(l.name).first();
+          if (!exists) {
+            await db.lists.add({ name: l.name, type: l.type, query: l.query || '', isTag: l.is_tag || false, tagName: l.tag_name || '', createdAt: l.created_at });
+          } else {
+            await db.lists.update(exists.id, { type: l.type, query: l.query || '', isTag: l.is_tag || false, tagName: l.tag_name || '' });
+          }
+        }
+        const remoteNames = new Set(allRemoteLists.map(l => l.name));
+        const localLists = await db.lists.toArray();
+        for (const l of localLists) {
+          if (!remoteNames.has(l.name)) {
+            await db.lists.delete(l.id);
+            await db.item_lists.where('listId').equals(l.id).delete();
+          }
+        }
+      } else if (changedLists.length > 0) {
+        // Delta: only upsert the lists that changed; deletions detected by checking all remote names
+        const allRemoteLists = await supabaseFetch('/reddit_lists?select=name');
+        const remoteNames = new Set(allRemoteLists.map(l => l.name));
+        for (const l of changedLists) {
+          const exists = await db.lists.where('name').equals(l.name).first();
+          if (!exists) {
+            await db.lists.add({ name: l.name, type: l.type, query: l.query || '', isTag: l.is_tag || false, tagName: l.tag_name || '', createdAt: l.created_at });
+          } else {
+            await db.lists.update(exists.id, { type: l.type, query: l.query || '', isTag: l.is_tag || false, tagName: l.tag_name || '' });
+          }
+        }
+        const localLists = await db.lists.toArray();
+        for (const l of localLists) {
+          if (!remoteNames.has(l.name)) {
+            await db.lists.delete(l.id);
+            await db.item_lists.where('listId').equals(l.id).delete();
+          }
         }
       }
-      const remoteNames = new Set(remoteLists.map(l => l.name));
-      const localLists = await db.lists.toArray();
-      for (const l of localLists) {
-        if (!remoteNames.has(l.name)) {
-          await db.lists.delete(l.id);
-          await db.item_lists.where('listId').equals(l.id).delete();
+
+      // Rebuild memberships only when something changed (reddit_item_lists has no updated_at)
+      if (listsChanged) {
+        const remoteItemLists = await supabaseFetch('/reddit_item_lists?select=*');
+        const freshLists = await db.lists.toArray();
+        const allLocalItems = await db.items.toArray();
+        await db.item_lists.clear();
+        for (const il of remoteItemLists) {
+          const item = allLocalItems.find(i => i.redditId === il.reddit_id);
+          const list = freshLists.find(l => l.name === il.list_name);
+          if (!item || !list) continue;
+          await db.item_lists.add({ itemId: item.id, listId: list.id });
         }
+        syncLog(`syncFromSupabase: memberships rebuilt — ${remoteItemLists.length} entries`);
+      } else {
+        syncLog('syncFromSupabase: lists unchanged, skipping membership rebuild');
       }
-      const freshLists = await db.lists.toArray();
-      const allLocalItems = await db.items.toArray();
-      await db.item_lists.clear();
-      for (const il of remoteItemLists) {
-        const item = allLocalItems.find(i => i.redditId === il.reddit_id);
-        const list = freshLists.find(l => l.name === il.list_name);
-        if (!item || !list) continue;
-        await db.item_lists.add({ itemId: item.id, listId: list.id });
-      }
-      syncLog(`syncFromSupabase: lists synced — ${remoteLists.length} lists`);
+
+      syncLog(`syncFromSupabase: lists synced — ${changedLists.length} changed`);
     } catch(e) {
       syncLog(`syncFromSupabase: lists sync skipped — ${e.message}`, 'warn');
     }
 
-    await db.config.put({ key: 'lastSync', value: new Date().toISOString() });
-    state.lastSync = new Date().toISOString();
+    // Save the timestamp we recorded at the START of this pull
+    await db.config.put({ key: 'lastSync', value: pullStartedAt });
+    state.lastSync = pullStartedAt;
     state.syncStatus = 'connected';
     state.cloudAhead = false;
     await loadData();
     await pullPreferences();
     await markClean();
     syncLog(`syncFromSupabase: complete`, 'ok');
-    showToast(`Synced ${allRemoteItems.length} items from cloud ✓`, 'success');
+    if (isDelta && allRemoteItems.length === 0 && !changedLists?.length) {
+      showToast('Already up to date ✓', 'success');
+    } else {
+      const label = isDelta ? 'changes' : 'items';
+      showToast(`Synced ${added + updated} ${label} from cloud ✓`, 'success');
+    }
     render();
   } catch(e) {
     state.syncStatus = 'disconnected';
