@@ -1,4 +1,4 @@
-const VERSION = '0.7.20';
+const VERSION = '0.9.3.1';
 const CACHE = `reddivault-${VERSION}`;
 
 const ASSETS = [
@@ -28,18 +28,24 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const url = e.request.url;
 
-  // External API calls — pass through by responding with a direct network fetch
+  // External API calls — pass through, no caching
   if (url.includes('supabase.co') || url.includes('reddit.com')) {
     e.respondWith(fetch(e.request));
     return;
   }
+
+  // Only cache GET requests — skip POST/PATCH/DELETE entirely
+  if (e.request.method !== 'GET') return;
 
   // Main app HTML — network first, cache fallback
   if (url.endsWith('/') || url.includes('index.html')) {
     e.respondWith(
       fetch(e.request)
         .then(res => {
-          caches.open(CACHE).then(c => c.put(e.request, res.clone()));
+          if (res.ok) {
+            const toCache = res.clone(); // clone BEFORE returning original
+            caches.open(CACHE).then(c => c.put(e.request, toCache));
+          }
           return res;
         })
         .catch(() => caches.match(e.request))
@@ -52,7 +58,10 @@ self.addEventListener('fetch', e => {
     caches.match(e.request).then(cached => {
       if (cached) return cached;
       return fetch(e.request).then(res => {
-        if (res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
+        if (res.ok) {
+          const toCache = res.clone(); // clone BEFORE returning original
+          caches.open(CACHE).then(c => c.put(e.request, toCache));
+        }
         return res;
       });
     })
