@@ -93,6 +93,12 @@
     .badge-comment { background: rgba(244,114,182,0.15); color: var(--accent3); }
     .badge-enriching { background: rgba(251,191,36,0.15); color: var(--warning); }
 
+    .filter-suggestion-item {
+      padding: 8px 12px; font-size: 13px; cursor: pointer;
+      color: var(--text); transition: background 0.1s;
+    }
+    .filter-suggestion-item:hover { background: var(--surface2); }
+
     /* Buttons */
     .btn {
       display: inline-flex; align-items: center; gap: 6px;
@@ -311,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.5.1';
+const APP_VERSION = '0.9.5.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -410,6 +416,8 @@ let state = {
   filterDateTo: '',
   filterSubreddit: '',
   filterAuthor: '',
+  subredditList: [],    // precomputed sorted unique subreddits
+  authorList: [],       // precomputed sorted unique authors
   // Lists tab
   listView: 'all',         // 'all' | list id
   listSeparate: false,     // separate smart vs static
@@ -566,6 +574,13 @@ async function loadData() {
     state.authorFreq[item.author] = (state.authorFreq[item.author] || 0) + 1;
   }
   rebuildTagCache();
+  rebuildFilterLists();
+}
+
+function rebuildFilterLists() {
+  const visible = state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead');
+  state.subredditList = [...new Set(visible.map(i => i.subreddit).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  state.authorList    = [...new Set(visible.map(i => i.author).filter(s => s && s !== '[deleted]' && s !== 'AutoModerator'))].sort((a, b) => a.localeCompare(b));
 }
 
 // ─── TAG CACHE ───────────────────────────────────────────────────────────────
@@ -2620,17 +2635,25 @@ function renderBrowse() {
         </div>
 
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <div style="flex:1;min-width:100px">
+          <div style="flex:1;min-width:100px;position:relative">
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-weight:600">SUBREDDIT</div>
-            <input class="input" style="font-size:12px;width:100%" placeholder="e.g. programming"
+            <input class="input" id="filter-subreddit-input" style="font-size:12px;width:100%" placeholder="e.g. programming"
               value="${escHtml(state.filterSubreddit)}"
-              oninput="state.filterSubreddit=this.value;renderBrowseList()">
+              oninput="handleFilterSubreddit(this.value)"
+              onblur="_hideFilterSuggestions()">
+            <div id="subreddit-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:100;
+              background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:2px;
+              box-shadow:0 4px 12px rgba(0,0,0,0.3);overflow:hidden"></div>
           </div>
-          <div style="flex:1;min-width:100px">
+          <div style="flex:1;min-width:100px;position:relative">
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-weight:600">AUTHOR</div>
-            <input class="input" style="font-size:12px;width:100%" placeholder="e.g. username"
+            <input class="input" id="filter-author-input" style="font-size:12px;width:100%" placeholder="e.g. username"
               value="${escHtml(state.filterAuthor)}"
-              oninput="state.filterAuthor=this.value;renderBrowseList()">
+              oninput="handleFilterAuthor(this.value)"
+              onblur="_hideFilterSuggestions()">
+            <div id="author-suggestions" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:100;
+              background:var(--surface);border:1px solid var(--border);border-radius:8px;margin-top:2px;
+              box-shadow:0 4px 12px rgba(0,0,0,0.3);overflow:hidden"></div>
           </div>
         </div>
 
@@ -2967,6 +2990,8 @@ function removeSavedSearchByIndex(i) {
 
 // ─── SEARCH DEBOUNCE ─────────────────────────────────────────────────────────
 let _searchDebounceTimer = null;
+let _filterSubredditTimer = null;
+let _filterAuthorTimer = null;
 
 function handleSearchInput(value) {
   state.search = value;
@@ -3011,6 +3036,49 @@ function handleSearchInput(value) {
   if (shouldTrigger) {
     _searchDebounceTimer = setTimeout(() => renderBrowseList(), 120);
   }
+}
+
+function handleFilterSubreddit(value) {
+  state.filterSubreddit = value;
+  _showFilterSuggestions('subreddit-suggestions', value, state.subredditList);
+  clearTimeout(_filterSubredditTimer);
+  _filterSubredditTimer = setTimeout(() => renderBrowseList(), 200);
+}
+
+function handleFilterAuthor(value) {
+  state.filterAuthor = value;
+  _showFilterSuggestions('author-suggestions', value, state.authorList);
+  clearTimeout(_filterAuthorTimer);
+  _filterAuthorTimer = setTimeout(() => renderBrowseList(), 200);
+}
+
+function _showFilterSuggestions(elId, value, list) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const q = value.trim().toLowerCase();
+  if (!q) { el.innerHTML = ''; el.style.display = 'none'; return; }
+  const matches = list.filter(s => s.toLowerCase().includes(q)).slice(0, 8);
+  if (!matches.length || (matches.length === 1 && matches[0].toLowerCase() === q)) {
+    el.innerHTML = ''; el.style.display = 'none'; return;
+  }
+  const field = elId === 'subreddit-suggestions' ? 'filterSubreddit' : 'filterAuthor';
+  const inputId = elId === 'subreddit-suggestions' ? 'filter-subreddit-input' : 'filter-author-input';
+  el.style.display = 'block';
+  el.innerHTML = matches.map(m => `
+    <div class="filter-suggestion-item" onmousedown="
+      state.${field}='${m.replace(/'/g,"\\'")}';
+      document.getElementById('${inputId}').value='${m.replace(/'/g,"\\'")}';
+      document.getElementById('${elId}').style.display='none';
+      renderBrowseList()">
+      ${escHtml(m)}
+    </div>`).join('');
+}
+
+function _hideFilterSuggestions() {
+  ['subreddit-suggestions','author-suggestions'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.innerHTML = ''; el.style.display = 'none'; }
+  });
 }
 
 function renderRecentSearches() {
