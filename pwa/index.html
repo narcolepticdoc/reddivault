@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.5.3';
+const APP_VERSION = '0.9.5.4';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2657,11 +2657,9 @@ function renderBrowse() {
           </div>
         </div>
 
-        ${hasActiveFilters() ? `
-          <button class="btn btn-ghost btn-sm" onclick="clearFilters()" style="width:100%;justify-content:center;color:var(--danger)">
-            ✕ Clear all filters
-          </button>
-        ` : ''}
+        <button class="btn btn-ghost btn-sm" onclick="clearFilters()" style="width:100%;justify-content:center;color:var(--danger)">
+          ✕ Clear all filters
+        </button>
       </div>
     ` : ''}
 
