@@ -93,16 +93,6 @@
     .badge-comment { background: rgba(244,114,182,0.15); color: var(--accent3); }
     .badge-enriching { background: rgba(251,191,36,0.15); color: var(--warning); }
 
-    /* Folder chip */
-    .folder-chip {
-      display: inline-flex; align-items: center; gap: 4px;
-      padding: 3px 10px; border-radius: 20px; font-size: 12px;
-      background: rgba(168,85,247,0.15); color: var(--accent2);
-      border: 1px solid rgba(168,85,247,0.3); cursor: pointer;
-      transition: background 0.2s;
-    }
-    .folder-chip:hover { background: rgba(168,85,247,0.25); }
-
     /* Buttons */
     .btn {
       display: inline-flex; align-items: center; gap: 6px;
@@ -155,22 +145,6 @@
     .drop-zone-icon { font-size: 44px; margin-bottom: 12px; }
     .drop-zone h3 { font-family: 'Syne', sans-serif; font-size: 17px; margin-bottom: 6px; }
     .drop-zone p { font-size: 13px; color: var(--text-muted); }
-
-    /* Folder grid */
-    .folder-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-    .folder-card {
-      background: var(--surface); border: 1px solid var(--border);
-      border-radius: var(--radius); padding: 18px 14px; cursor: pointer;
-      transition: all 0.2s; position: relative; overflow: hidden;
-    }
-    .folder-card::before {
-      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
-      background: linear-gradient(90deg, var(--accent), var(--accent3));
-    }
-    .folder-card:active { transform: scale(0.97); }
-    .folder-card-icon { font-size: 28px; margin-bottom: 8px; }
-    .folder-card-name { font-family: 'Syne', sans-serif; font-weight: 600; font-size: 14px; margin-bottom: 4px; }
-    .folder-card-count { font-size: 12px; color: var(--text-muted); }
 
     /* Modal */
     .modal-overlay {
@@ -337,7 +311,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.3.9';
+const APP_VERSION = '0.9.5.1';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -395,7 +369,6 @@ db.version(7).stores({
 let state = {
   page: 'home',
   items: [],
-  folders: [],   // kept for data compat, not shown in UI
   lists: [],     // { id, name, type, query } 
   itemLists: [], // { id, itemId, listId }
   search: '',
@@ -427,7 +400,6 @@ let state = {
   feedProxyUrl: '',
   feedSyncing: false,
   feedSyncResult: null,
-  showDevTools: false,
   // Filter panel
   showFilters: false,
   filterType: 'all',       // all | post | comment
@@ -448,7 +420,6 @@ let state = {
   cloudAhead: false,        // true if cloud has data not yet pulled
   lastPushedAt: null,       // ISO timestamp of last successful push to cloud
   syncLog: [],              // in-memory diagnostic log, session only
-  showSyncLog: false,       // toggle in settings
   _lastIndicatorLabel: null,// tracks last rendered indicator to avoid duplicate log entries
 };
 
@@ -585,7 +556,6 @@ async function loadConfig() {
 
 async function loadData() {
   state.items = await db.items.orderBy('savedAt').reverse().toArray();
-  state.folders = await db.folders.toArray();
   state.lists = await db.lists.orderBy('name').toArray();
   state.itemLists = await db.item_lists.toArray();
   // Build author frequency map — only visible items (not disliked or dead)
@@ -1159,12 +1129,6 @@ async function syncFromSupabase() {
     }
     syncLog(`syncFromSupabase: fetched ${allRemoteItems.length} remote items`);
 
-    const remoteFolders = await supabaseFetch('/reddit_folders?select=*');
-    for (const f of remoteFolders) {
-      const exists = await db.folders.where('name').equals(f.name).first();
-      if (!exists) await db.folders.add({ name: f.name, icon: f.icon || '📁', createdAt: f.created_at });
-    }
-
     let added = 0, updated = 0;
     for (const item of allRemoteItems) {
       const exists = await db.items.where('redditId').equals(item.reddit_id).first();
@@ -1179,7 +1143,6 @@ async function syncFromSupabase() {
           body: item.body || '',
           author: item.author || '',
           score: item.score ?? null,
-          folder: item.folder || null,
           savedAt: item.saved_at,
           postCreatedAt: item.post_created_at || null,
           enriched: !!(item.title && item.subreddit),
@@ -1201,7 +1164,6 @@ async function syncFromSupabase() {
           body:          item.body || '',
           author:        item.author || '',
           score:         item.score ?? null,
-          folder:        item.folder || null,
           savedAt:       item.saved_at,
           postCreatedAt: item.post_created_at || null,
           enriched:      !!(item.title && item.subreddit),
@@ -1279,7 +1241,6 @@ async function pushToSupabase(items) {
     body: i.body || '',
     author: i.author || '',
     score: i.score ?? null,
-    folder: i.folder || null,
     saved_at: i.savedAt,
     post_created_at: i.postCreatedAt || null,
     enrich_status: i.enrichStatus || 'pending',
@@ -1426,10 +1387,9 @@ async function repairCSVDuplicates() {
 
     if (prefixedItem) {
       // Duplicate — a prefixed version exists from the extension.
-      // Preserve folder/favourite/rating from CSV item if the prefixed one lacks them,
+      // Preserve favourite/rating from CSV item if the prefixed one lacks them,
       // then delete the bare-ID duplicate.
       const updates = {};
-      if (!prefixedItem.folder && item.folder) updates.folder = item.folder;
       if (!prefixedItem.isFavourite && item.isFavourite) updates.isFavourite = item.isFavourite;
       if (!prefixedItem.rating && item.rating) updates.rating = item.rating;
       if (Object.keys(updates).length) await db.items.update(prefixedItem.id, updates);
@@ -1587,8 +1547,7 @@ async function handleCSVImport(file) {
             postCreatedAt,
             enriched: hasEnoughData,
             enrichStatus: hasEnoughData ? 'enriched' : 'pending',
-            syncedAt: null,
-            folder: null
+            syncedAt: null
           });
           added++;
         }
@@ -1670,17 +1629,11 @@ async function restoreFromBackup(data) {
     }
   }
 
-  // Restore folders
-  for (const f of (data.folders || [])) {
-    const { id: _id, ...folderWithoutId } = f;
-    await db.folders.add(folderWithoutId);
-  }
-
   await loadData();
   return { added: itemsAdded, lists: (data.lists || []).length };
 }
 
-// ─── FOLDERS ─────────────────────────────────────────────────────────────────
+// ─── ITEMS ───────────────────────────────────────────────────────────────────
 async function deleteItem(itemId) {
   await db.items.delete(itemId);
   await loadData();
@@ -1713,15 +1666,44 @@ function showPage(page) {
 }
 
 function render() {
-  const content = document.getElementById('main-content');
-  renderHeaderActions();
-  switch(state.page) {
-    case 'home':     content.innerHTML = renderHome(); break;
-    case 'browse':   content.innerHTML = renderBrowse(); break;
-    case 'lists':    content.innerHTML = renderLists(); break;
-    case 'settings': content.innerHTML = renderSettings(); break;
+  try {
+    const content = document.getElementById('main-content');
+    renderHeaderActions();
+    switch(state.page) {
+      case 'home':     content.innerHTML = renderHome(); break;
+      case 'browse':   content.innerHTML = renderBrowse(); break;
+      case 'lists':    content.innerHTML = renderLists(); break;
+      case 'settings': content.innerHTML = renderSettings(); break;
+    }
+    attachEventListeners();
+  } catch(err) {
+    console.error('render() error:', err);
+    _renderErrorFallback(err);
   }
-  attachEventListeners();
+}
+
+function _renderErrorFallback(err) {
+  try {
+    const content = document.getElementById('main-content');
+    if (content) content.innerHTML = `
+      <div style="padding:32px 20px;text-align:center">
+        <div style="font-size:48px;margin-bottom:16px">⚠️</div>
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:18px;margin-bottom:8px">Something went wrong</div>
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:4px">Page: <strong>${escHtml(state.page)}</strong></div>
+        <div style="font-size:12px;color:var(--danger);background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.2);
+          border-radius:8px;padding:10px 14px;margin:12px 0 20px;text-align:left;font-family:monospace;word-break:break-all">
+          ${escHtml(err?.message || String(err))}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:10px;max-width:280px;margin:0 auto">
+          <button class="btn btn-secondary" onclick="showPage('home')">🏠 Go to Home</button>
+          <button class="btn btn-ghost" onclick="window.location.reload()">↺ Reload app</button>
+        </div>
+      </div>`;
+  } catch(e) {
+    // If even the fallback fails, reload is the last resort
+    console.error('_renderErrorFallback failed:', e);
+    window.location.reload();
+  }
 }
 
 function renderHeaderActions() {
@@ -2415,7 +2397,7 @@ function renderSortControl(onChangeFn = 'setSort') {
       ${optHtml}
     </select>
     <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:14px;padding:0 2px"
-      onclick="state.sortDir=state.sortDir==='desc'?'asc':'desc';${onChangeFn==='setSort'?'renderBrowseList()':'render()'};this.closest('#sort-control').outerHTML=renderSortControl('${onChangeFn}')"
+      onclick="state.sortDir=state.sortDir==='desc'?'asc':'desc';${onChangeFn==='setSort'?'renderBrowseList()':'render()'}"
       title="Toggle direction">${arrow}</button>
   </div>`;
 }
@@ -2918,7 +2900,6 @@ function toggleTagChip(listId) {
     const list = state.lists.find(l => l.id === listId);
     if (list) list.lastAccessedAt = new Date().toISOString();
   }
-  renderBrowseList();
   render();
 }
 
@@ -3367,15 +3348,29 @@ function updateSpeedHints() {
 
 function renderSettings() {
   const lastSyncStr = state.lastSync ? new Date(state.lastSync).toLocaleString() : 'Never';
-  const unenriched = state.items.filter(i => i.enrichStatus === 'pending').length;
-  const deadCount = state.items.filter(i => i.enrichStatus === 'dead').length;
+  const unenriched  = state.items.filter(i => i.enrichStatus === 'pending').length;
+  const deadCount   = state.items.filter(i => i.enrichStatus === 'dead').length;
+  const isNewUser   = state.items.length === 0;
 
   return `
     <div class="section-title" style="margin-bottom:16px">Settings</div>
 
-    <!-- ── 1. DAILY SYNC ─────────────────────────────────────────────────── -->
+    ${isNewUser ? `
+    <!-- ── GETTING STARTED ──────────────────────────────────────────────── -->
+    <div style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.25);border-radius:12px;padding:14px 16px;margin-bottom:16px;font-size:13px;line-height:1.8">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:6px;color:var(--accent2)">👋 Getting started</div>
+      <div style="color:var(--text-muted)">
+        <strong style="color:var(--text)">Already hit Reddit's 1000-save limit?</strong><br>
+        Request a data export at <strong style="color:var(--text)">reddit.com/settings</strong> → Data Request, then use <strong style="color:var(--text)">Import & Enrich</strong> below.<br><br>
+        <strong style="color:var(--text)">Starting fresh or under the limit?</strong><br>
+        Add your Private Feed URL in <strong style="color:var(--text)">Sync New Saves</strong> → Feed connection settings, then tap Sync Now.
+      </div>
+    </div>
+    ` : ''}
+
+    <!-- ── 1. SYNC NEW SAVES ──────────────────────────────────────────────── -->
     <div class="config-section">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:4px">🔄 Sync New Saves</div>
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px">🔄 Sync New Saves</div>
       <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
         Pulls your most recent Reddit saves directly into RedditVault. Run this whenever you've saved new items on Reddit.
       </p>
@@ -3406,7 +3401,7 @@ function renderSettings() {
             <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Check for new saves automatically when the app opens or returns to foreground</div>
           </span>
           <input type="checkbox" ${state.autoFeedSync ? 'checked' : ''}
-            onchange="state.autoFeedSync=this.checked;db.config.put({key:'autoFeedSync',value:this.checked})"
+            onchange="state.autoFeedSync=this.checked;db.config.put({key:'autoFeedSync',value:this.checked});render()"
             style="width:18px;height:18px;margin-left:16px;flex-shrink:0">
         </label>
         <div style="display:flex;align-items:center;justify-content:space-between;font-size:13px">
@@ -3435,7 +3430,7 @@ function renderSettings() {
       </details>
     </div>
 
-    <!-- ── 2. CLOUD SYNC ──────────────────────────────────────────────────── -->
+    <!-- ── 2. CLOUD DATABASE ──────────────────────────────────────────────── -->
     <div class="config-section">
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px">☁️ Cloud Database</div>
       <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">
@@ -3471,32 +3466,40 @@ function renderSettings() {
       </details>
     </div>
 
-    <!-- ── 3. LIBRARY STATS ───────────────────────────────────────────────── -->
+    <!-- ── 3. LIBRARY ─────────────────────────────────────────────────────── -->
     <div class="config-section">
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">📊 Library</div>
       <div style="font-size:13px;line-height:2.2">
         <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Total items</span><span>${state.items.length.toLocaleString()}</span></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Posts</span><span>${state.items.filter(i=>i.type==='post').length.toLocaleString()}</span></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Comments</span><span>${state.items.filter(i=>i.type==='comment').length.toLocaleString()}</span></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Folders</span><span>${state.folders.length}</span></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unfiled</span><span>${state.items.filter(i=>!i.folder).length}</span></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Need enrichment</span>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Posts</span><span style="font-size:12px">${state.items.filter(i=>i.type==='post').length.toLocaleString()}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Comments</span><span style="font-size:12px">${state.items.filter(i=>i.type==='comment').length.toLocaleString()}</span></div>
+        <div style="display:flex;justify-content:space-between;margin-top:4px"><span style="color:var(--text-muted)">Lists</span><span>${state.lists.length}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Smart</span><span style="font-size:12px">${state.lists.filter(l=>l.type==='smart').length}</span></div>
+        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Static</span><span style="font-size:12px">${state.lists.filter(l=>l.type==='static').length}</span></div>
+        <div style="display:flex;justify-content:space-between;margin-top:4px"><span style="color:var(--text-muted)">Need enrichment</span>
           <span style="${unenriched>0?'color:var(--warning)':''}">${unenriched}</span>
         </div>
         <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unavailable</span>
           <span style="color:var(--text-muted)">${deadCount.toLocaleString()}</span>
         </div>
       </div>
-      <div style="display:flex;gap:8px;margin-top:12px">
-        <button class="btn btn-secondary" onclick="exportJSON()" style="flex:1;justify-content:center">⬇️ Backup</button>
-        <button class="btn btn-secondary" onclick="document.getElementById('restore-file').click()" style="flex:1;justify-content:center">⬆️ Restore</button>
+      <!-- Backup & Restore -->
+      <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:14px">
+        <div style="font-size:11px;font-weight:600;color:var(--text-muted);letter-spacing:0.05em;margin-bottom:10px">BACKUP & RESTORE</div>
+        <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">
+          Backup exports all items, lists and list memberships to a JSON file. Restore replaces all local data from a previous backup.
+        </p>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-secondary" onclick="exportJSON()" style="flex:1;justify-content:center">⬇️ Backup</button>
+          <button class="btn btn-secondary" onclick="document.getElementById('restore-file').click()" style="flex:1;justify-content:center">⬆️ Restore</button>
+        </div>
+        <input type="file" id="restore-file" accept=".json" style="display:none">
       </div>
-      <input type="file" id="restore-file" accept=".json" style="display:none">
     </div>
 
-    <!-- ── 4. IMPORT & ENRICH ────────────────────────────────────────────────── -->
+    <!-- ── 4. IMPORT & ENRICH ─────────────────────────────────────────────── -->
     <div class="config-section">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:4px">📥 Import & Enrich</div>
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px">📥 Import & Enrich</div>
       <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px;line-height:1.6">
         To get your CSV: go to <strong style="color:var(--text)">reddit.com/settings</strong> → Data Request → download and find <strong style="color:var(--text)">saved_posts.csv</strong>.
       </p>
@@ -3508,15 +3511,11 @@ function renderSettings() {
           <p>This is a one-time process. New items from feed sync arrive already fully enriched.</p>
         </div>
       </details>
-
-      <!-- Drop zone -->
       <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()" style="margin-bottom:12px">
         <div class="drop-zone-icon">📥</div>
         <h3>Import Reddit CSV</h3>
         <p>Tap to select your saved_posts.csv file<br>or drag and drop here</p>
       </div>
-
-      <!-- Enrichment status & run buttons — only shown when relevant -->
       ${(() => {
         const pendingCount   = state.items.filter(i => i.enrichStatus === 'pending').length;
         const attemptedCount = state.items.filter(i => i.enrichStatus === 'pending' && (i.enrichAttempts || 0) > 0).length;
@@ -3564,8 +3563,6 @@ function renderSettings() {
             </div>
           ` : ''}`;
       })()}
-
-      <!-- Enrichment speed settings -->
       <details style="margin-top:4px">
         <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:4px 0">⚙️ Enrichment speed settings</summary>
         <div style="margin-top:10px;display:grid;gap:10px">
@@ -3594,16 +3591,15 @@ function renderSettings() {
           <button class="btn btn-secondary btn-sm" onclick="saveEnrichSettings()" style="width:100%;justify-content:center">Save Speed Settings</button>
         </div>
       </details>
-
       <div id="import-progress" style="display:none;margin-top:10px">
         <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
         <div style="font-size:13px;color:var(--text-muted);text-align:center" id="progress-label">Processing...</div>
       </div>
     </div>
 
-    <!-- ── 5. PREFERENCES ────────────────────────────────────────────────────── -->
+    <!-- ── 5. BEHAVIOUR ───────────────────────────────────────────────────── -->
     <div class="config-section">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">⚙️ Preferences</div>
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">🎛️ Behaviour</div>
       <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;font-size:13px">
         <span>
           Confirm before trashing or removing from list
@@ -3615,13 +3611,17 @@ function renderSettings() {
       </label>
     </div>
 
-    <!-- ── 6. TROUBLESHOOTING ─────────────────────────────────────────────── -->
-    <div class="config-section">
-      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;opacity:0.6"
-        onclick="state.showDevTools=!state.showDevTools;render()">
-        ${state.showDevTools ? '🔧 Hide Troubleshooting Tools' : '🔧 Show Troubleshooting Tools'}
+    <!-- ── 6. DIAGNOSTICS ─────────────────────────────────────────────────── -->
+    <div class="config-section" style="opacity:0.85">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px;color:var(--text-muted)">🔬 Diagnostics</div>
+
+      <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;margin-bottom:10px"
+        onclick="caches.keys().then(ks=>Promise.all(ks.map(k=>caches.delete(k)))).then(()=>window.location.reload())">
+        ↺ Force reload &amp; clear cache
       </button>
-      ${state.showDevTools ? `
+
+      <details>
+        <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">🔧 Troubleshooting tools</summary>
         <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
           <div style="font-size:11px;color:var(--text-muted)">These tools were used during initial setup and should rarely be needed.</div>
           <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
@@ -3636,30 +3636,23 @@ function renderSettings() {
             <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;color:var(--danger)"
               onclick="removeFeedItems()">🗑️ Remove feed-imported items (${state.items.filter(i => i.source === 'feed').length})</button>
           ` : ''}
-          <button class="btn btn-danger" style="width:100%;justify-content:center;margin-top:4px"
+          <button class="btn btn-danger btn-sm" style="width:100%;justify-content:center;margin-top:4px"
             onclick="if(confirm('Delete ALL local data? Make sure you have a backup first!'))clearAllData()">⚠️ Clear All Local Data</button>
         </div>
-      ` : ''}
-    </div>
+      </details>
 
-    <!-- ── 7. SYNC LOG ─────────────────────────────────────────────────────── -->
-    <div class="config-section">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${state.showSyncLog ? '12px' : '0'}">
-        <div style="font-family:'Syne',sans-serif;font-weight:600;cursor:pointer" onclick="state.showSyncLog=!state.showSyncLog;render()">
-          📋 Sync Log ${state.showSyncLog ? '▲' : '▼'}
+      <details style="margin-top:10px">
+        <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">📋 Sync log</summary>
+        <div style="margin-top:10px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div style="font-size:11px;color:var(--text-muted)">Session log · 🟢 ok &nbsp;🟡 warn &nbsp;🔴 error · newest first</div>
+            <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(state.syncLog.map(e=>'+'+e.t+'s '+e.wall+' '+e.msg).join('\\n')).then(()=>showToast('Log copied','success'))">
+              Copy
+            </button>
+          </div>
+          <div id="sync-log-entries" style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
         </div>
-        ${state.showSyncLog ? `
-          <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(state.syncLog.map(e=>'+'+e.t+'s '+e.wall+' '+e.msg).join('\\n')).then(()=>showToast('Log copied','success'))">
-            Copy
-          </button>
-        ` : ''}
-      </div>
-      ${state.showSyncLog ? `
-        <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
-          Session log · 🟢 ok &nbsp;🟡 warn &nbsp;🔴 error · newest first
-        </div>
-        <div id="sync-log-entries" style="max-height:300px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px"></div>
-      ` : ''}
+      </details>
     </div>
 
     <div style="text-align:center;padding:16px 0 4px;font-size:12px;color:var(--border)">
@@ -4054,7 +4047,6 @@ async function syncFromFeed() {
           score: d.score || 0,
           savedAt: new Date().toISOString(),
           postCreatedAt: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,
-          folder: '',
           enriched: true,
           enrichStatus: 'enriched',
           source: 'feed',
