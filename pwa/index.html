@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.6';
+const APP_VERSION = '0.9.6.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2668,7 +2668,7 @@ function renderBrowse() {
       <div class="search-wrap" style="flex:1;min-width:0">
         <span class="search-icon">🔍</span>
         <input class="input" id="search-input"
-          placeholder='Search… "phrase"  (a,b,c)  r:sub  u:name  -exclude'
+          placeholder='Search… "phrase"  a,b,c  *wild*  r:sub  -exclude'
           value="${escHtml(state.search)}"
           oninput="handleSearchInput(this.value)"
           onfocus="state.searchFocused=true;renderRecentSearches()"
@@ -2685,6 +2685,25 @@ function renderBrowse() {
         ${hasActiveFilters() ? '⚙️ Filters ●' : '⚙️ Filters'}
       </button>
     </div>
+
+    <!-- ── Search syntax hint ──────────────────────────────────────────── -->
+    <details style="margin:-2px 0 8px;font-size:11px;color:var(--text-muted)">
+      <summary style="cursor:pointer;list-style:none;display:flex;align-items:center;gap:4px;width:fit-content">
+        <span style="opacity:0.5">ℹ︎ Search tips</span>
+      </summary>
+      <div style="margin-top:8px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;display:grid;gap:6px;line-height:1.8">
+        <div><code style="color:var(--accent2);font-size:11px">python tutorial</code> <span style="color:var(--text-muted)">— both words must appear (AND)</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">react, vue, svelte</code> <span style="color:var(--text-muted)">— any of these words (OR)</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">"exact phrase"</code> <span style="color:var(--text-muted)">— substring match, ignores word boundaries</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">-javascript</code> <span style="color:var(--text-muted)">— exclude this word</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">run*</code> <span style="color:var(--text-muted)">— words starting with "run" (running, runner…)</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">*ness</code> <span style="color:var(--text-muted)">— words ending with "ness" (happiness, darkness…)</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">*witch*</code> <span style="color:var(--text-muted)">— words containing "witch" (switch, bewitched…)</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">r:programming</code> <span style="color:var(--text-muted)">— filter by subreddit</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">u:username</code> <span style="color:var(--text-muted)">— filter by author</span></div>
+        <div style="margin-top:2px;color:var(--text-muted);font-size:11px">Bare words match whole words only. Use quotes or wildcards for partial matching.</div>
+      </div>
+    </details>
 
     <!-- ── Recent searches ──────────────────────────────────────────────── -->
     <div id="recent-searches-row" style="display:none;margin:-4px 0 10px"></div>
@@ -2812,9 +2831,13 @@ function renderBrowse() {
 
 // ─── SEARCH PARSER ───────────────────────────────────────────────────────────
 // Syntax:
-//   bare words          → AND logic — all must match
-//   (a, b, c)           → OR group — at least one must match, AND'd with other tokens
-//   "quoted phrase"     → exact substring
+//   bare words          → AND logic, whole-word match
+//   a, b, c             → OR group (commas at top level = OR), whole-word each
+//   (a, b, c)           → OR group (explicit parens), whole-word each
+//   "quoted phrase"     → exact substring match (no word boundary)
+//   *word               → suffix wildcard — matches anything ending in "word"
+//   word*               → prefix wildcard — matches anything starting with "word"
+//   *word*              → full wildcard — substring match (same as old default)
 //   -word / -"phrase"   → exclusion
 //   r:subreddit         → subreddit field (partial)
 //   u:username          → author field (partial)
@@ -2825,12 +2848,36 @@ function parseSearchQuery(raw) {
   // Normalise curly/smart quotes to straight quotes (iOS autocorrect)
   let str = raw.trim().replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"');
 
-  // Extract OR groups first: (a, b, c)
+  // Check if the entire query (ignoring negation/field tokens) is comma-separated —
+  // if so, treat the whole thing as a single OR group
+  // A "bare comma query" is one that contains commas but no parens, quotes, or field prefixes
+  const hasParens  = /\(/.test(str);
+  const hasQuotes  = /"/.test(str);
+  const hasField   = /\b(r|u|type):/.test(str);
+  const hasCommas  = /,/.test(str);
+
+  if (hasCommas && !hasParens && !hasQuotes && !hasField) {
+    // Treat entire query as OR group
+    // Each term can be individually negated with a leading -
+    const parts = str.split(',').map(s => s.trim()).filter(Boolean);
+    const values = parts.map(p => p.replace(/^-/, '').toLowerCase());
+    const anyNegated = parts.some(p => p.startsWith('-'));
+    if (values.length) {
+      if (anyNegated) {
+        // Mixed negation — fall through to normal AND parsing instead
+        // e.g. "-python, javascript" should mean NOT python AND javascript, not OR
+      } else {
+        tokens.push({ type: 'orGroup', values, negate: false });
+        return tokens;
+      }
+    }
+  }
+
+  // Extract explicit OR groups: (a, b, c)
   str = str.replace(/\(([^)]+)\)/g, (_, inner) => {
-    const negate = false;
     const values = inner.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-    if (values.length) tokens.push({ type: 'orGroup', values, negate });
-    return ''; // remove from string
+    if (values.length) tokens.push({ type: 'orGroup', values, negate: false });
+    return '';
   });
 
   // Parse remainder: field prefixes, quoted strings, bare words, negation
@@ -2841,33 +2888,76 @@ function parseSearchQuery(raw) {
     if (m[2] === 'r')    { tokens.push({ type: 'field', field: 'subreddit', value: m[3].toLowerCase(), negate }); continue; }
     if (m[2] === 'u')    { tokens.push({ type: 'field', field: 'author',    value: m[3].toLowerCase(), negate }); continue; }
     if (m[2] === 'type') { tokens.push({ type: 'typeFilter', value: m[3].toLowerCase(), negate }); continue; }
-    const phrase = m[4] || m[5];
-    if (phrase) tokens.push({ type: 'text', value: phrase.toLowerCase(), negate });
+    if (m[4]) {
+      // Quoted phrase — exact substring, no word boundary
+      tokens.push({ type: 'text', value: m[4].toLowerCase(), negate, exact: true });
+    } else if (m[5]) {
+      const raw = m[5].toLowerCase();
+      const leadWild  = raw.startsWith('*');
+      const trailWild = raw.endsWith('*');
+      const term = raw.replace(/^\*+|\*+$/g, '');
+      if (!term) continue;
+      tokens.push({ type: 'text', value: term, negate,
+        exact: leadWild && trailWild,   // *word* = substring
+        suffixWild: leadWild && !trailWild,  // *word = ends with
+        prefixWild: !leadWild && trailWild,  // word* = starts with
+        // default (no wildcards): whole-word match
+      });
+    }
   }
   return tokens;
 }
 
-function itemMatchesText(item, value) {
-  return (item.title     || '').toLowerCase().includes(value) ||
-         (item.subreddit || '').toLowerCase().includes(value) ||
-         (item.author    || '').toLowerCase().includes(value) ||
-         (item.body      || '').toLowerCase().includes(value);
+// Word-boundary test: does `haystack` contain `needle` as a whole word?
+function _wordMatch(haystack, needle) {
+  const wordChar = /\w/;
+  let idx = 0;
+  while ((idx = haystack.indexOf(needle, idx)) !== -1) {
+    const before = idx === 0 ? '' : haystack[idx - 1];
+    const after  = idx + needle.length >= haystack.length ? '' : haystack[idx + needle.length];
+    if ((!before || !wordChar.test(before)) && (!after || !wordChar.test(after))) return true;
+    idx++;
+  }
+  return false;
+}
+
+function _textMatch(haystack, token) {
+  const h = haystack.toLowerCase();
+  const v = token.value;
+  if (token.exact) return h.includes(v);  // "phrase" or *word* — substring in full text
+
+  if (token.suffixWild || token.prefixWild) {
+    // Apply to each word in the haystack individually
+    const words = h.split(/\W+/).filter(Boolean);
+    if (token.suffixWild) return words.some(w => w.endsWith(v));   // *word
+    if (token.prefixWild) return words.some(w => w.startsWith(v)); // word*
+  }
+  return _wordMatch(h, v); // default: whole word
+}
+
+function itemMatchesText(item, value, token) {
+  // When called from orGroup (value only, no token), do whole-word match
+  const tok = token || { value };
+  return _textMatch(item.title     || '', tok) ||
+         _textMatch(item.subreddit || '', tok) ||
+         _textMatch(item.author    || '', tok) ||
+         _textMatch(item.body      || '', tok);
 }
 
 function itemMatchesTokens(item, tokens) {
   for (const t of tokens) {
     let match = false;
     if (t.type === 'orGroup') {
-      match = t.values.some(v => itemMatchesText(item, v));
+      match = t.values.some(v => itemMatchesText(item, v, { value: v }));
     } else if (t.type === 'field') {
       const fieldVal = (item[t.field] || '').toLowerCase();
-      match = fieldVal.includes(t.value);
+      match = fieldVal.includes(t.value);  // field matches stay partial (r:prog matches r/programming)
     } else if (t.type === 'typeFilter') {
       match = item.type === t.value;
     } else {
-      match = itemMatchesText(item, t.value);
+      match = itemMatchesText(item, t.value, t);
     }
-    if (t.negate && match)  return false;
+    if (t.negate && match)   return false;
     if (!t.negate && !match) return false;
   }
   return true;
