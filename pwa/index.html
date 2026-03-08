@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.5.4';
+const APP_VERSION = '0.9.5.6';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -422,6 +422,7 @@ let state = {
   listView: 'all',         // 'all' | list id
   listSeparate: false,     // separate smart vs static
   confirmDestructive: true, // confirm before trash/remove actions
+  disableZoom: true,        // prevent iOS pinch-to-zoom
   autoFeedSync: false,        // auto-sync feed on open/foreground
   autoFeedSyncInterval: 60,   // minimum minutes between auto syncs
   localDirty: false,        // true if local has changes not yet pushed
@@ -551,6 +552,9 @@ async function loadConfig() {
     if (proxyUrl) state.feedProxyUrl = proxyUrl.value;
     const confirmDestructive = await db.config.get('confirmDestructive');
     if (confirmDestructive) state.confirmDestructive = confirmDestructive.value;
+    const disableZoom = await db.config.get('disableZoom');
+    if (disableZoom) state.disableZoom = disableZoom.value;
+    applyZoomSetting();
     const autoFeedSync = await db.config.get('autoFeedSync');
     if (autoFeedSync) state.autoFeedSync = autoFeedSync.value;
     const autoFeedSyncInterval = await db.config.get('autoFeedSyncInterval');
@@ -2622,14 +2626,14 @@ function renderBrowse() {
         <div>
           <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;font-weight:600">DATE RANGE</div>
           <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-            <select class="input" style="width:auto;font-size:12px;flex-shrink:0" onchange="state.filterDateField=this.value;render()">
+            <select class="input" style="width:auto;font-size:16px;flex-shrink:0" onchange="state.filterDateField=this.value;render()">
               <option value="postCreatedAt" ${state.filterDateField==='postCreatedAt'?'selected':''}>Post date</option>
               <option value="savedAt" ${state.filterDateField==='savedAt'?'selected':''}>Saved date</option>
             </select>
-            <input class="input" type="date" style="flex:1;min-width:0;font-size:12px" value="${state.filterDateFrom}"
+            <input class="input" type="date" style="flex:1;min-width:0;font-size:16px" value="${state.filterDateFrom}"
               onchange="state.filterDateFrom=this.value;render()">
             <span style="color:var(--text-muted);font-size:12px;flex-shrink:0">to</span>
-            <input class="input" type="date" style="flex:1;min-width:0;font-size:12px" value="${state.filterDateTo}"
+            <input class="input" type="date" style="flex:1;min-width:0;font-size:16px" value="${state.filterDateTo}"
               onchange="state.filterDateTo=this.value;render()">
           </div>
         </div>
@@ -2637,7 +2641,7 @@ function renderBrowse() {
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <div style="flex:1;min-width:100px;position:relative">
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-weight:600">SUBREDDIT</div>
-            <input class="input" id="filter-subreddit-input" style="font-size:12px;width:100%" placeholder="e.g. programming"
+            <input class="input" id="filter-subreddit-input" style="font-size:16px;width:100%" placeholder="e.g. programming"
               value="${escHtml(state.filterSubreddit)}"
               oninput="handleFilterSubreddit(this.value)"
               onblur="_hideFilterSuggestions()">
@@ -2647,7 +2651,7 @@ function renderBrowse() {
           </div>
           <div style="flex:1;min-width:100px;position:relative">
             <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;font-weight:600">AUTHOR</div>
-            <input class="input" id="filter-author-input" style="font-size:12px;width:100%" placeholder="e.g. username"
+            <input class="input" id="filter-author-input" style="font-size:16px;width:100%" placeholder="e.g. username"
               value="${escHtml(state.filterAuthor)}"
               oninput="handleFilterAuthor(this.value)"
               onblur="_hideFilterSuggestions()">
@@ -3483,13 +3487,13 @@ function renderSettings() {
           <div class="form-group">
             <label>Private Feed URL</label>
             <input class="input" id="feed-url" placeholder="https://old.reddit.com/user/USERNAME/saved.json?feed=YOUR_FEED_TOKEN&amp;user=USERNAME"
-              value="${escHtml(state.redditFeedUrl)}" style="font-size:12px">
+              value="${escHtml(state.redditFeedUrl)}" style="font-size:16px">
             <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → under Private Listings, right-click the JSON button next to 'your saved links' → Copy Link</span>
           </div>
           <div class="form-group">
             <label>Proxy URL <span style="font-size:11px;color:var(--text-muted)">(Cloudflare Worker)</span></label>
             <input class="input" id="feed-proxy-url" placeholder="https://your-worker.workers.dev"
-              value="${escHtml(state.feedProxyUrl)}" style="font-size:12px">
+              value="${escHtml(state.feedProxyUrl)}" style="font-size:16px">
           </div>
           <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center">Save Feed Settings</button>
         </div>
@@ -3666,15 +3670,26 @@ function renderSettings() {
     <!-- ── 5. BEHAVIOUR ───────────────────────────────────────────────────── -->
     <div class="config-section">
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">🎛️ Behaviour</div>
-      <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;font-size:13px">
-        <span>
-          Confirm before trashing or removing from list
-          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Shows a confirmation prompt on destructive card actions</div>
-        </span>
-        <input type="checkbox" ${state.confirmDestructive ? 'checked' : ''}
-          onchange="state.confirmDestructive=this.checked;db.config.put({key:'confirmDestructive',value:this.checked});pushImportantPreferences()"
-          style="width:18px;height:18px;margin-left:16px;flex-shrink:0">
-      </label>
+      <div style="display:grid;gap:14px">
+        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;font-size:13px">
+          <span>
+            Confirm before trashing or removing from list
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Shows a confirmation prompt on destructive card actions</div>
+          </span>
+          <input type="checkbox" ${state.confirmDestructive ? 'checked' : ''}
+            onchange="state.confirmDestructive=this.checked;db.config.put({key:'confirmDestructive',value:this.checked});pushImportantPreferences()"
+            style="width:18px;height:18px;margin-left:16px;flex-shrink:0">
+        </label>
+        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;font-size:13px">
+          <span>
+            Disable pinch-to-zoom
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Prevents iOS from zooming into text fields and on pinch gesture</div>
+          </span>
+          <input type="checkbox" ${state.disableZoom ? 'checked' : ''}
+            onchange="state.disableZoom=this.checked;db.config.put({key:'disableZoom',value:this.checked});applyZoomSetting()"
+            style="width:18px;height:18px;margin-left:16px;flex-shrink:0">
+        </label>
+      </div>
     </div>
 
     <!-- ── 6. DIAGNOSTICS ─────────────────────────────────────────────────── -->
@@ -4193,6 +4208,16 @@ async function clearAllData() {
 }
 
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
+function applyZoomSetting() {
+  const viewport = document.querySelector('meta[name="viewport"]');
+  if (!viewport) return;
+  if (state.disableZoom) {
+    viewport.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
+  } else {
+    viewport.content = 'width=device-width, initial-scale=1.0, viewport-fit=cover';
+  }
+}
+
 function escHtml(str) {
   if (!str) return '';
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
