@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.6.2';
+const APP_VERSION = '0.9.6.4';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2694,14 +2694,14 @@ function renderBrowse() {
       <div style="margin-top:8px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;display:grid;gap:6px;line-height:1.8">
         <div><code style="color:var(--accent2);font-size:11px">python tutorial</code> <span style="color:var(--text-muted)">— both words must appear (AND)</span></div>
         <div><code style="color:var(--accent2);font-size:11px">react, vue, svelte</code> <span style="color:var(--text-muted)">— any of these words (OR)</span></div>
-        <div><code style="color:var(--accent2);font-size:11px">"exact phrase"</code> <span style="color:var(--text-muted)">— substring match, ignores word boundaries</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">"machine learning"</code> <span style="color:var(--text-muted)">— match this exact word or phrase anywhere in the text</span></div>
         <div><code style="color:var(--accent2);font-size:11px">-javascript</code> <span style="color:var(--text-muted)">— exclude this word</span></div>
         <div><code style="color:var(--accent2);font-size:11px">run*</code> <span style="color:var(--text-muted)">— words starting with "run" (running, runner…)</span></div>
         <div><code style="color:var(--accent2);font-size:11px">*ness</code> <span style="color:var(--text-muted)">— words ending with "ness" (happiness, darkness…)</span></div>
         <div><code style="color:var(--accent2);font-size:11px">*witch*</code> <span style="color:var(--text-muted)">— words containing "witch" (switch, bewitched…)</span></div>
         <div><code style="color:var(--accent2);font-size:11px">r:programming</code> <span style="color:var(--text-muted)">— filter by subreddit</span></div>
         <div><code style="color:var(--accent2);font-size:11px">u:username</code> <span style="color:var(--text-muted)">— filter by author</span></div>
-        <div style="margin-top:2px;color:var(--text-muted);font-size:11px">Bare words match whole words only. Use quotes or wildcards for partial matching.</div>
+        <div style="margin-top:2px;color:var(--text-muted);font-size:11px">Bare words match whole words only. Use wildcards for partial word matching, or quotes to match an exact word or phrase anywhere in the text.</div>
       </div>
     </details>
 
@@ -2867,7 +2867,7 @@ function parseSearchQuery(raw) {
         // Mixed negation — fall through to normal AND parsing instead
         // e.g. "-python, javascript" should mean NOT python AND javascript, not OR
       } else {
-        tokens.push({ type: 'orGroup', values, negate: false });
+        tokens.push({ type: 'orGroup', values: values.map(_parseWildcard), negate: false });
         return tokens;
       }
     }
@@ -2876,7 +2876,7 @@ function parseSearchQuery(raw) {
   // Extract explicit OR groups: (a, b, c)
   str = str.replace(/\(([^)]+)\)/g, (_, inner) => {
     const values = inner.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-    if (values.length) tokens.push({ type: 'orGroup', values, negate: false });
+    if (values.length) tokens.push({ type: 'orGroup', values: values.map(_parseWildcard), negate: false });
     return '';
   });
 
@@ -2892,20 +2892,25 @@ function parseSearchQuery(raw) {
       // Quoted phrase — exact substring, no word boundary
       tokens.push({ type: 'text', value: m[4].toLowerCase(), negate, exact: true });
     } else if (m[5]) {
-      const raw = m[5].toLowerCase();
-      const leadWild  = raw.startsWith('*');
-      const trailWild = raw.endsWith('*');
-      const term = raw.replace(/^\*+|\*+$/g, '');
-      if (!term) continue;
-      tokens.push({ type: 'text', value: term, negate,
-        exact: leadWild && trailWild,   // *word* = substring
-        suffixWild: leadWild && !trailWild,  // *word = ends with
-        prefixWild: !leadWild && trailWild,  // word* = starts with
-        // default (no wildcards): whole-word match
-      });
+      const parsed = _parseWildcard(m[5].toLowerCase());
+      if (!parsed.value) continue;
+      tokens.push({ type: 'text', negate, ...parsed });
     }
   }
   return tokens;
+}
+
+// Parse wildcard flags from a raw term string into a token-like object
+function _parseWildcard(raw) {
+  const leadWild  = raw.startsWith('*');
+  const trailWild = raw.endsWith('*');
+  const term = raw.replace(/^\*+|\*+$/g, '');
+  return {
+    value: term,
+    exact:       leadWild && trailWild,
+    suffixWild:  leadWild && !trailWild,
+    prefixWild:  !leadWild && trailWild,
+  };
 }
 
 // Word-boundary test: does `haystack` contain `needle` as a whole word?
@@ -2948,7 +2953,7 @@ function itemMatchesTokens(item, tokens) {
   for (const t of tokens) {
     let match = false;
     if (t.type === 'orGroup') {
-      match = t.values.some(v => itemMatchesText(item, v, { value: v }));
+      match = t.values.some(tok => itemMatchesText(item, tok.value, tok));
     } else if (t.type === 'field') {
       const fieldVal = (item[t.field] || '').toLowerCase();
       match = fieldVal.includes(t.value);  // field matches stay partial (r:prog matches r/programming)
