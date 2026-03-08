@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.5.7';
+const APP_VERSION = '0.9.6';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -371,6 +371,14 @@ db.version(7).stores({
   }
 });
 
+db.version(8).stores({
+  items: '++id, redditId, type, subreddit, title, url, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt, isPermanentlyDeleted',
+  folders: '++id, name, icon, createdAt',
+  lists: '++id, name, type, createdAt, isTag',
+  item_lists: '++id, itemId, listId',
+  config: 'key'
+});
+
 // ─── STATE ──────────────────────────────────────────────────────────────────
 let state = {
   page: 'home',
@@ -398,6 +406,7 @@ let state = {
   tagMode: 'AND',       // 'AND' | 'OR'
   tagCache: new Map(),  // Map<listId, { count, itemIds: Set }>
   showTrash: false,
+  showDeleted: false,   // deleted items view within trash
   showAuthorList: false,
   filterFavourite: false,
   sortBy: 'postCreatedAt',
@@ -570,11 +579,11 @@ async function loadData() {
   state.items = await db.items.orderBy('savedAt').reverse().toArray();
   state.lists = await db.lists.orderBy('name').toArray();
   state.itemLists = await db.item_lists.toArray();
-  // Build author frequency map — only visible items (not disliked or dead)
+  // Build author frequency map — only visible items (not disliked, dead, or permanently deleted)
   state.authorFreq = {};
   for (const item of state.items) {
     if (!item.author || item.author === '[deleted]' || item.author === 'AutoModerator') continue;
-    if (item.isDisliked || item.enrichStatus === 'dead') continue;
+    if (item.isDisliked || item.enrichStatus === 'dead' || item.isPermanentlyDeleted) continue;
     state.authorFreq[item.author] = (state.authorFreq[item.author] || 0) + 1;
   }
   rebuildTagCache();
@@ -582,7 +591,7 @@ async function loadData() {
 }
 
 function rebuildFilterLists() {
-  const visible = state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead');
+  const visible = state.items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted && i.enrichStatus !== 'dead');
   state.subredditList = [...new Set(visible.map(i => i.subreddit).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   state.authorList    = [...new Set(visible.map(i => i.author).filter(s => s && s !== '[deleted]' && s !== 'AutoModerator'))].sort((a, b) => a.localeCompare(b));
 }
@@ -598,7 +607,7 @@ function rebuildFilterLists() {
 state.tagCache = new Map();
 
 function rebuildTagCache(onlyListId = null) {
-  const visibleItems = state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead');
+  const visibleItems = state.items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted && i.enrichStatus !== 'dead');
   const listsToRebuild = onlyListId
     ? state.lists.filter(l => l.id === onlyListId)
     : state.lists.filter(l => l.type === 'smart');
@@ -1151,7 +1160,12 @@ async function syncFromSupabase() {
     let added = 0, updated = 0;
     for (const item of allRemoteItems) {
       const exists = await db.items.where('redditId').equals(item.reddit_id).first();
+      // If cloud row has deleted_at, honour it; never overwrite a local permanent deletion
+      const isPermanentlyDeleted = !!(item.deleted_at || (exists && exists.isPermanentlyDeleted));
+      const deletedAt = item.deleted_at || (exists && exists.deletedAt) || null;
       if (!exists) {
+        // Don't re-add items the cloud knows are permanently deleted
+        if (isPermanentlyDeleted) { updated++; continue; }
         await db.items.add({
           redditId: item.reddit_id,
           type: item.type,
@@ -1169,28 +1183,32 @@ async function syncFromSupabase() {
           isFavourite:  item.is_favourite || false,
           rating:       item.rating || null,
           isDisliked:   item.is_disliked || false,
+          isPermanentlyDeleted: false,
+          deletedAt: null,
           enrichAttempts: 0,
           syncedAt: new Date().toISOString()
         });
         added++;
       } else {
         await db.items.update(exists.id, {
-          type:          item.type,
-          subreddit:     item.subreddit || '',
-          title:         item.title || '',
-          url:           item.url || '',
-          permalink:     item.permalink || item.url || '',
-          body:          item.body || '',
-          author:        item.author || '',
-          score:         item.score ?? null,
-          savedAt:       item.saved_at,
-          postCreatedAt: item.post_created_at || null,
-          enriched:      !!(item.title && item.subreddit),
-          enrichStatus:  item.enrich_status || ((item.title && item.subreddit) ? 'enriched' : 'pending'),
-          isFavourite:   item.is_favourite || false,
-          rating:        item.rating || null,
-          isDisliked:    item.is_disliked || false,
-          syncedAt:      new Date().toISOString(),
+          type:                 item.type,
+          subreddit:            item.subreddit || '',
+          title:                item.title || '',
+          url:                  item.url || '',
+          permalink:            item.permalink || item.url || '',
+          body:                 item.body || '',
+          author:               item.author || '',
+          score:                item.score ?? null,
+          savedAt:              item.saved_at,
+          postCreatedAt:        item.post_created_at || null,
+          enriched:             !!(item.title && item.subreddit),
+          enrichStatus:         item.enrich_status || ((item.title && item.subreddit) ? 'enriched' : 'pending'),
+          isFavourite:          item.is_favourite || false,
+          rating:               item.rating || null,
+          isDisliked:           item.is_disliked || false,
+          isPermanentlyDeleted,
+          deletedAt,
+          syncedAt:             new Date().toISOString(),
         });
         updated++;
       }
@@ -2283,33 +2301,69 @@ async function restoreItem(id) {
 async function deleteItemPermanently(id) {
   const item = await db.items.get(id);
   if (!item) return;
-  await db.items.delete(id);
+  const deletedAt = new Date().toISOString();
+  await db.items.update(id, { isPermanentlyDeleted: true, deletedAt });
+  syncLog(`deleteItemPermanently: ${item.redditId}`);
   await loadData();
   renderBrowseList();
-  syncLog(`deleteItemPermanently: ${item.redditId}`);
-  await pushItemDelete(item.redditId);
+  _setSyncing(true);
+  pushItemUpdate(id, { deleted_at: deletedAt, is_disliked: true }).then(() => _setSyncing(false));
 }
 
-async function deleteAllDisliked() {
-  const disliked = state.items.filter(i => i.isDisliked);
-  if (!disliked.length) return;
-  if (!confirm(`Permanently delete ${disliked.length} item${disliked.length!==1?'s':''} from your library and cloud? This cannot be undone.`)) return;
-  syncLog(`deleteAllDisliked: removing ${disliked.length} items`);
+async function restoreDeletedItem(id) {
+  const item = await db.items.get(id);
+  if (!item) return;
+  await db.items.update(id, { isPermanentlyDeleted: false, deletedAt: null, isDisliked: false });
+  syncLog(`restoreDeletedItem: ${item.redditId}`);
+  await loadData();
+  render();
   _setSyncing(true);
-  for (const item of disliked) {
+  pushItemUpdate(id, { deleted_at: null, is_disliked: false }).then(() => _setSyncing(false));
+}
+
+async function purgeDeletedItems() {
+  const deleted = state.items.filter(i => i.isPermanentlyDeleted);
+  if (!deleted.length) return;
+  syncLog(`purgeDeletedItems: removing ${deleted.length} items from DB`);
+  _setSyncing(true);
+  for (const item of deleted) {
     await db.items.delete(item.id);
     if (state.supabaseUrl && item.redditId) {
       try {
         await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'DELETE', null);
       } catch(e) {
-        syncLog(`deleteAllDisliked: failed for ${item.redditId} — ${e.message}`, 'error');
-        await markDirty('bulk delete push failed');
+        syncLog(`purgeDeletedItems: failed for ${item.redditId} — ${e.message}`, 'error');
+        await markDirty('purge push failed');
       }
     }
   }
-  state.syncStatus = 'connected';
   _setSyncing(false);
-  syncLog(`deleteAllDisliked: complete`, 'ok');
+  syncLog(`purgeDeletedItems: complete`, 'ok');
+  await loadData();
+  render();
+}
+
+async function deleteAllTrashed() {
+  const trashed = state.items.filter(i => i.isDisliked && !i.isPermanentlyDeleted);
+  if (!trashed.length) return;
+  if (!confirm(`Permanently delete ${trashed.length} item${trashed.length!==1?'s':''}? They'll be hidden from your library but recoverable from Deleted Items.`)) return;
+  syncLog(`deleteAllTrashed: marking ${trashed.length} items as permanently deleted`);
+  _setSyncing(true);
+  const deletedAt = new Date().toISOString();
+  for (const item of trashed) {
+    await db.items.update(item.id, { isPermanentlyDeleted: true, deletedAt });
+    if (state.supabaseUrl && item.redditId) {
+      try {
+        await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', { deleted_at: deletedAt, is_disliked: true });
+        state.syncStatus = 'connected';
+      } catch(e) {
+        syncLog(`deleteAllTrashed: failed for ${item.redditId} — ${e.message}`, 'error');
+        await markDirty('deleteAllTrashed push failed');
+      }
+    }
+  }
+  _setSyncing(false);
+  syncLog(`deleteAllTrashed: complete`, 'ok');
   await loadData();
   render();
 }
@@ -2432,12 +2486,54 @@ function setSortList(by) {
 }
 
 function renderTrashView() {
-  const items = filteredItems(); // already filtered to disliked when showTrash=true
+  const items = filteredItems();
+
+  if (state.showDeleted) {
+    const deletedItems = state.items.filter(i => i.isPermanentlyDeleted)
+      .sort((a, b) => new Date(b.deletedAt||0) - new Date(a.deletedAt||0));
+    return `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="font-family:'Syne',sans-serif;font-weight:600">🗑️ Deleted Items (${deletedItems.length})</div>
+        <button class="btn btn-ghost btn-sm" onclick="state.showDeleted=false;render()">← Back</button>
+      </div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
+        These items are hidden from your library. Restore to bring them back, or Purge to remove them from the database entirely.
+      </p>
+      ${deletedItems.length === 0 ? `
+        <div class="empty"><div class="empty-icon">✓</div><h3>No deleted items</h3></div>
+      ` : `
+        <button class="btn btn-danger btn-sm" style="width:100%;justify-content:center;margin-bottom:12px"
+          onclick="if(confirm('Remove ${deletedItems.length} item${deletedItems.length!==1?'s':''} from the database entirely? If they still exist in your Reddit saves they may reappear on next feed sync.'))purgeDeletedItems()">
+          ⚠️ Purge all from database
+        </button>
+        ${deletedItems.map(item => {
+          const openUrl = fullUrl((item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '');
+          const deletedStr = item.deletedAt ? new Date(item.deletedAt).toLocaleDateString() : '';
+          return `
+            <div class="card" style="border-color:rgba(239,68,68,0.15);opacity:0.8">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">
+                <span class="badge ${item.type==='comment'?'badge-comment':'badge-post'}">${item.type==='comment'?'💬 Comment':'📝 Post'}</span>
+                ${item.subreddit ? `<span class="subreddit-tag">r/${escHtml(item.subreddit)}</span>` : ''}
+                ${deletedStr ? `<span style="font-size:11px;color:var(--text-muted);margin-left:auto">Deleted ${deletedStr}</span>` : ''}
+              </div>
+              <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:14px;color:var(--text);line-height:1.3;margin-bottom:8px">
+                ${escHtml(item.title || 'Untitled')}
+              </div>
+              <div style="display:flex;gap:8px;justify-content:flex-end">
+                <button class="btn btn-ghost btn-sm" onclick="restoreDeletedItem(${item.id})">↩ Restore</button>
+                <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">↗ Open</a>
+              </div>
+            </div>`;
+        }).join('')}
+      `}
+    `;
+  }
+
   return `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <div style="font-family:'Syne',sans-serif;font-weight:600">🗑️ Trash (${items.length})</div>
       <div style="display:flex;gap:8px">
-        ${items.length > 0 ? `<button class="btn btn-danger btn-sm" onclick="deleteAllDisliked()">Delete all</button>` : ''}
+        ${items.length > 0 ? `<button class="btn btn-danger btn-sm" onclick="deleteAllTrashed()">Delete all</button>` : ''}
         <button class="btn btn-ghost btn-sm" onclick="state.showTrash=false;render()">← Back</button>
       </div>
     </div>
@@ -2462,6 +2558,16 @@ function renderTrashView() {
           </div>
         </div>`;
     }).join('')}
+    ${(() => {
+      const deletedCount = state.items.filter(i => i.isPermanentlyDeleted).length;
+      return deletedCount > 0 ? `
+        <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px">
+          <button class="btn btn-ghost btn-sm" style="width:100%;justify-content:center;opacity:0.7"
+            onclick="state.showDeleted=true;render()">
+            View ${deletedCount} deleted item${deletedCount!==1?'s':''}
+          </button>
+        </div>` : '';
+    })()}
   `;
 }
 
@@ -2514,16 +2620,16 @@ function renderAuthorList() {
 function renderBrowse() {
   _searchLookup = []; // reset lookup table for this render
 
-  // Trash view takes over the whole browse area
-  if (state.showTrash) return renderTrashView();
+  // Trash / deleted views take over the whole browse area
+  if (state.showTrash || state.showDeleted) return renderTrashView();
 
   // Author list view
   if (state.showAuthorList) return renderAuthorList();
 
   const items = filteredItems();
   const q = state.search.trim();
-  const deadCount = state.items.filter(i => i.enrichStatus === 'dead').length;
-  const trashCount = state.items.filter(i => i.isDisliked).length;
+  const deadCount = state.items.filter(i => i.enrichStatus === 'dead' && !i.isPermanentlyDeleted).length;
+  const trashCount = state.items.filter(i => i.isDisliked && !i.isPermanentlyDeleted).length;
   const favCount = state.items.filter(i => i.isFavourite).length;
   const tagLists = state.lists.filter(l => l.isTag && l.type === 'smart');
 
@@ -2817,11 +2923,14 @@ function sortItems(items, applyAuthorBoost = false) {
 function filteredItems() {
   let items = state.items;
 
-  // Trash view — only disliked items
-  if (state.showTrash) return sortItems(items.filter(i => i.isDisliked));
+  // Deleted view — only permanently deleted items
+  if (state.showDeleted) return sortItems(items.filter(i => i.isPermanentlyDeleted));
 
-  // Normal browse — exclude disliked and dead unless filtering for dead
-  items = items.filter(i => !i.isDisliked);
+  // Trash view — only disliked (non-permanently-deleted) items
+  if (state.showTrash) return sortItems(items.filter(i => i.isDisliked && !i.isPermanentlyDeleted));
+
+  // Normal browse — exclude disliked, permanently deleted, and dead unless filtering for dead
+  items = items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted);
   if (state.showDead) {
     items = items.filter(i => i.enrichStatus === 'dead');
   } else {
@@ -3318,14 +3427,14 @@ function renderLists() {
     if (isSmart) {
       const cached = state.tagCache.get(list.id);
       const allMatching = cached
-        ? state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && cached.itemIds.has(i.id))
-        : state.items.filter(i => !i.isDisliked && i.enrichStatus !== 'dead' && (tokens.length === 0 || itemMatchesTokens(i, tokens)));
+        ? state.items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted && i.enrichStatus !== 'dead' && cached.itemIds.has(i.id))
+        : state.items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted && i.enrichStatus !== 'dead' && (tokens.length === 0 || itemMatchesTokens(i, tokens)));
       const matchingIds = new Set(allMatching.map(i => i.id));
-      extraPinnedItems = sortItems(state.items.filter(i => pinnedIds.has(i.id) && !matchingIds.has(i.id) && !i.isDisliked && i.enrichStatus !== 'dead'));
+      extraPinnedItems = sortItems(state.items.filter(i => pinnedIds.has(i.id) && !matchingIds.has(i.id) && !i.isDisliked && !i.isPermanentlyDeleted && i.enrichStatus !== 'dead'));
       smartItems = sortItems(allMatching);
     }
 
-    const staticItems = isSmart ? [] : sortItems(state.items.filter(i => pinnedIds.has(i.id) && !i.isDisliked && i.enrichStatus !== 'dead'));
+    const staticItems = isSmart ? [] : sortItems(state.items.filter(i => pinnedIds.has(i.id) && !i.isDisliked && !i.isPermanentlyDeleted && i.enrichStatus !== 'dead'));
 
     const renderListCard = (i) => renderItemCard(i, true, list.id);
     const itemCount = (isSmart ? smartItems : staticItems).length + extraPinnedItems.length;
@@ -3547,20 +3656,30 @@ function renderSettings() {
     <!-- ── 3. LIBRARY ─────────────────────────────────────────────────────── -->
     <div class="config-section">
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">📊 Library</div>
-      <div style="font-size:13px;line-height:2.2">
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Total items</span><span>${state.items.length.toLocaleString()}</span></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Posts</span><span style="font-size:12px">${state.items.filter(i=>i.type==='post').length.toLocaleString()}</span></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Comments</span><span style="font-size:12px">${state.items.filter(i=>i.type==='comment').length.toLocaleString()}</span></div>
-        <div style="display:flex;justify-content:space-between;margin-top:4px"><span style="color:var(--text-muted)">Lists</span><span>${state.lists.length}</span></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Smart</span><span style="font-size:12px">${state.lists.filter(l=>l.type==='smart').length}</span></div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Static</span><span style="font-size:12px">${state.lists.filter(l=>l.type==='static').length}</span></div>
-        <div style="display:flex;justify-content:space-between;margin-top:4px"><span style="color:var(--text-muted)">Need enrichment</span>
-          <span style="${unenriched>0?'color:var(--warning)':''}">${unenriched}</span>
-        </div>
-        <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unavailable</span>
-          <span style="color:var(--text-muted)">${deadCount.toLocaleString()}</span>
-        </div>
-      </div>
+      ${(() => {
+        const active = state.items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted);
+        const deletedCount = state.items.filter(i => i.isPermanentlyDeleted).length;
+        return `
+        <div style="font-size:13px;line-height:2.2">
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Total items</span><span>${active.length.toLocaleString()}</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Posts</span><span style="font-size:12px">${active.filter(i=>i.type==='post').length.toLocaleString()}</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Comments</span><span style="font-size:12px">${active.filter(i=>i.type==='comment').length.toLocaleString()}</span></div>
+          <div style="display:flex;justify-content:space-between;margin-top:4px"><span style="color:var(--text-muted)">Lists</span><span>${state.lists.length}</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Smart</span><span style="font-size:12px">${state.lists.filter(l=>l.type==='smart').length}</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Static</span><span style="font-size:12px">${state.lists.filter(l=>l.type==='static').length}</span></div>
+          <div style="display:flex;justify-content:space-between;margin-top:4px"><span style="color:var(--text-muted)">Need enrichment</span>
+            <span style="${unenriched>0?'color:var(--warning)':''}">${unenriched}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted)">Unavailable</span>
+            <span style="color:var(--text-muted)">${deadCount.toLocaleString()}</span>
+          </div>
+          ${deletedCount > 0 ? `
+          <div style="display:flex;justify-content:space-between;margin-top:4px">
+            <span style="color:var(--text-muted)">Deleted (hidden)</span>
+            <span style="color:var(--text-muted);font-size:12px">${deletedCount.toLocaleString()}</span>
+          </div>` : ''}
+        </div>`;
+      })()}
       <!-- Backup & Restore -->
       <div style="border-top:1px solid var(--border);margin-top:14px;padding-top:14px">
         <div style="font-size:11px;font-weight:600;color:var(--text-muted);letter-spacing:0.05em;margin-bottom:10px">BACKUP & RESTORE</div>
@@ -4092,7 +4211,9 @@ async function syncFromFeed() {
   const MAX_PAGES = 40; // safety cap — 40 × 25 = 1000 items
 
   // Build set of existing reddit_ids for fast dedup
+  // Includes permanently deleted items so they are never re-inserted from feed
   const existing = new Set(state.items.map(i => i.redditId));
+  const permanentlyDeleted = new Set(state.items.filter(i => i.isPermanentlyDeleted).map(i => i.redditId));
 
   try {
     while (pages < MAX_PAGES) {
