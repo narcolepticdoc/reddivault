@@ -337,7 +337,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.3.1';
+const APP_VERSION = '0.9.3.8';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -442,6 +442,8 @@ let state = {
   listView: 'all',         // 'all' | list id
   listSeparate: false,     // separate smart vs static
   confirmDestructive: true, // confirm before trash/remove actions
+  autoFeedSync: false,        // auto-sync feed on open/foreground
+  autoFeedSyncInterval: 60,   // minimum minutes between auto syncs
   localDirty: false,        // true if local has changes not yet pushed
   cloudAhead: false,        // true if cloud has data not yet pulled
   lastPushedAt: null,       // ISO timestamp of last successful push to cloud
@@ -478,6 +480,9 @@ function renderSyncLogEntries(el) {
     </div>`).join('') || '<div style="font-size:12px;color:var(--text-muted);padding:8px 0">No events yet this session</div>';
 }
 
+// Tracks the in-flight startup cloud sync so autoFeedSyncIfDue can wait for it
+let _startupSyncPromise = null;
+
 // ─── INIT ────────────────────────────────────────────────────────────────────
 async function init() {
   await loadConfig();
@@ -489,14 +494,17 @@ async function init() {
     if (state.localDirty) {
       syncLog('Startup: dirty flag set — scheduling retry and reconciling', 'warn');
       scheduleRetry();
-      reconcileDirtyState();
+      _startupSyncPromise = reconcileDirtyState();
     } else {
       syncLog('Startup: clean — checking if cloud is ahead');
-      checkCloudAhead();
+      _startupSyncPromise = checkCloudAhead();
     }
   } else {
     syncLog('Startup: no Supabase configured — sync disabled');
+    _startupSyncPromise = Promise.resolve();
   }
+  // Auto feed sync on startup — waits for cloud sync to fully complete first
+  _startupSyncPromise.catch(() => {}).then(() => autoFeedSyncIfDue());
 }
 
 async function reconcileDirtyState() {
@@ -564,6 +572,10 @@ async function loadConfig() {
     if (proxyUrl) state.feedProxyUrl = proxyUrl.value;
     const confirmDestructive = await db.config.get('confirmDestructive');
     if (confirmDestructive) state.confirmDestructive = confirmDestructive.value;
+    const autoFeedSync = await db.config.get('autoFeedSync');
+    if (autoFeedSync) state.autoFeedSync = autoFeedSync.value;
+    const autoFeedSyncInterval = await db.config.get('autoFeedSyncInterval');
+    if (autoFeedSyncInterval) state.autoFeedSyncInterval = autoFeedSyncInterval.value;
     const localDirty = await db.config.get('localDirty');
     if (localDirty) state.localDirty = localDirty.value;
     const lastPushedAt = await db.config.get('lastPushedAt');
@@ -1598,16 +1610,34 @@ async function handleCSVImport(file) {
   });
 }
 
-async function handleJSONImport(data) {
-  let added = 0, dupes = 0;
-  const items = Array.isArray(data) ? data : data.items || [];
-  for (const item of items) {
+async function restoreFromBackup(data) {
+  // Validate it looks like a real backup
+  if (!data.items || !Array.isArray(data.items)) {
+    throw new Error('Invalid backup file — no items array found');
+  }
+
+  const exportedAt = data.exportedAt ? fmtDate(data.exportedAt) : 'unknown date';
+  const itemCount = data.items.length;
+  const listCount = (data.lists || []).length;
+
+  if (!confirm(`Restore backup from ${exportedAt}?\n\nThis will replace ALL local data with:\n• ${itemCount.toLocaleString()} items\n• ${listCount} lists\n\nThis cannot be undone.`)) {
+    return null; // user cancelled
+  }
+
+  // Wipe everything
+  await db.items.clear();
+  await db.lists.clear();
+  await db.item_lists.clear();
+  await db.folders.clear();
+
+  // Restore items — strip local auto-increment id so IndexedDB assigns fresh ones
+  let itemsAdded = 0;
+  const redditIdToLocalId = new Map();
+  for (const item of data.items) {
     if (!item.redditId) continue;
-    const exists = await db.items.where('redditId').equals(item.redditId).first();
-    if (exists) { dupes++; continue; }
-    // Ensure all new fields exist
-    await db.items.add({
-      ...item,
+    const { id: _id, ...itemWithoutId } = item;
+    const newId = await db.items.add({
+      ...itemWithoutId,
       postCreatedAt: item.postCreatedAt || null,
       enriched: item.enriched ?? !!(item.title && item.subreddit),
       enrichStatus: item.enrichStatus || (item.title && item.subreddit ? 'enriched' : 'pending'),
@@ -1615,15 +1645,39 @@ async function handleJSONImport(data) {
       author: item.author || '',
       score: item.score ?? null,
     });
-    added++;
+    redditIdToLocalId.set(item.redditId, newId);
+    itemsAdded++;
   }
-  const folders_ = Array.isArray(data) ? [] : data.folders || [];
-  for (const f of folders_) {
-    const exists = await db.folders.where('name').equals(f.name).first();
-    if (!exists) await db.folders.add(f);
+
+  // Restore lists — strip local id, track old->new id mapping
+  const oldToNewListId = new Map();
+  for (const list of (data.lists || [])) {
+    const { id: oldId, ...listWithoutId } = list;
+    const newId = await db.lists.add(listWithoutId);
+    if (oldId != null) oldToNewListId.set(oldId, newId);
   }
+
+  // Restore item_lists — remap both listId and itemId to new local IDs
+  for (const il of (data.itemLists || [])) {
+    const item = data.items.find(i => {
+      // item_lists reference by itemId (old local id) — find matching item by old id
+      return i.id === il.itemId;
+    });
+    const newItemId = item ? redditIdToLocalId.get(item.redditId) : null;
+    const newListId = oldToNewListId.get(il.listId);
+    if (newItemId && newListId) {
+      await db.item_lists.add({ itemId: newItemId, listId: newListId });
+    }
+  }
+
+  // Restore folders
+  for (const f of (data.folders || [])) {
+    const { id: _id, ...folderWithoutId } = f;
+    await db.folders.add(folderWithoutId);
+  }
+
   await loadData();
-  return { added, dupes };
+  return { added: itemsAdded, lists: (data.lists || []).length };
 }
 
 // ─── FOLDERS ─────────────────────────────────────────────────────────────────
@@ -3343,24 +3397,80 @@ function renderSettings() {
         </div>
       ` : ''}
       ${!state.redditFeedUrl ? `
-        <p style="font-size:12px;color:var(--warning);margin-top:8px">⚠️ No feed URL configured — see Connection Settings below.</p>
+        <p style="font-size:12px;color:var(--warning);margin-top:8px">⚠️ No feed URL configured — expand settings below to set up.</p>
       ` : ''}
+      <div style="margin-top:12px;display:grid;gap:10px">
+        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;font-size:13px">
+          <span>
+            Auto-sync on open
+            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">Check for new saves automatically when the app opens or returns to foreground</div>
+          </span>
+          <input type="checkbox" ${state.autoFeedSync ? 'checked' : ''}
+            onchange="state.autoFeedSync=this.checked;db.config.put({key:'autoFeedSync',value:this.checked})"
+            style="width:18px;height:18px;margin-left:16px;flex-shrink:0">
+        </label>
+        ${state.autoFeedSync ? `
+          <div style="display:flex;align-items:center;justify-content:space-between;font-size:13px">
+            <span style="color:var(--text-muted);font-size:12px">Minimum interval between checks (minutes)</span>
+            <input class="input" type="number" min="5" max="1440" value="${state.autoFeedSyncInterval}"
+              style="width:70px;text-align:center"
+              onchange="state.autoFeedSyncInterval=Math.max(5,+this.value);db.config.put({key:'autoFeedSyncInterval',value:state.autoFeedSyncInterval})">
+          </div>
+        ` : ''}
+      </div>
+      <details style="margin-top:12px">
+        <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">⚙️ Feed connection settings</summary>
+        <div style="margin-top:12px;display:grid;gap:10px">
+          <div class="form-group">
+            <label>Private Feed URL</label>
+            <input class="input" id="feed-url" placeholder="https://old.reddit.com/user/USERNAME/saved.json?feed=YOUR_FEED_TOKEN&amp;user=USERNAME"
+              value="${escHtml(state.redditFeedUrl)}" style="font-size:12px">
+            <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → under Private Listings, right-click the JSON button next to 'your saved links' → Copy Link</span>
+          </div>
+          <div class="form-group">
+            <label>Proxy URL <span style="font-size:11px;color:var(--text-muted)">(Cloudflare Worker)</span></label>
+            <input class="input" id="feed-proxy-url" placeholder="https://your-worker.workers.dev"
+              value="${escHtml(state.feedProxyUrl)}" style="font-size:12px">
+          </div>
+          <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center">Save Feed Settings</button>
+        </div>
+      </details>
     </div>
 
     <!-- ── 2. CLOUD SYNC ──────────────────────────────────────────────────── -->
     <div class="config-section">
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px">☁️ Cloud Database</div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px;line-height:1.6">
+        Sync is automatic — changes are pushed to the cloud as you make them and pulled on startup. Manual push and pull should not be necessary under normal circumstances.
+      </p>
       <div class="sync-status" style="margin-bottom:10px">
         <div class="status-dot ${state.syncStatus}"></div>
         <span>${state.syncStatus === 'connected' ? 'Connected' : state.syncStatus === 'syncing' ? 'Syncing...' : 'Not connected'}</span>
         ${state.lastSync ? `<span style="margin-left:auto;color:var(--text-muted);font-size:11px">Last: ${lastSyncStr}</span>` : ''}
       </div>
       ${state.supabaseUrl ? `
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;margin-bottom:12px">
           <button class="btn btn-secondary" onclick="syncFromSupabase()" style="flex:1;justify-content:center">⬇️ Pull from Cloud</button>
           <button class="btn btn-secondary" onclick="pushAllToSupabase()" style="flex:1;justify-content:center">⬆️ Push to Cloud</button>
         </div>
       ` : ''}
+      <details>
+        <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">⚙️ Supabase connection settings</summary>
+        <div style="margin-top:12px;display:grid;gap:10px">
+          <div style="font-size:12px;color:var(--text-muted);padding:8px 10px;background:rgba(245,158,11,0.08);border-radius:8px;border:1px solid rgba(245,158,11,0.2)">
+            ⚠️ Designed for single-user use. Using the same database from two devices simultaneously may cause list sync conflicts.
+          </div>
+          <div class="form-group">
+            <label>Project URL</label>
+            <input class="input" id="sb-url" placeholder="https://xxxx.supabase.co" value="${escHtml(state.supabaseUrl)}">
+          </div>
+          <div class="form-group">
+            <label>Anon Key</label>
+            <input class="input" id="sb-key" type="password" placeholder="eyJhbGc..." value="${escHtml(state.supabaseKey)}">
+          </div>
+          <button class="btn btn-secondary" onclick="saveSupabaseConfig()" style="width:100%;justify-content:center">Save & Test Connection</button>
+        </div>
+      </details>
     </div>
 
     <!-- ── 3. LIBRARY STATS ───────────────────────────────────────────────── -->
@@ -3380,19 +3490,26 @@ function renderSettings() {
         </div>
       </div>
       <div style="display:flex;gap:8px;margin-top:12px">
-        <button class="btn btn-secondary" onclick="exportJSON()" style="flex:1;justify-content:center">⬇️ Export Backup</button>
-        <button class="btn btn-secondary" onclick="document.getElementById('csv-file').click()" style="flex:1;justify-content:center">⬆️ Restore Backup</button>
+        <button class="btn btn-secondary" onclick="exportJSON()" style="flex:1;justify-content:center">⬇️ Backup</button>
+        <button class="btn btn-secondary" onclick="document.getElementById('restore-file').click()" style="flex:1;justify-content:center">⬆️ Restore</button>
       </div>
-      <input type="file" id="csv-file" accept=".csv,.json" style="display:none">
+      <input type="file" id="restore-file" accept=".json" style="display:none">
     </div>
 
     <!-- ── 4. IMPORT & ENRICH ────────────────────────────────────────────────── -->
     <div class="config-section">
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:4px">📥 Import & Enrich</div>
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
-        Import your Reddit saved posts from a CSV export, then enrich items with full metadata.
-        <span style="display:block;margin-top:4px">To get your CSV: go to <strong style="color:var(--text)">reddit.com/settings</strong> → Data Request → download and find <strong style="color:var(--text)">saved_posts.csv</strong>.</span>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px;line-height:1.6">
+        To get your CSV: go to <strong style="color:var(--text)">reddit.com/settings</strong> → Data Request → download and find <strong style="color:var(--text)">saved_posts.csv</strong>.
       </p>
+      <details style="margin-bottom:12px">
+        <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">ℹ️ About enrichment</summary>
+        <div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-top:8px;display:grid;gap:8px">
+          <p>Reddit's CSV export contains only post IDs and URLs — titles, subreddits, authors and post content must be fetched separately. Because this uses Reddit's public (non-API) access, requests are rate limited to 8–10 per minute, so a large library can take several hours to fully enrich.</p>
+          <p>Some items will fail on the first pass due to deleted posts, private subreddits, or rate limit hits. Use the <strong style="color:var(--text)">Retry Run</strong> after the initial pass completes — some items need 2–3 passes before they either succeed or are confirmed unavailable.</p>
+          <p>This is a one-time process. New items from feed sync arrive already fully enriched.</p>
+        </div>
+      </details>
 
       <!-- Drop zone -->
       <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()" style="margin-bottom:12px">
@@ -3484,39 +3601,6 @@ function renderSettings() {
         <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:0%"></div></div>
         <div style="font-size:13px;color:var(--text-muted);text-align:center" id="progress-label">Processing...</div>
       </div>
-    </div>
-
-    <!-- ── 4. CONNECTION SETTINGS ─────────────────────────────────────────── -->
-    <div class="config-section">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">🔌 Connection Settings</div>
-
-      <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;letter-spacing:0.04em">REDDIT FEED</div>
-      <div class="form-group">
-        <label>Private Feed URL</label>
-        <input class="input" id="feed-url" placeholder="https://old.reddit.com/.json?feed=…&user=…"
-          value="${escHtml(state.redditFeedUrl)}" style="font-size:12px">
-        <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → enable private RSS feeds</span>
-      </div>
-      <div class="form-group">
-        <label>Proxy URL <span style="font-size:11px;color:var(--text-muted)">(Cloudflare Worker)</span></label>
-        <input class="input" id="feed-proxy-url" placeholder="https://your-worker.workers.dev"
-          value="${escHtml(state.feedProxyUrl)}" style="font-size:12px">
-      </div>
-      <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center;margin-bottom:16px">Save Feed Settings</button>
-
-      <div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;letter-spacing:0.04em">SUPABASE CLOUD DB</div>
-      <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;padding:8px 10px;background:rgba(245,158,11,0.08);border-radius:8px;border:1px solid rgba(245,158,11,0.2)">
-        ⚠️ Designed for single-user use. Using the same database from two devices simultaneously may cause list sync conflicts.
-      </div>
-      <div class="form-group">
-        <label>Project URL</label>
-        <input class="input" id="sb-url" placeholder="https://xxxx.supabase.co" value="${escHtml(state.supabaseUrl)}">
-      </div>
-      <div class="form-group">
-        <label>Anon Key</label>
-        <input class="input" id="sb-key" type="password" placeholder="eyJhbGc..." value="${escHtml(state.supabaseKey)}">
-      </div>
-      <button class="btn btn-secondary" onclick="saveSupabaseConfig()" style="width:100%;justify-content:center">Save & Test Connection</button>
     </div>
 
     <!-- ── 5. PREFERENCES ────────────────────────────────────────────────────── -->
@@ -3804,6 +3888,16 @@ function attachEventListeners() {
     };
   }
 
+  const restoreInput = document.getElementById('restore-file');
+  if (restoreInput) {
+    restoreInput.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      await handleFileImport(file);
+      restoreInput.value = ''; // reset so same file can be picked again
+    };
+  }
+
   const dropZone = document.getElementById('drop-zone');
   if (dropZone) {
     dropZone.ondragover = e => { e.preventDefault(); dropZone.classList.add('drag-over'); };
@@ -3818,6 +3912,22 @@ function attachEventListeners() {
 }
 
 async function handleFileImport(file) {
+  // JSON files are always treated as backups to restore — never merge
+  if (file.name.endsWith('.json')) {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const result = await restoreFromBackup(data);
+      if (result === null) return; // user cancelled confirm dialog
+      showToast(`✓ Restored ${result.added.toLocaleString()} items and ${result.lists} lists`, 'success');
+      setTimeout(() => render(), 500);
+    } catch(e) {
+      showToast('Restore failed: ' + e.message, 'error');
+    }
+    return;
+  }
+
+  // CSV files — Reddit export import
   const progress = document.getElementById('import-progress');
   const fill = document.getElementById('progress-fill');
   const label = document.getElementById('progress-label');
@@ -3826,25 +3936,13 @@ async function handleFileImport(file) {
   if (label) label.textContent = 'Reading file...';
 
   try {
-    let result;
-    if (file.name.endsWith('.json')) {
-      const text = await file.text();
-      const data = JSON.parse(text);
-      if (fill) fill.style.width = '60%';
-      if (label) label.textContent = 'Importing...';
-      result = await handleJSONImport(data);
-    } else {
-      if (fill) fill.style.width = '60%';
-      if (label) label.textContent = 'Importing...';
-      result = await handleCSVImport(file);
-    }
+    if (fill) fill.style.width = '60%';
+    if (label) label.textContent = 'Importing...';
+    const result = await handleCSVImport(file);
     if (fill) fill.style.width = '100%';
-
     const needsEnrich = state.items.filter(i => !i.enriched).length;
     if (label) label.textContent = `Done! Added ${result.added} items (${result.dupes} duplicates skipped)${needsEnrich > 0 ? `. ${needsEnrich} items need enrichment.` : ''}`;
     showToast(`✓ Imported ${result.added} new items`, 'success');
-
-    // Re-render import page to show enrichment prompt
     setTimeout(() => render(), 1000);
   } catch(e) {
     if (label) label.textContent = 'Error: ' + e.message;
@@ -3885,6 +3983,21 @@ async function saveFeedUrl() {
 
   showToast('Settings saved!', 'success');
   render();
+}
+
+async function autoFeedSyncIfDue() {
+  if (!state.autoFeedSync) return;
+  if (!state.redditFeedUrl) return;
+  if (state.feedSyncing) return;
+  const lastFeedSync = await db.config.get('lastFeedSync');
+  const lastMs = lastFeedSync ? new Date(lastFeedSync.value).getTime() : 0;
+  const intervalMs = (state.autoFeedSyncInterval || 60) * 60 * 1000;
+  if (Date.now() - lastMs < intervalMs) {
+    syncLog(`autoFeedSync: skipped — last sync was ${Math.round((Date.now()-lastMs)/60000)}min ago (interval=${state.autoFeedSyncInterval}min)`);
+    return;
+  }
+  syncLog(`autoFeedSync: due — triggering feed sync`);
+  await syncFromFeed();
 }
 
 async function syncFromFeed() {
@@ -3973,6 +4086,7 @@ async function syncFromFeed() {
 
     await loadData();
     state.feedSyncResult = { added, skipped, pages };
+    await db.config.put({ key: 'lastFeedSync', value: new Date().toISOString() });
     if (added > 0 && skipped === 0 && pages >= MAX_PAGES) {
       showToast(`⚠️ ${added} items added but no overlap found — you may have unseen saves beyond Reddit's limit. Consider a fresh CSV export.`, 'warning');
     } else if (added > 0) {
@@ -4014,6 +4128,8 @@ async function removeFeedItems() {
 
 async function clearAllData() {
   await db.items.clear();
+  await db.lists.clear();
+  await db.item_lists.clear();
   await db.folders.clear();
   await loadData();
   render();
@@ -4052,6 +4168,12 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ─── SERVICE WORKER ───────────────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('message', e => {
+    if (e.data?.type === 'SW_UPDATED') {
+      // New service worker has activated — reload to get fresh assets
+      window.location.reload();
+    }
+  });
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -4065,6 +4187,11 @@ document.addEventListener('visibilitychange', () => {
       syncLog('Foregrounded: clean — checking if cloud is ahead');
       checkCloudAhead();
     }
+  }
+  if (document.visibilityState === 'visible') {
+    // Wait for any in-flight cloud sync before touching the feed
+    const waitFor = _startupSyncPromise || Promise.resolve();
+    waitFor.catch(() => {}).then(() => autoFeedSyncIfDue());
   }
 });
 

@@ -20,7 +20,12 @@ self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys().then(keys =>
       Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    )
+    ).then(() => {
+      // Tell all open clients to reload so they get the new version
+      return self.clients.matchAll({ type: 'window' }).then(clients => {
+        clients.forEach(client => client.postMessage({ type: 'SW_UPDATED', version: VERSION }));
+      });
+    })
   );
   self.clients.claim();
 });
