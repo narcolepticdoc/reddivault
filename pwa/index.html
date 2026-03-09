@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.7.5';
+const APP_VERSION = '0.9.7.6';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -413,6 +413,7 @@ let state = {
   sortDir: 'desc',
   redditFeedUrl: '',
   feedProxyUrl: '',
+  feedProxyType: 'cloudflare', // 'cloudflare' | 'corsfix'
   feedSyncing: false,
   feedSyncResult: null,
   // Filter panel
@@ -430,7 +431,6 @@ let state = {
   // Lists tab
   listView: 'all',         // 'all' | list id
   listSeparate: false,     // separate smart vs static
-  listSmartFirst: true,    // smart lists above static when separated
   confirmDestructive: true, // confirm before trash/remove actions
   disableZoom: true,        // prevent iOS pinch-to-zoom
   autoFeedSync: false,        // auto-sync feed on open/foreground
@@ -560,6 +560,8 @@ async function loadConfig() {
     if (feedUrl) state.redditFeedUrl = feedUrl.value;
     const proxyUrl = await db.config.get('feedProxyUrl');
     if (proxyUrl) state.feedProxyUrl = proxyUrl.value;
+    const proxyType = await db.config.get('feedProxyType');
+    if (proxyType) state.feedProxyType = proxyType.value;
     const confirmDestructive = await db.config.get('confirmDestructive');
     if (confirmDestructive) state.confirmDestructive = confirmDestructive.value;
     const disableZoom = await db.config.get('disableZoom');
@@ -1101,6 +1103,7 @@ async function pushImportantPreferences() {
     await supabaseFetch('/user_preferences?on_conflict=key', 'POST', [
       { key: 'redditFeedUrl',      value: state.redditFeedUrl,      updated_at: new Date().toISOString() },
       { key: 'feedProxyUrl',       value: state.feedProxyUrl,       updated_at: new Date().toISOString() },
+      { key: 'feedProxyType',      value: state.feedProxyType,      updated_at: new Date().toISOString() },
       { key: 'confirmDestructive', value: state.confirmDestructive, updated_at: new Date().toISOString() },
     ]);
     syncLog('pushImportantPreferences: ok', 'ok');
@@ -1127,6 +1130,10 @@ async function pullPreferences() {
       if (row.key === 'feedProxyUrl' && row.value) {
         state.feedProxyUrl = row.value;
         await db.config.put({ key: 'feedProxyUrl', value: row.value });
+      }
+      if (row.key === 'feedProxyType' && row.value) {
+        state.feedProxyType = row.value;
+        await db.config.put({ key: 'feedProxyType', value: row.value });
       }
       if (row.key === 'confirmDestructive' && row.value !== undefined) {
         state.confirmDestructive = row.value;
@@ -3660,10 +3667,6 @@ function renderLists() {
   const sorted = [...allLists].sort((a,b) => a.name.localeCompare(b.name));
   const smarts = sorted.filter(l => l.type === 'smart');
   const statics = sorted.filter(l => l.type === 'static');
-  const firstGroup  = state.listSmartFirst ? smarts  : statics;
-  const secondGroup = state.listSmartFirst ? statics : smarts;
-  const firstLabel  = state.listSmartFirst ? '✦ SMART LISTS'  : '📋 STATIC LISTS';
-  const secondLabel = state.listSmartFirst ? '📋 STATIC LISTS' : '✦ SMART LISTS';
 
   return `
     <div class="section-header">
@@ -3674,12 +3677,8 @@ function renderLists() {
             style="${state.listSeparate?'color:var(--accent2)':''}">
             ${state.listSeparate ? '⊟ Merge' : '⊞ Separate'}
           </button>` : ''}
-        ${state.listSeparate ? `
-          <button class="btn btn-ghost btn-sm" onclick="state.listSmartFirst=!state.listSmartFirst;render()"
-            title="Toggle which list type appears first">
-            ${state.listSmartFirst ? '✦ Smart ↑' : '📋 Static ↑'}
-          </button>` : ''}
-        <button class="btn btn-primary btn-sm" onclick="showNewListMenu(this)">+ New</button>
+        <button class="btn btn-secondary btn-sm" onclick="showCreateList('static')">+ Static</button>
+        <button class="btn btn-primary btn-sm" onclick="showCreateList('smart')">+ Smart</button>
       </div>
     </div>
 
@@ -3690,13 +3689,13 @@ function renderLists() {
         <p>Create a <strong>Static list</strong> to manually collect posts, or a <strong>Smart list</strong> that auto-populates from a saved search.</p>
       </div>
     ` : separated ? `
-      ${firstGroup.length > 0 ? `
-        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${firstLabel}</div>
-        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${firstGroup.map(renderListCard).join('')}</div>
+      ${smarts.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">✦ SMART LISTS</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${smarts.map(renderListCard).join('')}</div>
       ` : ''}
-      ${secondGroup.length > 0 ? `
-        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${secondLabel}</div>
-        <div style="display:flex;flex-direction:column;gap:8px">${secondGroup.map(renderListCard).join('')}</div>
+      ${statics.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">📋 STATIC LISTS</div>
+        <div style="display:flex;flex-direction:column;gap:8px">${statics.map(renderListCard).join('')}</div>
       ` : ''}
     ` : `
       <div style="display:flex;flex-direction:column;gap:8px">${sorted.map(renderListCard).join('')}</div>
@@ -3804,9 +3803,27 @@ function renderSettings() {
             <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → under Private Listings, right-click the JSON button next to 'your saved links' → Copy Link</span>
           </div>
           <div class="form-group">
-            <label>Proxy URL <span style="font-size:11px;color:var(--text-muted)">(Cloudflare Worker)</span></label>
-            <input class="input" id="feed-proxy-url" placeholder="https://your-worker.workers.dev"
-              value="${escHtml(state.feedProxyUrl)}" style="font-size:16px">
+            <label>CORS Proxy</label>
+            <div style="display:flex;gap:8px;margin-bottom:8px">
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${state.feedProxyType==='cloudflare'?'border-color:var(--accent2);background:rgba(99,102,241,0.08)':''}">
+                <input type="radio" name="proxy-type" value="cloudflare" ${state.feedProxyType==='cloudflare'?'checked':''}
+                  onchange="state.feedProxyType='cloudflare';render()">
+                ☁️ Cloudflare Worker
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${state.feedProxyType==='corsfix'?'border-color:var(--accent2);background:rgba(99,102,241,0.08)':''}">
+                <input type="radio" name="proxy-type" value="corsfix" ${state.feedProxyType==='corsfix'?'checked':''}
+                  onchange="state.feedProxyType='corsfix';render()">
+                🔀 CORSfix
+              </label>
+            </div>
+            ${state.feedProxyType === 'cloudflare' ? `
+              <input class="input" id="feed-proxy-url" placeholder="https://your-worker.workers.dev"
+                value="${escHtml(state.feedProxyUrl)}" style="font-size:16px">
+              <span style="font-size:11px;color:var(--text-muted)">Your deployed Cloudflare Worker URL</span>
+            ` : `
+              <input id="feed-proxy-url" type="hidden" value="">
+              <span style="font-size:11px;color:var(--text-muted)">Uses proxy.corsfix.com — no setup required. Free tier, no account needed.</span>
+            `}
           </div>
           <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center">Save Feed Settings</button>
         </div>
@@ -4080,33 +4097,6 @@ function closeModal() {
 }
 
 // ─── LIST MANAGEMENT ─────────────────────────────────────────────────────────
-
-function showNewListMenu(btn) {
-  document.getElementById('new-list-menu')?.remove();
-  const menu = document.createElement('div');
-  menu.id = 'new-list-menu';
-  menu.style.cssText = 'position:fixed;z-index:300;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,0.25);min-width:140px;overflow:hidden;';
-  const rect = btn.getBoundingClientRect();
-  menu.style.top = (rect.bottom + 6) + 'px';
-  menu.style.right = (window.innerWidth - rect.right) + 'px';
-  menu.innerHTML = `
-    <button onclick="document.getElementById('new-list-menu')?.remove();showCreateList('static')"
-      style="display:block;width:100%;padding:12px 16px;background:none;border:none;text-align:left;color:var(--text);font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;">
-      📋 Static list
-    </button>
-    <div style="height:1px;background:var(--border)"></div>
-    <button onclick="document.getElementById('new-list-menu')?.remove();showCreateList('smart')"
-      style="display:block;width:100%;padding:12px 16px;background:none;border:none;text-align:left;color:var(--text);font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;">
-      ✦ Smart list
-    </button>
-  `;
-  document.body.appendChild(menu);
-  setTimeout(() => {
-    document.addEventListener('click', function handler(e) {
-      if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', handler); }
-    });
-  }, 0);
-}
 
 function showCreateList(type) {
   const isSmart = type === 'smart';
@@ -4400,6 +4390,10 @@ async function saveFeedUrl() {
   await db.config.put({ key: 'feedProxyUrl', value: proxyRaw });
   state.feedProxyUrl = proxyRaw;
 
+  const proxyType = document.querySelector('input[name="proxy-type"]:checked')?.value || 'cloudflare';
+  await db.config.put({ key: 'feedProxyType', value: proxyType });
+  state.feedProxyType = proxyType;
+
   // Sync to cloud
   await pushImportantPreferences();
 
@@ -4422,6 +4416,16 @@ async function autoFeedSyncIfDue() {
   await syncFromFeed();
 }
 
+function _buildProxyUrl(feedUrl) {
+  if (state.feedProxyType === 'corsfix') {
+    // CORSfix syntax: https://proxy.corsfix.com/?{full-url} (no key, no encoding)
+    return `https://proxy.corsfix.com/?${feedUrl}`;
+  }
+  // Cloudflare Worker syntax: {workerUrl}?url={encoded-url}
+  const base = state.feedProxyUrl || '/api/reddit-feed';
+  return `${base}?url=${encodeURIComponent(feedUrl)}`;
+}
+
 async function syncFromFeed() {
   if (!state.redditFeedUrl) { showToast('No feed URL configured', 'error'); return; }
   if (state.feedSyncing) return;
@@ -4442,12 +4446,11 @@ async function syncFromFeed() {
   try {
     while (pages < MAX_PAGES) {
       let feedUrl = state.redditFeedUrl;
-      feedUrl += '&limit=25';
+      feedUrl += (feedUrl.includes('?') ? '&' : '?') + 'limit=25';
       if (after) feedUrl += `&after=${encodeURIComponent(after)}`;
 
       // Route through proxy (required — Reddit blocks direct cross-origin fetches)
-      const proxyBase = state.feedProxyUrl || '/api/reddit-feed';
-      const url = `${proxyBase}?url=${encodeURIComponent(feedUrl)}`;
+      const url = _buildProxyUrl(feedUrl);
       const res = await fetch(url);
       if (!res.ok) throw new Error(`HTTP ${res.status} — check your feed URL is correct`);
       const json = await res.json();
