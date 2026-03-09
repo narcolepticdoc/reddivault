@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.7.2';
+const APP_VERSION = '0.9.7.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -4406,7 +4406,7 @@ async function syncFromFeed() {
   try {
     while (pages < MAX_PAGES) {
       let feedUrl = state.redditFeedUrl;
-      feedUrl += (feedUrl.includes('?') ? '&' : '?') + 'limit=25';
+      feedUrl += '&limit=25';
       if (after) feedUrl += `&after=${encodeURIComponent(after)}`;
 
       // Route through proxy (required — Reddit blocks direct cross-origin fetches)
