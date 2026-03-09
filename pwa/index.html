@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.2';
+const APP_VERSION = '0.9.8.4';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -775,8 +775,8 @@ let enrichStopped = false;
 
 const ARCTIC_BASE           = 'https://arctic-shift.photon-reddit.com';
 const ARCTIC_BATCH          = 500;
-const ARCTIC_POST_FIELDS    = 'id,title,author,subreddit,selftext,url,score,created_utc,permalink';
-const ARCTIC_COMMENT_FIELDS = 'id,body,author,subreddit,score,created_utc,permalink,link_id';
+const ARCTIC_POST_FIELDS    = 'id,title,author,subreddit,selftext,url,score,created_utc';
+const ARCTIC_COMMENT_FIELDS = 'id,body,author,subreddit,score,created_utc,link_id';
 
 function arcticPostToEnriched(post, item) {
   const enriched = {
@@ -790,11 +790,17 @@ function arcticPostToEnriched(post, item) {
     enriched:       true,
     enrichAttempts: (item.enrichAttempts || 0) + 1,
   };
+  // Arctic Shift doesn't return permalink — build it from subreddit + id
+  if (post.subreddit && post.id) {
+    enriched.permalink = `https://reddit.com/r/${post.subreddit}/comments/${post.id}/`;
+  }
   if (post.url && !post.url.includes('reddit.com/r/')) enriched.url = post.url;
   return enriched;
 }
 
 function arcticCommentToEnriched(comment, item) {
+  // link_id is t3_postid — strip prefix to get post id for permalink
+  const postId = (comment.link_id || '').replace(/^t3_/, '');
   return {
     type:           'comment',
     title:          item.title || 'Saved Comment',
@@ -803,18 +809,20 @@ function arcticCommentToEnriched(comment, item) {
     body:           comment.body || item.body || '',
     score:          comment.score ?? item.score ?? null,
     postCreatedAt:  comment.created_utc ? new Date(comment.created_utc * 1000).toISOString() : item.postCreatedAt || null,
+    // Build best available permalink: /r/sub/comments/postId/_/commentId
+    permalink:      (comment.subreddit && postId && comment.id)
+      ? `https://reddit.com/r/${comment.subreddit}/comments/${postId}/_/${comment.id}/`
+      : item.permalink || '',
     enriched:       true,
     enrichAttempts: (item.enrichAttempts || 0) + 1,
   };
 }
 
 async function arcticFetchPostBatch(items) {
-  const ids = items.map(i => {
-    const rid = i.redditId || '';
-    return rid.startsWith('t3_') ? rid : 't3_' + rid;
-  }).join(',');
-  const url = `${ARCTIC_BASE}/api/posts/ids?ids=${encodeURIComponent(ids)}&fields=${ARCTIC_POST_FIELDS}`;
-  syncLog(`arctic: POST batch — ${items.length} ids, first: ${items[0]?.redditId}`);
+  // Arctic Shift expects bare base36 IDs (no t3_ prefix)
+  const ids = items.map(i => (i.redditId || '').replace(/^t3_/, '')).join(',');
+  const url = `${ARCTIC_BASE}/api/posts/ids?ids=${ids}&fields=${ARCTIC_POST_FIELDS}`;
+  syncLog(`arctic: POST batch — ${items.length} ids, first: ${items[0]?.redditId}, sample url: ${url.slice(0, 120)}`);
   try {
     const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
     if (!res.ok) {
@@ -845,12 +853,10 @@ async function arcticFetchPostBatch(items) {
 }
 
 async function arcticFetchCommentBatch(items) {
-  const ids = items.map(i => {
-    const rid = i.redditId || '';
-    return rid.startsWith('t1_') ? rid : 't1_' + rid;
-  }).join(',');
-  const url = `${ARCTIC_BASE}/api/comments/ids?ids=${encodeURIComponent(ids)}&fields=${ARCTIC_COMMENT_FIELDS}`;
-  syncLog(`arctic: COMMENT batch — ${items.length} ids, first: ${items[0]?.redditId}`);
+  // Arctic Shift expects bare base36 IDs (no t1_ prefix)
+  const ids = items.map(i => (i.redditId || '').replace(/^t1_/, '')).join(',');
+  const url = `${ARCTIC_BASE}/api/comments/ids?ids=${ids}&fields=${ARCTIC_COMMENT_FIELDS}`;
+  syncLog(`arctic: COMMENT batch — ${items.length} ids, first: ${items[0]?.redditId}, sample url: ${url.slice(0, 120)}`);
   try {
     const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
     if (!res.ok) {
