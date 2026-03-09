@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.0';
+const APP_VERSION = '0.9.8.1';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -813,24 +813,35 @@ async function arcticFetchPostBatch(items) {
     const rid = i.redditId || '';
     return rid.startsWith('t3_') ? rid : 't3_' + rid;
   }).join(',');
+  const url = `${ARCTIC_BASE}/api/posts/ids?ids=${encodeURIComponent(ids)}&fields=${ARCTIC_POST_FIELDS}`;
+  syncLog(`arctic: POST batch — ${items.length} ids, first: ${items[0]?.redditId}`);
   try {
-    const res = await fetch(
-      `${ARCTIC_BASE}/api/posts/ids?ids=${encodeURIComponent(ids)}&fields=${ARCTIC_POST_FIELDS}`,
-      { headers: { 'Accept': 'application/json' } }
-    );
-    if (!res.ok) return new Map();
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      syncLog(`arctic: POST batch HTTP ${res.status} — ${body.slice(0, 200)}`, 'error');
+      return new Map();
+    }
     const json = await res.json();
+    syncLog(`arctic: POST batch raw response keys: ${Object.keys(json).join(', ')} | data length: ${Array.isArray(json.data) ? json.data.length : Array.isArray(json) ? json.length : 'not array'}`);
     const posts = json.data || json;
     const map = new Map();
-    if (!Array.isArray(posts)) return map;
+    if (!Array.isArray(posts)) {
+      syncLog(`arctic: POST batch — response is not an array, got: ${JSON.stringify(json).slice(0, 200)}`, 'warn');
+      return map;
+    }
     for (const post of posts) {
       const bareId = post.id || (post.name || '').replace(/^t3_/, '');
       if (!bareId) continue;
       const item = items.find(i => (i.redditId || '').replace(/^t3_/, '') === bareId);
       if (item) map.set(item.id, arcticPostToEnriched(post, item));
     }
+    syncLog(`arctic: POST batch — ${posts.length} returned, ${map.size} matched`);
     return map;
-  } catch (e) { return new Map(); }
+  } catch (e) {
+    syncLog(`arctic: POST batch fetch failed — ${e.message}`, 'error');
+    return new Map();
+  }
 }
 
 async function arcticFetchCommentBatch(items) {
@@ -838,24 +849,35 @@ async function arcticFetchCommentBatch(items) {
     const rid = i.redditId || '';
     return rid.startsWith('t1_') ? rid : 't1_' + rid;
   }).join(',');
+  const url = `${ARCTIC_BASE}/api/comments/ids?ids=${encodeURIComponent(ids)}&fields=${ARCTIC_COMMENT_FIELDS}`;
+  syncLog(`arctic: COMMENT batch — ${items.length} ids, first: ${items[0]?.redditId}`);
   try {
-    const res = await fetch(
-      `${ARCTIC_BASE}/api/comments/ids?ids=${encodeURIComponent(ids)}&fields=${ARCTIC_COMMENT_FIELDS}`,
-      { headers: { 'Accept': 'application/json' } }
-    );
-    if (!res.ok) return new Map();
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      syncLog(`arctic: COMMENT batch HTTP ${res.status} — ${body.slice(0, 200)}`, 'error');
+      return new Map();
+    }
     const json = await res.json();
+    syncLog(`arctic: COMMENT batch raw response keys: ${Object.keys(json).join(', ')} | data length: ${Array.isArray(json.data) ? json.data.length : Array.isArray(json) ? json.length : 'not array'}`);
     const comments = json.data || json;
     const map = new Map();
-    if (!Array.isArray(comments)) return map;
+    if (!Array.isArray(comments)) {
+      syncLog(`arctic: COMMENT batch — response is not an array, got: ${JSON.stringify(json).slice(0, 200)}`, 'warn');
+      return map;
+    }
     for (const comment of comments) {
       const bareId = comment.id || (comment.name || '').replace(/^t1_/, '');
       if (!bareId) continue;
       const item = items.find(i => (i.redditId || '').replace(/^t1_/, '') === bareId);
       if (item) map.set(item.id, arcticCommentToEnriched(comment, item));
     }
+    syncLog(`arctic: COMMENT batch — ${comments.length} returned, ${map.size} matched`);
     return map;
-  } catch (e) { return new Map(); }
+  } catch (e) {
+    syncLog(`arctic: COMMENT batch fetch failed — ${e.message}`, 'error');
+    return new Map();
+  }
 }
 
 // Runs the Arctic Shift bulk pass. Returns items it couldn't resolve
@@ -865,9 +887,13 @@ async function enrichViaArcticShift(toEnrich, onProgress) {
   const comments = toEnrich.filter(i => i.type === 'comment' || (i.redditId || '').startsWith('t1_'));
   const unknown  = toEnrich.filter(i => !posts.includes(i) && !comments.includes(i));
 
+  syncLog(`arctic: starting — ${toEnrich.length} total (${posts.length} posts, ${comments.length} comments, ${unknown.length} unknown)`);
+
   const allBatches = [];
   for (let i = 0; i < posts.length;    i += ARCTIC_BATCH) allBatches.push({ type: 'post',    items: posts.slice(i, i + ARCTIC_BATCH) });
   for (let i = 0; i < comments.length; i += ARCTIC_BATCH) allBatches.push({ type: 'comment', items: comments.slice(i, i + ARCTIC_BATCH) });
+
+  syncLog(`arctic: ${allBatches.length} batch${allBatches.length !== 1 ? 'es' : ''} to process`);
 
   let arcticDone = 0, arcticEnriched = 0;
   const failed = [...unknown];
@@ -892,6 +918,7 @@ async function enrichViaArcticShift(toEnrich, onProgress) {
     await sleep(500); // polite delay — Arctic Shift is a community resource
   }
 
+  syncLog(`arctic: complete — ${arcticEnriched} enriched, ${failed.length} going to Reddit fallback`, arcticEnriched > 0 ? 'ok' : 'warn');
   return failed;
 }
 
