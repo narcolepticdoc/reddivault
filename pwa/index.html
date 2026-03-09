@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.7';
+const APP_VERSION = '0.9.7.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1132,7 +1132,9 @@ async function pullPreferences() {
         await db.config.put({ key: 'confirmDestructive', value: row.value });
       }
     }
+    syncLog(`pullPreferences: ok — ${rows.length} preference${rows.length !== 1 ? 's' : ''} loaded`);
   } catch(e) {
+    syncLog(`pullPreferences: failed — ${e.message}`, 'error');
     console.warn('Preference pull failed:', e);
   }
 }
@@ -1276,21 +1278,52 @@ async function syncFromSupabase() {
         }
       }
 
-      // Rebuild memberships only when something changed (reddit_item_lists has no updated_at)
+      // Reconcile memberships only for lists that changed.
+      // reddit_item_lists has no updated_at, but we now touch the parent list's
+      // updated_at whenever memberships change, so changedLists tells us exactly
+      // which lists need their memberships refreshed.
       if (listsChanged) {
-        const remoteItemLists = await supabaseFetch('/reddit_item_lists?select=*');
         const freshLists = await db.lists.toArray();
         const allLocalItems = await db.items.toArray();
-        await db.item_lists.clear();
-        for (const il of remoteItemLists) {
-          const item = allLocalItems.find(i => i.redditId === il.reddit_id);
-          const list = freshLists.find(l => l.name === il.list_name);
-          if (!item || !list) continue;
-          await db.item_lists.add({ itemId: item.id, listId: list.id });
+
+        // Determine which static lists need membership reconciliation
+        const listsToReconcile = !isDelta
+          ? freshLists.filter(l => l.type === 'static')
+          : changedLists
+              .filter(l => l.type === 'static')
+              .map(l => freshLists.find(fl => fl.name === l.name))
+              .filter(Boolean);
+
+        for (const list of listsToReconcile) {
+          const remoteMembers = await supabaseFetch(
+            `/reddit_item_lists?list_name=eq.${encodeURIComponent(list.name)}&select=reddit_id`
+          );
+          const remoteMemberIds = new Set(remoteMembers.map(r => r.reddit_id));
+
+          // Get current local memberships for this list
+          const localMemberships = await db.item_lists.where('listId').equals(list.id).toArray();
+          const localMemberRedditIds = new Set(
+            localMemberships.map(il => allLocalItems.find(i => i.id === il.itemId)?.redditId).filter(Boolean)
+          );
+
+          // Add missing
+          for (const redditId of remoteMemberIds) {
+            if (!localMemberRedditIds.has(redditId)) {
+              const item = allLocalItems.find(i => i.redditId === redditId);
+              if (item) await db.item_lists.add({ itemId: item.id, listId: list.id });
+            }
+          }
+          // Remove stale
+          for (const il of localMemberships) {
+            const redditId = allLocalItems.find(i => i.id === il.itemId)?.redditId;
+            if (redditId && !remoteMemberIds.has(redditId)) {
+              await db.item_lists.delete(il.id);
+            }
+          }
         }
-        syncLog(`syncFromSupabase: memberships rebuilt — ${remoteItemLists.length} entries`);
+        syncLog(`syncFromSupabase: memberships reconciled — ${listsToReconcile.length} lists`);
       } else {
-        syncLog('syncFromSupabase: lists unchanged, skipping membership rebuild');
+        syncLog('syncFromSupabase: lists unchanged, skipping membership reconciliation');
       }
 
       syncLog(`syncFromSupabase: lists synced — ${changedLists.length} changed`);
@@ -1343,8 +1376,10 @@ async function pushToSupabase(items) {
   }));
   try {
     await supabaseFetch('/reddit_saves?on_conflict=reddit_id', 'POST', payload);
+    syncLog(`push: ${items.length} item${items.length !== 1 ? 's' : ''} pushed to cloud`, 'ok');
     await markClean();
   } catch(e) {
+    syncLog(`push: failed — ${e.message}`, 'error');
     console.warn('Push failed:', e);
   }
 }
@@ -1363,15 +1398,8 @@ async function pushListsToSupabase() {
         is_tag: l.isTag || false, tag_name: l.tagName || '',
         created_at: l.createdAt
       }));
-      try {
-        await supabaseFetch('/reddit_lists?on_conflict=name', 'POST', fullPayload);
-      } catch(colErr) {
-        syncLog(`pushListsToSupabase: tag columns failed, retrying legacy — ${colErr.message}`, 'warn');
-        const legacyPayload = lists.map(l => ({
-          name: l.name, type: l.type, query: l.query || '', created_at: l.createdAt
-        }));
-        await supabaseFetch('/reddit_lists?on_conflict=name', 'POST', legacyPayload);
-      }
+      await supabaseFetch('/reddit_lists?on_conflict=name', 'POST', fullPayload);
+      syncLog(`pushListsToSupabase: ${lists.length} list${lists.length !== 1 ? 's' : ''} upserted`);
     }
 
     for (const list of lists) {
@@ -1384,6 +1412,14 @@ async function pushListsToSupabase() {
         const payload = memberRedditIds.map(reddit_id => ({ reddit_id, list_name: list.name }));
         await supabaseFetch('/reddit_item_lists?on_conflict=reddit_id,list_name', 'POST', payload);
       }
+      // Touch the list's updated_at so the moddatetime trigger fires — this is what
+      // lets the delta pull detect that memberships changed for this list.
+      await supabaseFetch(
+        `/reddit_lists?name=eq.${encodeURIComponent(list.name)}`,
+        'PATCH',
+        { updated_at: new Date().toISOString() }
+      );
+      syncLog(`pushListsToSupabase: memberships pushed for "${list.name}" (${memberRedditIds.length} members)`);
     }
     syncLog(`pushListsToSupabase: ok — ${lists.length} lists`, 'ok');
     state.syncStatus = 'connected';
@@ -4366,6 +4402,7 @@ async function syncFromFeed() {
   const existing = new Set(state.items.map(i => i.redditId));
   const permanentlyDeleted = new Set(state.items.filter(i => i.isPermanentlyDeleted).map(i => i.redditId));
 
+  syncLog('feedSync: starting');
   try {
     while (pages < MAX_PAGES) {
       let feedUrl = state.redditFeedUrl;
@@ -4382,6 +4419,7 @@ async function syncFromFeed() {
       const children = json?.data?.children || [];
       if (children.length === 0) break; // no more items
       pages++;
+      syncLog(`feedSync: page ${pages} — ${children.length} items from Reddit, ${existing.size} known locally`);
 
       const newItems = [];
       for (const child of children) {
@@ -4423,6 +4461,7 @@ async function syncFromFeed() {
           await pushToSupabase(newItems);
         }
         added += newItems.length;
+        syncLog(`feedSync: added ${newItems.length} new items (${skipped} skipped on this page)`);
       }
 
       // Pagination — stop if no more pages or we hit all-known items
@@ -4430,7 +4469,10 @@ async function syncFromFeed() {
       if (!after) break;
 
       // If entire page was skipped (all known), stop — we've reached existing saves
-      if (newItems.length === 0 && children.length > 0) break;
+      if (newItems.length === 0 && children.length > 0) {
+        syncLog('feedSync: full page of known items — stopping pagination');
+        break;
+      }
 
       await sleep(300); // be gentle
     }
@@ -4438,16 +4480,22 @@ async function syncFromFeed() {
     await loadData();
     state.feedSyncResult = { added, skipped, pages };
     await db.config.put({ key: 'lastFeedSync', value: new Date().toISOString() });
+
     if (added > 0 && skipped === 0 && pages >= MAX_PAGES) {
+      const msg = `${added} items added but no overlap found — may have unseen saves beyond Reddit's limit`;
+      syncLog(`feedSync: ⚠️ ${msg}`, 'warn');
       showToast(`⚠️ ${added} items added but no overlap found — you may have unseen saves beyond Reddit's limit. Consider a fresh CSV export.`, 'warning');
     } else if (added > 0) {
+      syncLog(`feedSync: complete — ${added} new item${added !== 1 ? 's' : ''} added, ${skipped} already known`, 'ok');
       showToast(`✅ Sync complete — ${added} new item${added !== 1 ? 's' : ''} added`, 'success');
     } else {
+      syncLog(`feedSync: up to date — no new items (${skipped} already known, ${pages} page${pages !== 1 ? 's' : ''} checked)`, 'ok');
       showToast(`✅ Up to date — no new items found`, 'success');
     }
 
   } catch(e) {
     state.feedSyncResult = { added, skipped, pages, error: e.message };
+    syncLog(`feedSync: failed — ${e.message}`, 'error');
     showToast(`Sync failed: ${e.message}`, 'error');
   }
 
