@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.4';
+const APP_VERSION = '0.9.8.5';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -928,7 +928,66 @@ async function enrichViaArcticShift(toEnrich, onProgress) {
   return failed;
 }
 
-async function enrichAllItems(retryFailed = false) {
+async function enrichViaArcticShiftOnly() {
+  if (state.enriching) return;
+  enrichStopped = false;
+
+  const allItems = await db.items.toArray();
+  const toEnrich = allItems.filter(i => i.enrichStatus === 'pending');
+
+  if (toEnrich.length === 0) {
+    showToast('Nothing to enrich ✓', 'success');
+    return;
+  }
+
+  state.enriching = true;
+  state.enrichProgress = { phase: 'arctic', done: 0, total: toEnrich.length, enriched: 0, failed: 0, rateLimitHits: 0 };
+  render();
+
+  let arcticEnriched = 0;
+  const onProgress = (done, total, enriched) => {
+    arcticEnriched = enriched;
+    state.enrichProgress = { phase: 'arctic', done, total, enriched, failed: 0, rateLimitHits: 0 };
+    const el = document.getElementById('enrich-progress-details');
+    if (!el) return;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    el.innerHTML = `
+      <div style="font-size:11px;font-weight:600;color:var(--accent2);margin-bottom:6px;letter-spacing:0.03em">
+        ⚡ Arctic Shift bulk lookup
+      </div>
+      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+      <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">
+        ${done.toLocaleString()} / ${total.toLocaleString()} checked &nbsp;·&nbsp; ${enriched.toLocaleString()} enriched
+      </div>
+    `;
+  };
+
+  onProgress(0, toEnrich.length, 0);
+  const missed = await enrichViaArcticShift(toEnrich, onProgress);
+
+  state.enriching = false;
+  state.enrichProgress = { done: 0, total: 0, enriched: 0, failed: 0, rateLimitHits: 0 };
+  await loadData();
+
+  if (state.supabaseUrl && arcticEnriched > 0) {
+    const enrichedItems = await db.items.filter(i => i.enriched && i.title).toArray();
+    for (let i = 0; i < enrichedItems.length; i += 200) {
+      await pushToSupabase(enrichedItems.slice(i, i + 200));
+    }
+  }
+
+  const missedCount = missed.length;
+  if (arcticEnriched === 0 && missedCount > 0) {
+    showToast(`Arctic Shift returned nothing — try Reddit enrichment for ${missedCount} items`, 'warning');
+  } else if (missedCount > 0) {
+    showToast(`⚡ ${arcticEnriched.toLocaleString()} enriched via Arctic Shift · ${missedCount} not found — use Reddit enrichment for the rest`, 'success');
+  } else {
+    showToast(`⚡ All ${arcticEnriched.toLocaleString()} items enriched via Arctic Shift ✓`, 'success');
+  }
+  render();
+}
+
+async function enrichViaRedditOnly(retryFailed = false) {
   if (state.enriching) return;
   enrichStopped = false;
 
@@ -947,66 +1006,45 @@ async function enrichAllItems(retryFailed = false) {
   const toEnrich = allItems.filter(i => i.enrichStatus === 'pending');
 
   if (toEnrich.length === 0) {
-    showToast('All items already enriched ✓', 'success');
+    showToast('Nothing to enrich ✓', 'success');
     return;
   }
 
   state.enriching = true;
-  state.enrichProgress = { done: 0, total: toEnrich.length, enriched: 0, failed: 0, rateLimitHits: 0 };
+  state.enrichProgress = { phase: 'reddit', done: 0, total: toEnrich.length, enriched: 0, failed: 0, rateLimitHits: 0 };
   render();
 
-  // ── Phase 1: Arctic Shift bulk pass ──────────────────────────────────────
-  let arcticEnriched = 0;
-
-  const setArcticProgress = (done, total, enriched) => {
-    arcticEnriched = enriched;
-    const el = document.getElementById('enrich-progress-details');
-    if (!el) return;
-    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    el.innerHTML = `
-      <div style="font-size:11px;font-weight:600;color:var(--accent2);margin-bottom:6px;letter-spacing:0.03em">
-        ⚡ PHASE 1 — Arctic Shift bulk lookup
-      </div>
-      <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-      <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">
-        ${done.toLocaleString()} / ${total.toLocaleString()} checked &nbsp;·&nbsp; ${enriched.toLocaleString()} enriched instantly
-      </div>
-    `;
-  };
-
-  setArcticProgress(0, toEnrich.length, 0);
-  const redditFallback = await enrichViaArcticShift(toEnrich, setArcticProgress);
-
-  // ── Phase 2: Reddit per-item fallback for what Arctic Shift missed ────────
   const delay   = getEnrichDelay(retryFailed);
   const rlPause = getRateLimitPause();
-  let enrichedCount    = arcticEnriched;
+  let enrichedCount    = 0;
   let failedCount      = 0;
   let rateLimitHits    = 0;
   let consecutiveNulls = 0;
 
-  for (let i = 0; i < redditFallback.length; i++) {
+  for (let i = 0; i < toEnrich.length; i++) {
     if (enrichStopped) {
       showToast('Enrichment paused — click Start to resume', 'warning');
       break;
     }
 
-    const item = redditFallback[i];
+    const item = toEnrich[i];
+    const phaseDone  = i + 1;
+    const phaseTotal = toEnrich.length;
+    const pct        = Math.round((phaseDone / phaseTotal) * 100);
+    const minsLeft   = Math.round(((phaseTotal - phaseDone) * delay) / 60000);
 
-    // Phase 2 progress display
+    // Keep state in sync so render() can reconstruct the progress display
+    state.enrichProgress = { phase: 'reddit', done: phaseDone, total: phaseTotal, enriched: enrichedCount, failed: failedCount, rateLimitHits, minsLeft };
+
     const el = document.getElementById('enrich-progress-details');
     if (el) {
-      const phaseDone  = i + 1;
-      const phaseTotal = redditFallback.length;
-      const pct        = Math.round((phaseDone / phaseTotal) * 100);
-      const minsLeft   = Math.round(((phaseTotal - phaseDone) * delay) / 60000);
       el.innerHTML = `
         <div style="font-size:11px;font-weight:600;color:var(--warning);margin-bottom:6px;letter-spacing:0.03em">
-          🐢 PHASE 2 — Reddit fallback (${phaseTotal.toLocaleString()} items)
+          🐢 Reddit enrichment (${phaseTotal.toLocaleString()} items)
         </div>
         <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
         <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">
-          ${phaseDone} / ${phaseTotal} &nbsp;·&nbsp; ${enrichedCount.toLocaleString()} total enriched &nbsp;·&nbsp; ${failedCount} unavailable
+          ${phaseDone} / ${phaseTotal} &nbsp;·&nbsp; ${enrichedCount.toLocaleString()} enriched &nbsp;·&nbsp; ${failedCount} unavailable
           ${rateLimitHits > 0 ? ` &nbsp;·&nbsp; <span style="color:var(--warning)">⚠ ${rateLimitHits} rate limit${rateLimitHits > 1 ? 's' : ''}</span>` : ''}
           ${minsLeft > 1 ? ` &nbsp;·&nbsp; ~${minsLeft} min left` : ''}
         </div>
@@ -1046,7 +1084,6 @@ async function enrichAllItems(retryFailed = false) {
     await sleep(delay);
   }
 
-  // ── Wrap up ───────────────────────────────────────────────────────────────
   state.enriching = false;
   state.enrichProgress = { done: 0, total: 0, enriched: 0, failed: 0, rateLimitHits: 0 };
   state.lastRunRateLimitHits = rateLimitHits;
@@ -1061,10 +1098,9 @@ async function enrichAllItems(retryFailed = false) {
   }
 
   const remaining = await db.items.filter(i => !i.enriched).count();
-  const rlMsg     = rateLimitHits > 0 ? ` · ⚠ ${rateLimitHits} rate limit${rateLimitHits > 1 ? 's' : ''}` : '';
-  const arcticMsg = arcticEnriched > 0 ? ` (${arcticEnriched.toLocaleString()} via Arctic Shift)` : '';
+  const rlMsg = rateLimitHits > 0 ? ` · ⚠ ${rateLimitHits} rate limit${rateLimitHits > 1 ? 's' : ''}` : '';
   showToast(
-    `✓ Enriched ${enrichedCount}${arcticMsg} · ${failedCount} unavailable${remaining > 0 ? ` · ${remaining} remaining` : ''}${rlMsg}`,
+    `✓ ${enrichedCount} enriched · ${failedCount} unavailable${remaining > 0 ? ` · ${remaining} remaining` : ''}${rlMsg}`,
     rateLimitHits > 0 ? 'warning' : enrichedCount > 0 ? 'success' : 'warning'
   );
   render();
@@ -4154,19 +4190,44 @@ function renderSettings() {
 
         return `
           ${pendingCount > 0 || state.enriching ? `
-            <div style="background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.3);border-radius:10px;padding:12px;margin-bottom:10px">
-              <div style="font-weight:600;color:var(--warning);margin-bottom:6px;font-size:13px">⚡ ${pendingCount} item${pendingCount !== 1 ? 's' : ''} need enrichment</div>
+            <!-- Arctic Shift block -->
+            <div style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.3);border-radius:10px;padding:12px;margin-bottom:10px">
+              <div style="font-weight:600;color:var(--accent2);margin-bottom:4px;font-size:13px">⚡ Arctic Shift</div>
               <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
-                ${state.enrichReqPerMin} req/min · 1 every ${normalDelaySecs}s · ~${enrichTimeEstimate(pendingCount || 1000, state.enrichReqPerMin)}
+                Bulk lookup — enriches thousands in seconds. Try this first.
               </div>
-              ${state.enriching ? `
+              ${state.enriching && state.enrichProgress.phase === 'arctic' ? `
                 <div id="enrich-progress-details">
-                  <div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div>
-                  <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">Starting...</div>
+                  <div class="progress-bar"><div class="progress-fill" style="width:${state.enrichProgress.total > 0 ? Math.round((state.enrichProgress.done / state.enrichProgress.total) * 100) : 0}%"></div></div>
+                  <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">
+                    ${state.enrichProgress.done.toLocaleString()} / ${state.enrichProgress.total.toLocaleString()} checked &nbsp;·&nbsp; ${(state.enrichProgress.enriched||0).toLocaleString()} enriched
+                  </div>
                 </div>
                 <button class="btn btn-danger" style="width:100%;justify-content:center;margin-top:10px" onclick="stopEnrichment()">⏹ Pause</button>
-              ` : `
-                <button class="btn btn-warning" style="width:100%;justify-content:center" onclick="enrichAllItems(false)">⚡ Start Enrichment</button>
+              ` : state.enriching ? `` : `
+                <button class="btn btn-secondary" style="width:100%;justify-content:center" onclick="enrichViaArcticShiftOnly()">⚡ Enrich via Arctic Shift</button>
+              `}
+            </div>
+
+            <!-- Reddit block -->
+            <div style="background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.3);border-radius:10px;padding:12px;margin-bottom:10px">
+              <div style="font-weight:600;color:var(--warning);margin-bottom:4px;font-size:13px">🐢 Reddit</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+                ${pendingCount.toLocaleString()} item${pendingCount !== 1 ? 's' : ''} · ${state.enrichReqPerMin} req/min · ~${enrichTimeEstimate(pendingCount || 1000, state.enrichReqPerMin)}
+                &nbsp;— may pick up items Arctic Shift missed, but can take hours.
+              </div>
+              ${state.enriching && state.enrichProgress.phase === 'reddit' ? `
+                <div id="enrich-progress-details">
+                  <div class="progress-bar"><div class="progress-fill" style="width:${state.enrichProgress.total > 0 ? Math.round((state.enrichProgress.done / state.enrichProgress.total) * 100) : 0}%"></div></div>
+                  <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:4px">
+                    ${state.enrichProgress.done} / ${state.enrichProgress.total} &nbsp;·&nbsp; ${(state.enrichProgress.enriched||0).toLocaleString()} enriched &nbsp;·&nbsp; ${state.enrichProgress.failed||0} unavailable
+                    ${state.enrichProgress.rateLimitHits > 0 ? ` &nbsp;·&nbsp; <span style="color:var(--warning)">⚠ ${state.enrichProgress.rateLimitHits} rate limit${state.enrichProgress.rateLimitHits > 1 ? 's' : ''}</span>` : ''}
+                    ${(state.enrichProgress.minsLeft||0) > 1 ? ` &nbsp;·&nbsp; ~${state.enrichProgress.minsLeft} min left` : ''}
+                  </div>
+                </div>
+                <button class="btn btn-danger" style="width:100%;justify-content:center;margin-top:10px" onclick="stopEnrichment()">⏹ Pause</button>
+              ` : state.enriching ? `` : `
+                <button class="btn btn-warning" style="width:100%;justify-content:center" onclick="enrichViaRedditOnly(false)">🐢 Enrich via Reddit</button>
               `}
             </div>
           ` : ''}
@@ -4179,7 +4240,7 @@ function renderSettings() {
                   ? ' · <span style="color:var(--success)">Last run clean</span>'
                   : ` · <span style="color:var(--warning)">Last run: ${state.lastRunRateLimitHits} rate limit${state.lastRunRateLimitHits !== 1 ? 's' : ''}</span>`) : ''}
               </div>
-              <button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="enrichAllItems(true)">🔄 Start Retry Run</button>
+              <button class="btn btn-ghost" style="width:100%;justify-content:center" onclick="enrichViaRedditOnly(true)">🔄 Retry via Reddit</button>
               ${thresholdCount > 0 ? `
                 <button class="btn ${lastRunClean ? 'btn-danger' : 'btn-ghost'} btn-sm" style="width:100%;justify-content:center;margin-top:8px" onclick="markAttemptedAsDead()">
                   ⚰️ Mark ${thresholdCount} as dead ${!lastRunClean ? '(last run had rate limits)' : ''}
