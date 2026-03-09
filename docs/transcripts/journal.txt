@@ -117,3 +117,8 @@
 
 
 
+
+
+=== Journal Entry 2026-03-09T00:00:00.000000+00:00 ===
+2026-03-09-update-docs-version-v0-9-7-5.txt
+[Documentation maintenance session: updated CLAUDE.md version to v0.9.7.5, added CHANGELOG entry for the Lists toolbar dropdown button change (merged "+ Static" / "+ Smart" into a single "+ New" dropdown to reduce iOS crowding).]

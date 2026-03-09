@@ -5,6 +5,14 @@ Newest releases at the top.
 
 ---
 
+## [0.9.7.5] – 2026-03-09
+### Changed
+- Lists tab toolbar: merged separate "+ Static" and "+ Smart" buttons into a single
+  "+ New" button with an anchored dropdown menu. Reduces crowding on iOS when the
+  Separate toggle and order-toggle button are also visible.
+
+---
+
 ## [0.9.7.4] – 2026-03-09
 ### Added
 - Lists tab: order-toggle button ("✦ Smart ↑" / "📋 Static ↑") when Separate mode is

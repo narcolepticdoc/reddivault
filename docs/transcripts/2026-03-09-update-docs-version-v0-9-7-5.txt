@@ -1,0 +1,27 @@
+Session: update-docs-version-c2b57
+Date: 2026-03-09
+Branch: claude/update-docs-version-c2b57
+Versions covered: v0.9.7.5
+
+---
+
+## Summary
+
+Documentation and changelog maintenance session to bring CLAUDE.md and CHANGELOG.md
+in sync with the most recent code changes already committed to master.
+
+## Changes made in previous sessions (now documented)
+
+### v0.9.7.5 (commit ffd5e4c)
+- Lists tab toolbar: replaced separate "+ Static" and "+ Smart" buttons with a single
+  "+ New" dropdown button that shows "Static list" and "Smart list" options on tap.
+- Reduces toolbar crowding on iOS, especially when Separate mode and the order-toggle
+  button are also visible.
+- Change confined to pwa/index.html (~29 lines added, 3 removed).
+
+## Documentation updates this session
+
+- CLAUDE.md: bumped "Current version" from v0.9.7.4 → v0.9.7.5
+- CHANGELOG.md: added [0.9.7.5] entry describing the dropdown button change
+- docs/transcripts/: created this file
+- docs/transcripts/journal.txt: added journal entry for this session
