@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.7.6';
+const APP_VERSION = '0.9.7.7';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -3805,25 +3805,44 @@ function renderSettings() {
           <div class="form-group">
             <label>CORS Proxy</label>
             <div style="display:flex;gap:8px;margin-bottom:8px">
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${state.feedProxyType==='cloudflare'?'border-color:var(--accent2);background:rgba(99,102,241,0.08)':''}">
+              <label id="proxy-label-cloudflare" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${state.feedProxyType==='cloudflare'?'border-color:var(--accent2);background:rgba(99,102,241,0.08)':''}">
                 <input type="radio" name="proxy-type" value="cloudflare" ${state.feedProxyType==='cloudflare'?'checked':''}
-                  onchange="state.feedProxyType='cloudflare';render()">
+                  onchange="
+                    state.feedProxyType='cloudflare';
+                    db.config.put({key:'feedProxyType',value:'cloudflare'});
+                    document.getElementById('proxy-worker-row').style.display='';
+                    document.getElementById('proxy-corsfix-note').style.display='none';
+                    document.getElementById('proxy-label-cloudflare').style.borderColor='var(--accent2)';
+                    document.getElementById('proxy-label-cloudflare').style.background='rgba(99,102,241,0.08)';
+                    document.getElementById('proxy-label-corsfix').style.borderColor='var(--border)';
+                    document.getElementById('proxy-label-corsfix').style.background='';
+                  ">
                 ☁️ Cloudflare Worker
               </label>
-              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${state.feedProxyType==='corsfix'?'border-color:var(--accent2);background:rgba(99,102,241,0.08)':''}">
+              <label id="proxy-label-corsfix" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${state.feedProxyType==='corsfix'?'border-color:var(--accent2);background:rgba(99,102,241,0.08)':''}">
                 <input type="radio" name="proxy-type" value="corsfix" ${state.feedProxyType==='corsfix'?'checked':''}
-                  onchange="state.feedProxyType='corsfix';render()">
+                  onchange="
+                    state.feedProxyType='corsfix';
+                    db.config.put({key:'feedProxyType',value:'corsfix'});
+                    document.getElementById('proxy-worker-row').style.display='none';
+                    document.getElementById('proxy-corsfix-note').style.display='';
+                    document.getElementById('proxy-label-corsfix').style.borderColor='var(--accent2)';
+                    document.getElementById('proxy-label-corsfix').style.background='rgba(99,102,241,0.08)';
+                    document.getElementById('proxy-label-cloudflare').style.borderColor='var(--border)';
+                    document.getElementById('proxy-label-cloudflare').style.background='';
+                  ">
                 🔀 CORSfix
               </label>
             </div>
-            ${state.feedProxyType === 'cloudflare' ? `
+            <div id="proxy-worker-row" ${state.feedProxyType==='corsfix'?'style="display:none"':''}>
               <input class="input" id="feed-proxy-url" placeholder="https://your-worker.workers.dev"
                 value="${escHtml(state.feedProxyUrl)}" style="font-size:16px">
               <span style="font-size:11px;color:var(--text-muted)">Your deployed Cloudflare Worker URL</span>
-            ` : `
+            </div>
+            <div id="proxy-corsfix-note" ${state.feedProxyType!=='corsfix'?'style="display:none"':''}>
               <input id="feed-proxy-url" type="hidden" value="">
               <span style="font-size:11px;color:var(--text-muted)">Uses proxy.corsfix.com — no setup required. Free tier, no account needed.</span>
-            `}
+            </div>
           </div>
           <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center">Save Feed Settings</button>
         </div>
