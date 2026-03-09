@@ -5,6 +5,17 @@ Newest releases at the top.
 
 ---
 
+## [0.9.7.6] – 2026-03-09
+### Added
+- CORS proxy selector in Settings → Sync New Saves → Feed connection settings:
+  choose between **Cloudflare Worker** (existing behaviour, requires worker URL) and
+  **CORSfix** (no setup required — uses `proxy.corsfix.com`).
+- `_buildProxyUrl(feedUrl)` helper centralises proxy URL construction for both modes.
+- `feedProxyType` state field (`'cloudflare'` | `'corsfix'`, default `'cloudflare'`),
+  persisted to IndexedDB, pushed/pulled via `user_preferences` in Supabase.
+
+---
+
 ## [0.9.7.5] – 2026-03-09
 ### Changed
 - Lists tab toolbar: merged separate "+ Static" and "+ Smart" buttons into a single
@@ -23,9 +34,55 @@ Newest releases at the top.
 
 ## [0.9.7.3] – 2026-03-08
 ### Added
-- Wrangler `wrangler.toml` for Cloudflare Worker CI/CD deployment.
+- `wrangler.toml` for Cloudflare Worker CI/CD deployment.
 ### Fixed
 - Removed unnecessary URL manipulation in feed sync.
+
+---
+
+## [0.9.7.2] – 2026-03-09
+### Added
+- Comprehensive sync logging across previously silent code paths:
+  - `syncFromFeed`: logs start, per-page item counts, pagination stop reason,
+    and a detailed completion line (added / skipped / pages checked). "Up to date"
+    result now appears in the sync log.
+  - `pushToSupabase`: logs item count on success, error message on failure.
+  - `pullPreferences`: logs preference count on success, error on failure.
+  - `pushListsToSupabase`: logs upsert count, per-list membership push with member
+    count; removed legacy tag-columns fallback (single-user install, no migration needed).
+
+---
+
+## [0.9.7.1] – 2026-03-09
+### Fixed
+- Static list membership delta sync: push now touches the list row's `updated_at`
+  after writing memberships, so the moddatetime trigger fires and the delta pull
+  detects the change.
+- Pull-side membership reconciliation: changed from full clear+rebuild to per-list
+  add/remove diff (only for lists flagged as changed by `updated_at`).
+
+---
+
+## [0.9.7.0] – 2026-03-09
+### Added
+- Delta sync: items and lists pulls now use `updated_at=gt.{lastSync}` filter,
+  fetching only rows modified since the last successful pull.
+- `lastSync` timestamp is recorded at pull **start** (not end) to avoid missing
+  rows modified during a slow pull.
+- "Already up to date" toast when delta returns zero changes.
+
+---
+
+## [0.9.6.4] – 2026-03-09
+### Added
+- Search: word-boundary matching by default — bare words only match whole words
+  (`witch` does not match `switch`).
+- Search: wildcard syntax — `word*` (prefix), `*word` (suffix), `*word*` (substring),
+  applied per word not per field.
+- Search: bare-comma OR groups (`a, b, c` equivalent to `(a, b, c)`); negation in
+  bare-comma OR falls through to AND.
+- Search: wildcards work inside OR groups.
+- Search: collapsible syntax tips panel below search bar.
 
 ---
 
@@ -110,8 +167,8 @@ Newest releases at the top.
 
 ## [0.7.6 – 0.7.12] – 2026-03-05
 ### Added
-- Feed sync (`syncFeed()`): fetches Reddit private RSS via proxy, parses JSON, upserts
-  new items. Auto-sync on configurable interval.
+- Feed sync (`syncFromFeed()`): fetches Reddit private RSS via proxy, parses JSON,
+  upserts new items. Auto-sync on configurable interval.
 - Vercel serverless proxy (later replaced by Cloudflare Worker).
 
 ---
@@ -136,7 +193,7 @@ Newest releases at the top.
 ## [0.3.6 – 0.4.1] – 2026-03-04
 ### Added
 - `enrichStatus` field: `pending` / `enriched` / `dead`.
-- Rate limiting for enrichment: configurable RPM with 7.5 s default delay.
+- Rate limiting for enrichment: configurable RPM with 7.5s default delay.
 - Exponential backoff on failed enrichment requests.
 
 ---

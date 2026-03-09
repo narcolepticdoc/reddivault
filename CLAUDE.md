@@ -19,7 +19,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 - **`vercel.json`** — Vercel deployment config (auto-deploys from GitHub)
 
 **Live URL:** https://reddivault.vercel.app
-**Current version:** v0.9.7.5
+**Current version:** v0.9.7.6
 
 ---
 
@@ -78,7 +78,7 @@ user_preferences   -- key-value settings sync across devices
 `id, reddit_id, list_name` — unique constraint on `(reddit_id, list_name)`
 
 ### `user_preferences` columns
-`key, value, updated_at` — stores: `redditFeedUrl`, `feedProxyUrl`, `confirmDestructive`, `last_modified`
+`key, value, updated_at` — stores: `redditFeedUrl`, `feedProxyUrl`, `feedProxyType`, `confirmDestructive`, `last_modified`
 
 ---
 
@@ -123,8 +123,6 @@ state.tagMode        // 'AND' | 'OR' for tag chip filtering
 state.activeTagIds   // array of list IDs being used as tag filters
 state.sortBy         // 'savedAt' | 'postCreatedAt' | 'affinity' | 'score' | 'random'
 state.view           // 'browse' | 'lists' | 'settings' | 'trash' | 'deleted'
-state.listSeparate   // bool — split lists view into smart/static sections
-state.listSmartFirst // bool — smart section above static when separated (togglable button)
 state.isDirty        // local changes not yet pushed to Supabase
 state.supabaseUrl    // Supabase project URL
 state.supabaseKey    // Supabase anon key
@@ -186,7 +184,13 @@ Helper: `_parseWildcard(raw)` — parses a single term string into `{ value, exa
 ## Sync System
 
 ### Feed sync (auto / manual)
-`syncFeed()` — fetches Reddit RSS feed via Cloudflare proxy, parses JSON, upserts new items. Skips items already in the DB and items that are `isPermanentlyDeleted`. Runs on interval if `state.autoSync` is enabled.
+`syncFromFeed()` — fetches Reddit RSS feed via a configurable CORS proxy, parses JSON, upserts new items. Skips items already in the DB and items that are `isPermanentlyDeleted`. Runs on interval if `state.autoFeedSync` is enabled.
+
+**Proxy modes** — controlled by `state.feedProxyType` (`'cloudflare'` | `'corsfix'`, default `'cloudflare'`):
+- `'cloudflare'` — uses the user's own deployed Cloudflare Worker at `state.feedProxyUrl`. URL format: `{workerUrl}?url={encodedFeedUrl}`.
+- `'corsfix'` — uses the public `proxy.corsfix.com` service, no setup required. URL format: `https://proxy.corsfix.com/?{feedUrl}` (no encoding, no key).
+
+`_buildProxyUrl(feedUrl)` — helper that constructs the correct proxy URL based on `state.feedProxyType`. Always use this instead of constructing the URL manually.
 
 ### Cloud push
 `supabasePush(items)` — upserts items to `reddit_saves` using `on_conflict=reddit_id`.
