@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.7.3';
+const APP_VERSION = '0.9.7.4';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -430,6 +430,7 @@ let state = {
   // Lists tab
   listView: 'all',         // 'all' | list id
   listSeparate: false,     // separate smart vs static
+  listSmartFirst: true,    // smart lists above static when separated
   confirmDestructive: true, // confirm before trash/remove actions
   disableZoom: true,        // prevent iOS pinch-to-zoom
   autoFeedSync: false,        // auto-sync feed on open/foreground
@@ -3659,6 +3660,10 @@ function renderLists() {
   const sorted = [...allLists].sort((a,b) => a.name.localeCompare(b.name));
   const smarts = sorted.filter(l => l.type === 'smart');
   const statics = sorted.filter(l => l.type === 'static');
+  const firstGroup  = state.listSmartFirst ? smarts  : statics;
+  const secondGroup = state.listSmartFirst ? statics : smarts;
+  const firstLabel  = state.listSmartFirst ? '✦ SMART LISTS'  : '📋 STATIC LISTS';
+  const secondLabel = state.listSmartFirst ? '📋 STATIC LISTS' : '✦ SMART LISTS';
 
   return `
     <div class="section-header">
@@ -3668,6 +3673,11 @@ function renderLists() {
           <button class="btn btn-ghost btn-sm" onclick="state.listSeparate=!state.listSeparate;render()"
             style="${state.listSeparate?'color:var(--accent2)':''}">
             ${state.listSeparate ? '⊟ Merge' : '⊞ Separate'}
+          </button>` : ''}
+        ${state.listSeparate ? `
+          <button class="btn btn-ghost btn-sm" onclick="state.listSmartFirst=!state.listSmartFirst;render()"
+            title="Toggle which list type appears first">
+            ${state.listSmartFirst ? '✦ Smart ↑' : '📋 Static ↑'}
           </button>` : ''}
         <button class="btn btn-secondary btn-sm" onclick="showCreateList('static')">+ Static</button>
         <button class="btn btn-primary btn-sm" onclick="showCreateList('smart')">+ Smart</button>
@@ -3681,13 +3691,13 @@ function renderLists() {
         <p>Create a <strong>Static list</strong> to manually collect posts, or a <strong>Smart list</strong> that auto-populates from a saved search.</p>
       </div>
     ` : separated ? `
-      ${smarts.length > 0 ? `
-        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">✦ SMART LISTS</div>
-        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${smarts.map(renderListCard).join('')}</div>
+      ${firstGroup.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${firstLabel}</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${firstGroup.map(renderListCard).join('')}</div>
       ` : ''}
-      ${statics.length > 0 ? `
-        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">📋 STATIC LISTS</div>
-        <div style="display:flex;flex-direction:column;gap:8px">${statics.map(renderListCard).join('')}</div>
+      ${secondGroup.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${secondLabel}</div>
+        <div style="display:flex;flex-direction:column;gap:8px">${secondGroup.map(renderListCard).join('')}</div>
       ` : ''}
     ` : `
       <div style="display:flex;flex-direction:column;gap:8px">${sorted.map(renderListCard).join('')}</div>
