@@ -19,7 +19,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 - **`vercel.json`** — Vercel deployment config (auto-deploys from GitHub)
 
 **Live URL:** https://reddivault.vercel.app
-**Current version:** v0.9.7.3
+**Current version:** v0.9.7.4
 
 ---
 
@@ -123,6 +123,8 @@ state.tagMode        // 'AND' | 'OR' for tag chip filtering
 state.activeTagIds   // array of list IDs being used as tag filters
 state.sortBy         // 'savedAt' | 'postCreatedAt' | 'affinity' | 'score' | 'random'
 state.view           // 'browse' | 'lists' | 'settings' | 'trash' | 'deleted'
+state.listSeparate   // bool — split lists view into smart/static sections
+state.listSmartFirst // bool — smart section above static when separated (togglable button)
 state.isDirty        // local changes not yet pushed to Supabase
 state.supabaseUrl    // Supabase project URL
 state.supabaseKey    // Supabase anon key
