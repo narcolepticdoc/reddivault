@@ -185,23 +185,39 @@ async function fetchRedditSaved() {
 }
 
 // ─── SUPABASE PUSH ────────────────────────────────────────────────────────────
+async function getSupabaseCount() {
+  const res = await fetch(`${config.supabaseUrl}/rest/v1/reddit_saves?select=reddit_id`, {
+    headers: {
+      'apikey': config.supabaseKey,
+      'Authorization': `Bearer ${config.supabaseKey}`,
+      'Prefer': 'count=exact',
+      'Range-Unit': 'items',
+      'Range': '0-0'
+    }
+  });
+  // Count is in the Content-Range header: "0-0/1234"
+  const range = res.headers.get('Content-Range') || '';
+  const match = range.match(/\/(\d+)$/);
+  return match ? parseInt(match[1]) : null;
+}
+
 async function pushToSupabase(items) {
   if (!items.length) return 0;
 
-  const BATCH = 100;
-  let totalNew = 0;
+  // Snapshot row count before push so we can calculate genuinely new items
+  const countBefore = await getSupabaseCount();
 
+  const BATCH = 100;
   for (let i = 0; i < items.length; i += BATCH) {
     const batch = items.slice(i, i + BATCH);
 
-    const res = await fetch(`${config.supabaseUrl}/rest/v1/reddit_saves`, {
+    const res = await fetch(`${config.supabaseUrl}/rest/v1/reddit_saves?on_conflict=reddit_id`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'apikey': config.supabaseKey,
         'Authorization': `Bearer ${config.supabaseKey}`,
-        // merge-duplicates: safe to re-sync — won't create duplicates
-        'Prefer': 'resolution=ignore-duplicates,return=representation'
+        'Prefer': 'resolution=ignore-duplicates'
       },
       body: JSON.stringify(batch)
     });
@@ -211,15 +227,17 @@ async function pushToSupabase(items) {
       throw new Error(`Supabase error ${res.status}: ${errText}`);
     }
 
-    const returned = await res.json();
-    totalNew += returned.filter(r => r.created_at === r.updated_at || !r.updated_at).length;
-
     setProgress(50 + (i / items.length) * 50);
     log(`Pushed batch ${Math.floor(i/BATCH)+1}/${Math.ceil(items.length/BATCH)} to Supabase`, 'info');
     await sleep(200);
   }
 
-  return totalNew;
+  // Count after — difference is genuinely new rows
+  const countAfter = await getSupabaseCount();
+  if (countBefore !== null && countAfter !== null) {
+    return countAfter - countBefore;
+  }
+  return 0;
 }
 
 // ─── MAIN SYNC ────────────────────────────────────────────────────────────────

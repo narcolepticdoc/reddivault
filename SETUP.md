@@ -1,416 +1,260 @@
 # RedditVault — Complete Setup Guide
 
-Welcome! This guide will walk you through everything step by step.
-**No programming experience required.** If you get stuck anywhere, each step includes
-troubleshooting tips.
+Welcome! This guide walks you through everything step by step.
+**No programming experience required.**
 
 ---
 
 ## What You're Setting Up
 
-RedditVault has three parts:
+RedditVault has four parts:
 
 ```
-[Chrome Extension on your Mac]  →  [Supabase Cloud Database]  →  [PWA on your iPhone]
-       Pulls from Reddit              Stores everything              Browse & organize
+[Chrome Extension]  →  [Supabase Cloud DB]  →  [PWA on iPhone]
+  Syncs from Reddit     Stores everything       Browse & organise
+
+[Cloudflare Worker]  (optional)
+  Proxy for auto-sync via Reddit RSS feed
 ```
 
-- **Chrome Extension** (Mac): Logs into Reddit with your existing browser session and
-  uploads your saved posts to a cloud database.
-- **Supabase**: A free cloud database that sits in the middle. Think of it as the
-  bridge between your Mac and iPhone.
-- **PWA** (iPhone): A web app that reads your saved items and lets you organize them
-  into folders. Works like a native app when added to your home screen.
+- **Chrome Extension** (Mac/desktop): Uses your existing Reddit browser session to upload saved posts to the cloud database. No API keys or Reddit developer account needed.
+- **Supabase**: Free cloud database that syncs between your desktop and phone.
+- **PWA** (iPhone/any browser): The main app. Add it to your home screen and it works like a native app — search, filter, lists, tags, ratings, and more.
+- **Cloudflare Worker** (optional): A tiny proxy that lets the PWA auto-sync new saves directly from Reddit's RSS feed without needing the Chrome extension.
 
-**Time to complete: About 20-30 minutes (mostly waiting for things to load)**
+**Time to complete: about 20–30 minutes**
 
 ---
 
 ## PART 1: Set Up Supabase (Free Cloud Database)
 
-Supabase is completely free for personal use. You don't need a credit card.
-
 ### Step 1.1 — Create a Supabase Account
 
-1. Open your browser and go to: **https://supabase.com**
-2. Click the green **"Start your project"** button
-3. Click **"Sign up"** and create an account (you can sign up with GitHub or Google
-   if you prefer, or use an email address)
-4. Check your email for a confirmation link and click it
-5. You'll be taken to your Supabase dashboard
+1. Go to **https://supabase.com** and click **"Start your project"**
+2. Sign up with GitHub, Google, or email — no credit card needed
+3. Confirm your email if prompted
 
 ### Step 1.2 — Create a New Project
 
-1. On your dashboard, click the **"New project"** button
-2. Fill in the details:
-   - **Name**: Type `reddivault` (or anything you like)
-   - **Database Password**: Create a strong password and **save it somewhere** —
-     you might need it later
-   - **Region**: Pick the one closest to you (e.g., "US East" if you're in the US)
-3. Click **"Create new project"**
-4. Wait about 2 minutes while Supabase sets up your database
-   *(The progress bar will spin — this is normal)*
+1. Click **"New project"**
+2. Fill in:
+   - **Name**: `reddivault` (or anything you like)
+   - **Database Password**: make a strong one and save it somewhere
+   - **Region**: closest to you
+3. Click **"Create new project"** and wait ~2 minutes for it to provision
 
 ### Step 1.3 — Create the Database Tables
 
-This is where you tell Supabase what kind of data you want to store.
-We'll use Supabase's built-in SQL editor — don't worry, you just need to
-copy and paste.
-
-1. In your Supabase project, look at the left sidebar and click **"SQL Editor"**
-   *(It looks like a code icon `< >`)*
+1. In the left sidebar click **"SQL Editor"** (the `< >` icon)
 2. Click **"New query"**
-3. Copy and paste this entire block into the editor:
+3. Open the file **`supabase-schema.sql`** from this repo and paste the entire contents into the editor
+4. Click **"Run"** (or Cmd+Enter)
+5. You should see "Success. No rows returned"
 
-```sql
--- Table to store all your Reddit saved items
-CREATE TABLE reddit_saves (
-  id               bigserial PRIMARY KEY,
-  reddit_id        text UNIQUE NOT NULL,
-  type             text DEFAULT 'post',
-  subreddit        text,
-  title            text,
-  url              text,
-  permalink        text,
-  body             text,
-  author           text,
-  score            integer,
-  folder           text,
-  saved_at         timestamptz,
-  post_created_at  timestamptz,
-  created_at       timestamptz DEFAULT now(),
-  updated_at       timestamptz DEFAULT now()
-);
-
--- Table to store your folders
-CREATE TABLE reddit_folders (
-  id          bigserial PRIMARY KEY,
-  name        text UNIQUE NOT NULL,
-  icon        text DEFAULT '📁',
-  created_at  timestamptz DEFAULT now()
-);
-
--- Allow the app to read and write without complex login
-ALTER TABLE reddit_saves ENABLE ROW LEVEL SECURITY;
-ALTER TABLE reddit_folders ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Allow all" ON reddit_saves FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all" ON reddit_folders FOR ALL USING (true) WITH CHECK (true);
-
--- Speed up searches
-CREATE INDEX idx_reddit_saves_folder       ON reddit_saves(folder);
-CREATE INDEX idx_reddit_saves_saved_at     ON reddit_saves(saved_at DESC);
-CREATE INDEX idx_reddit_saves_post_created ON reddit_saves(post_created_at DESC);
-CREATE INDEX idx_reddit_saves_type         ON reddit_saves(type);
-CREATE INDEX idx_reddit_saves_subreddit    ON reddit_saves(subreddit);
-```
-
-4. Click the **"Run"** button (or press Ctrl+Enter / Cmd+Enter)
-5. You should see a green message saying "Success. No rows returned"
-   *(If you see an error, try running it again — sometimes it times out)*
+> If you see an error about the `moddatetime` extension not being available, your Supabase plan may not support it. In that case, delete just the `CREATE EXTENSION` line and the two `CREATE OR REPLACE TRIGGER` blocks at the bottom, then run again. The app will still work — you just won't get automatic `updated_at` tracking (delta sync will fall back to full sync).
 
 ### Step 1.4 — Get Your Connection Keys
 
-Now you need two pieces of information to connect the app to your database.
+1. In the left sidebar click **"Project Settings"** (⚙️ gear icon, near the bottom)
+2. Click **"API"**
+3. Copy and save two things:
+   - **Project URL** — looks like `https://abcdefgh.supabase.co`
+   - **anon / public key** — a long string starting with `eyJ...`
 
-1. In the left sidebar, click **"Project Settings"** (gear icon ⚙️ at the bottom)
-2. Click **"API"** in the settings menu
-3. You'll see two things you need:
-
-   **Your Project URL** — looks like:
-   ```
-   https://abcdefghijklmn.supabase.co
-   ```
-
-   **Your anon/public key** — a very long string starting with `eyJ...`
-
-4. **Keep this browser tab open** — you'll need to copy these values in the next steps
+> Keep this tab open — you'll paste these values into the app in later steps.
 
 ---
 
-## PART 2: Set Up the Chrome Extension (Mac)
+## PART 2: Deploy the PWA to Vercel
 
-The Chrome extension runs on your Mac and pulls your saved posts from Reddit
-using your existing logged-in browser session — no API keys needed.
+The PWA is hosted on Vercel and auto-deploys from GitHub whenever you push changes.
 
-### Step 2.1 — Download the Extension Files
+### Step 2.1 — Fork or clone the repo
 
-The `extension` folder contains these files:
-```
-extension/
-├── manifest.json
-├── popup.html
-├── popup.js
-└── background.js
-```
+If you haven't already, fork this repo on GitHub or push it to your own GitHub account.
 
-Save this entire `extension` folder to somewhere easy to find on your Mac,
-like your Desktop or Documents folder.
+### Step 2.2 — Connect to Vercel
 
-> **Note:** You'll also need icon image files. Since we can't auto-generate images,
-> you can use any small PNG image as a placeholder icon, or skip the icons —
-> the extension will work without them (Chrome will just show a default puzzle icon).
-> Name them `icon16.png`, `icon48.png`, and `icon128.png` if you want custom icons.
+1. Go to **https://vercel.com** and sign up (free, sign in with GitHub)
+2. Click **"Add New Project"**
+3. Import your GitHub repo
+4. Vercel will detect the `vercel.json` file automatically — no build configuration needed
+5. Click **"Deploy"**
 
-### Step 2.2 — Load the Extension in Chrome
+Vercel will give you a URL like `https://reddivault.vercel.app`. Every push to your main branch auto-deploys.
 
-1. Open **Google Chrome** on your Mac
-2. In the address bar, type: `chrome://extensions` and press Enter
-3. In the top-right corner of that page, turn on **"Developer mode"**
-   *(There's a toggle switch — flip it to the right)*
-4. Click the **"Load unpacked"** button that appears
-5. A file picker will open — navigate to and select your `extension` folder
-6. The **RedditVault Sync** extension should now appear in your list!
-7. Click the puzzle piece 🧩 icon in Chrome's toolbar (top right)
-8. Find "RedditVault Sync" and click the pin 📌 icon to keep it visible
-
-### Step 2.3 — Configure the Extension
-
-1. Make sure you're **logged into Reddit** in Chrome at reddit.com
-   *(This is essential — the extension uses your login session)*
-2. Click the **RedditVault Sync** icon in Chrome's toolbar
-3. A small popup will appear asking for your Supabase details
-4. Go back to your Supabase browser tab from Step 1.4 and copy:
-   - **Project URL** → paste into "Supabase Project URL"
-   - **anon/public key** → paste into "Supabase Anon Key"
-5. Click **"Save Configuration"**
-
-### Step 2.4 — Run Your First Sync
-
-1. Click the RedditVault Sync icon in Chrome's toolbar
-2. Click **"🔄 Sync Saved Items Now"**
-3. The extension will start fetching your saved posts from Reddit
-4. Watch the progress in the Activity Log — it shows each page being fetched
-5. **Important:** Reddit limits how quickly you can request pages, so the sync
-   deliberately goes slowly. For 500+ saved items, expect 3-5 minutes.
-6. When done, you'll see "✓ Done! X new items added to cloud"
-
-> **If you get a "Not logged in" error:** Go to reddit.com in Chrome, log in,
-> then try syncing again.
-
-> **If you get a "Supabase error 400 / PGRST204 / column not found" error:**
-> Supabase's schema cache sometimes takes a moment to register new columns.
-> Go to your Supabase project → **Project Settings → API** → scroll down and
-> click **"Reload schema cache"**. Wait about 30 seconds, then click Sync again.
-> If you still get the error, go to the SQL Editor and run this to make sure all
-> columns exist:
-> ```sql
-> ALTER TABLE reddit_saves ADD COLUMN IF NOT EXISTS post_created_at timestamptz;
-> ALTER TABLE reddit_saves ADD COLUMN IF NOT EXISTS permalink text;
-> ALTER TABLE reddit_saves ADD COLUMN IF NOT EXISTS author text;
-> ALTER TABLE reddit_saves ADD COLUMN IF NOT EXISTS score integer;
-> ```
-> Then reload the schema cache again and retry the sync.
-
-> **If you get any other "Supabase error":** Double-check that you copied the URL
-> and key correctly, with no extra spaces.
-
----
-
-## PART 3: Set Up the PWA on iPhone
-
-The PWA (Progressive Web App) is a website that behaves like a native app.
-You'll host it on Vercel (free) and then add it to your iPhone home screen.
-
-### Step 3.1 — Create a Free Vercel Account
-
-1. Go to **https://vercel.com** and click "Sign Up"
-2. Sign up with GitHub, GitLab, or an email address
-3. Follow the prompts to set up your account
-
-### Step 3.2 — Prepare the PWA Files
-
-The `pwa` folder contains:
-```
-pwa/
-├── index.html
-├── manifest.json
-└── sw.js
-```
-
-You also need icon images. Create two simple PNG files:
-- `icon-192.png` (192×192 pixels)
-- `icon-512.png` (512×512 pixels)
-
-You can use any image editor, or download a simple Reddit/bookmark icon online
-and resize it. Place them in the `pwa` folder.
-
-### Step 3.3 — Deploy to Vercel
-
-**Option A: Using Vercel's web interface (easiest — no command line)**
-
-1. Go to **https://vercel.com/new**
-2. Look for the option to **"Deploy from template"** or **"Import from Git"**
-3. Alternatively, install the **Vercel CLI**:
-   - Open **Terminal** on your Mac (search "Terminal" in Spotlight with Cmd+Space)
-   - Type this and press Enter:
-     ```
-     npm install -g vercel
-     ```
-   - If you get an error about npm not being found, you need to install Node.js first:
-     go to **https://nodejs.org** and download the "LTS" version, install it, then try again
-
-4. In Terminal, navigate to your pwa folder:
-   ```
-   cd ~/Desktop/pwa
-   ```
-   *(Change `Desktop` to wherever you saved the folder)*
-
-5. Type and run:
-   ```
-   vercel
-   ```
-
-6. Follow the prompts:
-   - "Set up and deploy?" → **Y**
-   - "Which scope?" → Select your account
-   - "Link to existing project?" → **N**
-   - "Project name?" → Type `reddivault` and press Enter
-   - "Directory?" → Press Enter (it'll use current directory)
-
-7. Vercel will deploy and give you a URL like:
-   ```
-   https://reddivault-abc123.vercel.app
-   ```
-   **Copy this URL — you'll use it in the next step!**
-
-**Option B: Drag and drop (even easier)**
-
-1. Go to **https://vercel.com/new**
-2. Look for "Deploy" or "Drag and drop" option
-3. Drag your entire `pwa` folder into the browser window
-4. Vercel will deploy it automatically
-
-### Step 3.4 — Add to iPhone Home Screen
+### Step 2.3 — Add to iPhone Home Screen
 
 1. Open **Safari** on your iPhone (must be Safari, not Chrome)
-2. Go to your Vercel URL (e.g., `https://reddivault-abc123.vercel.app`)
-3. Tap the **Share button** (the box with an arrow pointing up ↑)
-4. Scroll down and tap **"Add to Home Screen"**
-5. Name it **"RedditVault"** and tap **"Add"**
+2. Go to your Vercel URL
+3. Tap the **Share button** (box with arrow ↑)
+4. Tap **"Add to Home Screen"** → name it **RedditVault** → tap **Add**
 
-The app icon will appear on your home screen just like a native app!
+The icon will appear on your home screen and launch as a full-screen app.
 
-### Step 3.5 — Connect the PWA to Supabase
+### Step 2.4 — Connect the PWA to Supabase
 
-1. Open **RedditVault** from your iPhone home screen
-2. Tap **"Settings"** (⚙️) in the bottom navigation
-3. Enter your Supabase details:
-   - **Supabase Project URL**: Same URL from Step 1.4
-   - **Supabase Anon Key**: Same key from Step 1.4
-4. Tap **"Save & Test Connection"**
-5. It will sync your items from the cloud — you should see all the posts the
-   Chrome extension uploaded!
+1. Open RedditVault from your home screen (or any browser)
+2. Tap **Settings** (⚙️ in the bottom nav)
+3. Scroll to **☁️ Cloud Database** and tap the ⚙️ settings toggle
+4. Enter your **Supabase Project URL** and **Supabase Anon Key** from Step 1.4
+5. Tap **"Save & Test Connection"** — you should see "Connected"
 
 ---
 
-## PART 4: Importing Your Full History (CSV)
+## PART 3: Set Up the Chrome Extension (Desktop Sync)
 
-Reddit only lets you access your most recent ~1,000 saved items via its API.
-To get your complete history, you need to request your data file from Reddit.
+The extension runs on your Mac and pushes your Reddit saved items to Supabase using your existing Reddit login session — no Reddit API access needed.
 
-### Step 4.1 — Request Your Reddit Data
+### Step 3.1 — Load the Extension in Chrome
 
-1. On your computer, go to **https://www.reddit.com/settings/data-request**
-2. You may need to go to **Settings → Privacy & Security → Request data**
-3. Click **"Request data"** or **"Request archive"**
-4. Reddit will email you when it's ready (usually a few hours, sometimes up to 24h)
+1. Open **Google Chrome** on your Mac
+2. Go to `chrome://extensions` in the address bar
+3. Enable **"Developer mode"** (toggle in the top-right corner)
+4. Click **"Load unpacked"**
+5. Select the **`extension`** folder from this repo
+6. The **RedditVault Sync** extension will appear — pin it to your toolbar via the 🧩 puzzle icon
 
-### Step 4.2 — Import the CSV
+### Step 3.2 — Configure the Extension
 
-1. When you get the email, download the zip file
-2. Unzip it (double-click on Mac)
-3. Look for a file called **`saved_posts.csv`** (it may be in a subfolder)
-4. Open the **RedditVault** web app on your Mac at your Vercel URL
-   *(Use any browser on desktop for the import)*
-5. Tap **"Import"** in the bottom navigation
-6. Tap the import zone and select your `saved_posts.csv` file
-7. The app will process it and add everything to your local database
-8. It will also push new items to Supabase automatically if you're configured
+1. Make sure you're **logged into Reddit** in Chrome
+2. Click the RedditVault Sync icon in the toolbar
+3. Paste your **Supabase Project URL** and **Supabase Anon Key** from Step 1.4
+4. Click **"Save Configuration"**
+
+### Step 3.3 — Run Your First Sync
+
+1. Click **"🔄 Sync Saved Items Now"**
+2. The extension walks through your Reddit saved pages and uploads everything to Supabase
+3. For 500+ items expect 3–10 minutes — Reddit rate-limits requests so the sync deliberately paces itself
+4. When done you'll see "✓ Done! X new items added to cloud"
+5. Open the PWA and tap **"Pull from cloud"** in Settings to load them onto your device
 
 ---
 
-## PART 5: Ongoing Use
+## PART 4: Set Up Auto-Sync via RSS Feed (Optional)
 
-### Daily Workflow
+This lets the PWA automatically check for new Reddit saves on a schedule, without needing the Chrome extension open. It uses Reddit's private RSS feed and a Cloudflare Worker as a CORS proxy.
 
-- **When you want to sync recent Reddit saves:** Open Chrome on your Mac,
-  click the RedditVault Sync extension icon, click "Sync Saved Items Now"
-- **When you want to browse on your iPhone:** Open RedditVault from your home screen.
-  Tap the "Sync" button (top right) to pull latest changes from the cloud.
+### Step 4.1 — Get Your Reddit RSS Feed URL
 
-### Organizing into Folders
+1. Log into Reddit on desktop
+2. Go to **https://old.reddit.com/prefs/feeds**
+3. Find the **"saved links"** RSS feed and copy the URL — it looks like:
+   ```
+   https://www.reddit.com/saved.rss?feed=abc123&user=yourusername
+   ```
+   This URL is private to you — treat it like a password.
 
-1. Go to **"Folders"** tab in the app
-2. Tap **"+ New"** to create a folder (pick a name and icon)
-3. Go to **"All Saves"** and tap the 📁 icon on any item to assign it to a folder
-4. Filter by folder using the pills at the top of "All Saves"
+### Step 4.2 — Deploy the Cloudflare Worker
 
-### Backing Up Your Data
+The worker lives in **`cloudflare-worker/reddit-feed-proxy.js`** in this repo.
 
-- Go to **Settings** → **"⬇️ Export Backup JSON"**
-- This downloads a complete backup of all your items and folders
-- Keep this file somewhere safe (iCloud Drive, Google Drive, etc.)
-- You can re-import it anytime using the Import screen
+1. Go to **https://workers.cloudflare.com** and sign up for a free account
+2. Click **"Create a Worker"**
+3. Delete all the default code in the editor
+4. Paste the entire contents of `cloudflare-worker/reddit-feed-proxy.js`
+5. Find this line near the top and update it to your Vercel URL:
+   ```javascript
+   const ALLOWED_ORIGIN = 'https://reddivault.vercel.app';
+   ```
+6. Click **"Save and Deploy"**
+7. Copy the worker URL — it looks like `https://reddit-feed-proxy.yourname.workers.dev`
+
+> The free Cloudflare Workers plan allows 100,000 requests/day — far more than this app will ever use.
+
+### Step 4.3 — Configure the PWA
+
+1. Open RedditVault → Settings → **🔄 Sync New Saves** → tap the ⚙️ settings toggle
+2. Paste your **Reddit RSS feed URL** into "Feed URL"
+3. Paste your **Cloudflare Worker URL** into "Proxy URL"
+4. Tap **"Test feed connection"** — you should see a success message
+5. Enable **"Auto-sync"** and set your preferred interval (e.g. every 30 minutes)
+
+---
+
+## PART 5: Import Your Full Reddit History (CSV)
+
+Reddit only exposes your most recent ~1,000 saved items via its feed. To import your complete history, request a data export from Reddit.
+
+### Step 5.1 — Request Your Data
+
+1. Go to **https://www.reddit.com/settings/data-request**
+   *(or Settings → Privacy & Security → Request data)*
+2. Click **"Request data"** or **"Request archive"**
+3. Reddit will email you when it's ready — usually a few hours, up to 24h
+
+### Step 5.2 — Import the CSV
+
+1. Download and unzip the file Reddit emails you
+2. Look for **`saved_posts.csv`** (may be in a subfolder)
+3. Open RedditVault in any desktop browser
+4. Go to **Settings → 📥 Import & Enrich**
+5. Tap the import area and select your `saved_posts.csv`
+6. The app will import everything and push new items to Supabase automatically
+
+> Reddit's CSV export is sparse — just IDs and URLs. After importing, use the **"Enrich"** button in Settings to fetch full titles, authors, and post bodies from Reddit's public JSON endpoints. This fills in the missing metadata automatically.
+
+---
+
+## PART 6: Ongoing Use
+
+### Daily workflow
+
+- **New saves appear automatically** if you set up the RSS feed sync (Part 4)
+- **Or sync manually** via the Chrome extension when you want to push a batch
+- **On your iPhone** tap the sync button (🔄 top right) to pull the latest from the cloud
+
+### Organising your library
+
+- Go to the **Lists** tab to create lists — either static (you add items manually) or smart (defined by a search query that auto-updates)
+- Tap the ⋯ menu on any item to add it to a list, rate it, favourite it, or trash it
+- Use **Tags** (smart lists with the tag option enabled) to add coloured chips to items that appear inline in browse view
+- Use the search bar with the filter panel for advanced filtering by subreddit, author, date range, type, rating, and more
+
+### Backing up your data
+
+- Settings → **📊 Library** → **Export Backup JSON**
+- Save the file to iCloud Drive or similar
+- You can restore from this backup at any time via the same Settings panel
 
 ---
 
 ## Troubleshooting
 
-### Extension says "Not logged in to Reddit"
-→ Open a new Chrome tab, go to reddit.com, make sure you're logged in, try syncing again.
+**Extension says "Not logged in to Reddit"**
+→ Open reddit.com in Chrome, make sure you're logged in, then try syncing again.
 
-### Extension shows "Supabase error 401" or "403"
-→ Your Supabase key may be wrong. Go to Supabase → Project Settings → API and
-   re-copy the **anon/public** key (not the service_role key).
+**Extension shows "Supabase error 401" or "403"**
+→ Wrong key. Go to Supabase → Project Settings → API and re-copy the **anon/public** key (not the `service_role` key).
 
-### Extension shows "Supabase error 400" or "column not found" (PGRST204)
-→ Supabase's schema cache didn't pick up all the columns. Fix it in two steps:
-1. Go to Supabase → **Project Settings → API** → scroll down → click **"Reload schema cache"**
-2. If that doesn't work, go to **SQL Editor** and run:
-   ```sql
-   ALTER TABLE reddit_saves ADD COLUMN IF NOT EXISTS post_created_at timestamptz;
-   ALTER TABLE reddit_saves ADD COLUMN IF NOT EXISTS permalink text;
-   ALTER TABLE reddit_saves ADD COLUMN IF NOT EXISTS author text;
-   ALTER TABLE reddit_saves ADD COLUMN IF NOT EXISTS score integer;
-   ```
-   Then reload the schema cache again, wait 30 seconds, and retry the sync.
+**Extension shows "Supabase error 400" or "column not found" (PGRST204)**
+→ Schema cache stale. Go to Supabase → Project Settings → API → scroll down → click **"Reload schema cache"**. Wait 30 seconds and retry.
 
-### Extension fetches 0 items
-→ Make sure you actually have saved items on Reddit. Go to
-   reddit.com/user/me/saved to check.
+**PWA says "Sync failed"**
+→ Check Supabase URL and key in Settings. The URL should end in `.supabase.co` with no trailing slash.
 
-### PWA says "Sync failed"
-→ Check that you entered the Supabase URL and key correctly in Settings.
-   The URL should end in `.supabase.co` with no trailing slash.
+**Feed sync says "Failed" or returns no items**
+→ Check your Cloudflare Worker is deployed and the `ALLOWED_ORIGIN` matches your exact Vercel URL. Check the RSS feed URL is correct by pasting it into a browser — it should return XML.
 
-### iPhone app doesn't look like an app (shows browser UI)
-→ You must open it in **Safari** specifically (not Chrome for iOS) and use
-   "Add to Home Screen". Then always open it from the home screen icon,
-   not from Safari's address bar.
+**iPhone app shows browser UI instead of full-screen**
+→ Must be opened in **Safari** (not Chrome for iOS) and added to home screen via "Add to Home Screen". Always open from the home screen icon, not from Safari's address bar.
 
-### Items imported from CSV are missing titles
-→ Reddit's CSV export sometimes has minimal data. The app will show the URL
-   if the title is missing. You can still organize these items into folders.
+**Imported CSV items are missing titles**
+→ Expected — Reddit's CSV only contains IDs and URLs. Use the **Enrich** button in Settings → Import & Enrich to fetch the missing metadata.
 
-### Sync is very slow
-→ This is intentional. The extension waits 1 second between pages to avoid
-   getting temporarily blocked by Reddit. For 1,000 items it takes about
-   10-15 minutes total. You can leave the popup open and let it run.
+**Sync is slow**
+→ Intentional. The extension waits between pages to avoid Reddit rate limits. For 1,000 items expect 10–15 minutes. Leave the popup open and let it run.
 
 ---
 
-## Privacy Notes
+## Privacy
 
-- Your Reddit credentials are **never stored or transmitted** by this app.
-  The extension uses your browser's existing Reddit session (cookies), the same
-  way you'd browse Reddit normally.
-- Your Supabase database is private to you. The only people who can access it
-  are those who have your Supabase URL and key.
-- Keep your Supabase anon key private — treat it like a password.
-- All data processing happens locally on your device or in your personal
-  Supabase project. No data is sent to any third party.
+- Your Reddit credentials are **never stored or sent anywhere** by this app. The extension uses your browser's existing Reddit session (cookies), exactly like normal browsing.
+- Your Supabase database is private to you. Only someone with your Supabase URL and anon key can access it — keep the anon key private.
+- The Cloudflare Worker only proxies requests from your configured domain and only to Reddit URLs containing a valid feed token.
+- No data is sent to any third party. Everything lives in your own Supabase project.
 
 ---
 
-*RedditVault is a personal tool, not affiliated with Reddit or Supabase.*
+*RedditVault is a personal tool, not affiliated with Reddit, Supabase, Vercel, or Cloudflare.*

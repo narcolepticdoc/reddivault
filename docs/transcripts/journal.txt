@@ -1,0 +1,119 @@
+
+=== Journal Entry 2026-03-04T01:01:52.241480+00:00 ===
+2026-03-04-01-01-51-reddit-saves-manager-build.txt
+[Full-stack development session building RedditVault: a Reddit saved items manager with Chrome extension (Mac sync), Supabase backend, and iOS PWA. Includes architecture decisions, complete implementation, and comprehensive setup documentation for non-technical users.]
+
+
+
+
+=== Journal Entry 2026-03-04T01:38:11.335365+00:00 ===
+2026-03-04-01-38-10-reddit-vault-v2-enhancements.txt
+[RedditVault v2 development session: Added URL enrichment feature, separated saved_at vs post_created_at timestamps, fixed Chrome extension data mapping, updated Supabase schema, and resolved PGRST204 schema cache error during first deployment.]
+
+
+
+
+=== Journal Entry 2026-03-04T17:34:15.058854+00:00 ===
+2026-03-04-17-34-14-reddivault-v3-enrichment-rate-limiting.txt
+[RedditVault v3.0-3.5 development: Fixed Supabase pagination (1000 row limit), implemented exponential backoff for enrichment rate limiting, added version indicators, debugged service worker caching, and identified optimal rate limit avoidance strategy through testing.]
+
+
+
+
+=== Journal Entry 2026-03-04T22:09:35.751501+00:00 ===
+2026-03-04-22-09-35-reddivault-v0-4-enrichment-status-model.txt
+[RedditVault v0.3.6-0.4.1 development: Implemented proactive rate limit avoidance (7.5s delay, no batch pauses), added user-adjustable enrichment speed settings, created enrichStatus field ('pending'/'enriched'/'dead') to replace boolean, redesigned Import page with live settings and separate Initial/Retry run cards, and discussed enrichment failure handling logic.]
+
+
+
+
+=== Journal Entry 2026-03-05T01:00:44.758797+00:00 ===
+2026-03-05-01-00-44-reddivault-v0-5-advanced-search-favorites.txt
+[RedditVault v0.4.2-0.5.2 development: Fixed runtime errors in Import page, added PWA icons, repaired post/comment type detection bug from CSV imports, implemented advanced search parser with multi-word AND/quoted phrases/exclusions/field prefixes, added favorite and recent search history with dedicated UI sections, and optimized search performance with smart debouncing.]
+
+
+
+
+=== Journal Entry 2026-03-05T04:31:11.629392+00:00 ===
+2026-03-05-04-31-10-reddivault-v0-6-search-ratings-trash-sync.txt
+[RedditVault v0.5.3-0.6.3 development: Fixed search pill click handlers with index-based lookup, implemented full cloud sync bidirectionality with enrich_status field, fixed extension duplicate handling, added favourites/ratings/dislike system with trash view, implemented sort controls with postCreatedAt default, and synced saved searches to cloud via user_preferences table.]
+
+
+
+
+=== Journal Entry 2026-03-05T04:43:47.745023+00:00 ===
+2026-03-05-04-43-47-reddit-rss-feed-sync-investigation.txt
+[Investigation into using Reddit's private RSS/JSON feeds for PWA sync instead of Chrome extension. Includes JSON feed sample analysis, discussion of 25-item cap, pagination possibilities, and decision to implement JSON feed sync for ongoing updates while keeping extension for bulk imports.]
+
+
+
+
+=== Journal Entry 2026-03-05T20:43:04.853511+00:00 ===
+2026-03-05-20-43-04-reddit-vault-v0-7-6-to-v0-7-12-feed-sync-fixes.txt
+[RedditVault v0.7.6-v0.7.12 development: Reddit JSON feed sync implementation with CORS troubleshooting, service worker fixes, dead items filter correction, and Vercel serverless proxy setup. Includes version history document generation and versioning strategy discussion.]
+
+
+
+
+=== Journal Entry 2026-03-05T21:49:43.574836+00:00 ===
+2026-03-05-21-49-42-reddit-vault-v0-7-13-to-v0-7-20-feed-sync-fixes-ui-cleanup.txt
+[RedditVault v0.7.13-v0.7.20: Feed sync field name fixes, deduplication repair, Cloudflare Worker proxy setup, UI reorganization (Import/Enrichment moved to Settings, Folders deprecated), and search enhancement planning for OR groups and advanced filters.]
+
+
+
+
+=== Journal Entry 2026-03-06T04:30:14.091631+00:00 ===
+2026-03-06-04-30-13-redditvault-v0-8-search-filters-lists.txt
+[RedditVault v0.8.0-v0.8.2: Major UI overhaul replacing Folders with Lists (static/smart), advanced filter panel with OR groups in search, Supabase cloud sync for lists, and trash icon update.]
+
+
+
+
+=== Journal Entry 2026-03-06T14:12:16.802238+00:00 ===
+2026-03-06-14-12-16-redditvault-v0-8-3-to-v0-8-8-sync-fixes.txt
+[RedditVault v0.8.3-v0.8.8: Critical bug fixes for DB schema crash, list display duplicates, card action grouping, sync indicator redesign with dirty tracking, visibility-based cloud checks, and comprehensive list sync fixes for proper push/pull of additions/removals.]
+
+
+
+
+=== Journal Entry 2026-03-06T17:59:43.615927+00:00 ===
+2026-03-06-17-59-42-redditvault-v0-8-8-1-to-v0-8-9-link-parsing-sync-fixes.txt
+[RedditVault v0.8.8.1-v0.8.9: Markdown link parsing fixes for underscores and escaped brackets, sync indicator reconciliation on startup, important preferences tracking, and smart tag/smart list integration design discussion.]
+
+
+
+
+=== Journal Entry 2026-03-06T21:31:43.687687+00:00 ===
+2026-03-06-21-31-42-redditvault-v0-9-smart-tags-affinity-sort.txt
+[RedditVault v0.9.x: Smart tag chips replacing favorite searches, Affinity sort with tag cache, iOS layout fixes, sync indicator bug fixes, and quoted search fix.]
+
+
+
+
+=== Journal Entry 2026-03-07T21:22:26.551387+00:00 ===
+2026-03-07-21-22-25-redditvault-v0-9-2-sync-diagnostics-link-fixes.txt
+[RedditVault v0.9.2.x: Sync indicator overhaul with diagnostic log, dirty state root cause analysis, item action sync fixes, and preview link button fixes.]
+
+
+
+
+=== Journal Entry 2026-03-08T03:44:48.327655+00:00 ===
+2026-03-08-03-44-46-redditvault-v0-9-3-home-screen-fixes-backup-restore.txt
+[RedditVault v0.9.3.x: Home screen dashboard implementation, search bar fixes, backup/restore overhaul, enrichment documentation, feed URL improvements, and extensive planning discussion about CORS/proxy/sync architecture.]
+
+
+
+
+=== Journal Entry 2026-03-08T06:14:52.311460+00:00 ===
+2026-03-08-06-14-51-redditvault-v0-9-4-settings-cleanup-render-fixes.txt
+[RedditVault PWA development session: settings panel restructuring (connection settings moved inline, auto-sync feature, cloud sync UX notes), render() consistency audit and fixes, folder dead code removal, error boundary implementation, and settings panel improvement planning discussion.]
+
+
+
+
+=== Journal Entry 2026-03-08T22:40:15.575585+00:00 ===
+2026-03-08-22-40-14-redditvault-v0-9-6-settings-sync-delete.txt
+[RedditVault PWA development session covering: settings panel restructure (v0.9.5), iOS zoom fixes, filter autocomplete with precomputed lists, date range layout, soft-delete with isPermanentlyDeleted flag, Supabase schema migration (folder→deleted_at), and deleted items UI with restore/purge.]
+
+
+
