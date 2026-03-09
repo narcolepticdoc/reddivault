@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.1';
+const APP_VERSION = '0.9.8.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -775,8 +775,8 @@ let enrichStopped = false;
 
 const ARCTIC_BASE           = 'https://arctic-shift.photon-reddit.com';
 const ARCTIC_BATCH          = 500;
-const ARCTIC_POST_FIELDS    = 'id,name,title,author,subreddit,selftext,url,score,created_utc,permalink';
-const ARCTIC_COMMENT_FIELDS = 'id,name,body,author,subreddit,score,created_utc,permalink,link_id';
+const ARCTIC_POST_FIELDS    = 'id,title,author,subreddit,selftext,url,score,created_utc,permalink';
+const ARCTIC_COMMENT_FIELDS = 'id,body,author,subreddit,score,created_utc,permalink,link_id';
 
 function arcticPostToEnriched(post, item) {
   const enriched = {
