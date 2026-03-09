@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.5';
+const APP_VERSION = '0.9.8.7';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -415,6 +415,7 @@ let state = {
   feedProxyUrl: '',
   feedProxyType: 'cloudflare', // 'cloudflare' | 'corsfix'
   feedSyncing: false,
+  feedSyncProgress: null,   // { page, added, skipped } while syncing
   feedSyncResult: null,
   // Filter panel
   showFilters: false,
@@ -1056,7 +1057,13 @@ async function enrichViaRedditOnly(retryFailed = false) {
     if (result === 'rate_limited') {
       rateLimitHits++;
       state.enrichProgress.rateLimitHits = rateLimitHits;
-      await sleep(rlPause);
+      // Show countdown in progress area then sleep
+      const el2 = document.getElementById('enrich-progress-details');
+      if (el2) {
+        const existing = el2.innerHTML;
+        el2.innerHTML = existing + `<div style="font-size:12px;color:var(--warning);text-align:center;margin-top:8px;font-weight:500">⏳ Rate limited — <span id="rl-countdown">calculating...</span></div>`;
+      }
+      await sleepWithCountdown(rlPause);
       consecutiveNulls = 0;
       i--;
       continue;
@@ -1076,7 +1083,12 @@ async function enrichViaRedditOnly(retryFailed = false) {
       if (consecutiveNulls >= 3) {
         rateLimitHits++;
         state.enrichProgress.rateLimitHits = rateLimitHits;
-        await sleep(rlPause);
+        const el2 = document.getElementById('enrich-progress-details');
+        if (el2) {
+          const existing = el2.innerHTML;
+          el2.innerHTML = existing + `<div style="font-size:12px;color:var(--warning);text-align:center;margin-top:8px;font-weight:500">⏳ Possible rate limit — <span id="rl-countdown">calculating...</span></div>`;
+        }
+        await sleepWithCountdown(rlPause);
         consecutiveNulls = 0;
       }
     }
@@ -3991,6 +4003,19 @@ function renderSettings() {
         ${state.feedSyncing ? 'disabled' : ''}>
         ${state.feedSyncing ? '⏳ Syncing…' : '🔄 Sync Now'}
       </button>
+      ${state.feedSyncing && state.feedSyncProgress ? (() => {
+        const p = state.feedSyncProgress;
+        const pct = Math.min(100, Math.round((p.page / 40) * 100)); // 40 = MAX_PAGES
+        return `
+          <div style="margin-top:10px">
+            <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+            <div style="font-size:12px;color:var(--text-muted);text-align:center;margin-top:6px">
+              Page ${p.page} of up to 40 &nbsp;·&nbsp;
+              <strong style="color:var(--text)">${p.added}</strong> new &nbsp;·&nbsp;
+              <strong style="color:var(--text)">${p.skipped}</strong> already saved
+            </div>
+          </div>`;
+      })() : ''}
       ${state.feedSyncResult ? `
         <div style="margin-top:10px;font-size:12px;color:var(--text-muted);background:var(--bg);border-radius:8px;padding:10px;line-height:2">
           ${state.feedSyncResult.error
@@ -4172,6 +4197,7 @@ function renderSettings() {
         </div>
       </details>
       <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()" style="margin-bottom:12px">
+        <input type="file" id="csv-file" accept=".csv,.json" style="display:none" onchange="(async e => { const f=e.target.files[0]; if(f) await handleFileImport(f); e.target.value=''; })(event)">
         <div class="drop-zone-icon">📥</div>
         <h3>Import Reddit CSV</h3>
         <p>Tap to select your saved_posts.csv file<br>or drag and drop here</p>
@@ -4566,15 +4592,6 @@ function attachEventListeners() {
   const logEl = document.getElementById('sync-log-entries');
   if (logEl) renderSyncLogEntries(logEl);
 
-  const fileInput = document.getElementById('csv-file');
-  if (fileInput) {
-    fileInput.onchange = async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      await handleFileImport(file);
-    };
-  }
-
   const restoreInput = document.getElementById('restore-file');
   if (restoreInput) {
     restoreInput.onchange = async (e) => {
@@ -4706,6 +4723,7 @@ async function syncFromFeed() {
   if (state.feedSyncing) return;
   state.feedSyncing = true;
   state.feedSyncResult = null;
+  state.feedSyncProgress = { page: 0, added: 0, skipped: 0 };
   render();
 
   let added = 0, skipped = 0, pages = 0;
@@ -4734,6 +4752,7 @@ async function syncFromFeed() {
       if (children.length === 0) break; // no more items
       pages++;
       syncLog(`feedSync: page ${pages} — ${children.length} items from Reddit, ${existing.size} known locally`);
+      state.feedSyncProgress = { page: pages, added, skipped };
 
       const newItems = [];
       for (const child of children) {
@@ -4776,6 +4795,7 @@ async function syncFromFeed() {
         }
         added += newItems.length;
         syncLog(`feedSync: added ${newItems.length} new items (${skipped} skipped on this page)`);
+        state.feedSyncProgress = { page: pages, added, skipped };
       }
 
       // Pagination — stop if no more pages or we hit all-known items
@@ -4814,6 +4834,7 @@ async function syncFromFeed() {
   }
 
   state.feedSyncing = false;
+  state.feedSyncProgress = null;
   render();
 }
 
@@ -4887,6 +4908,25 @@ function showToast(msg, type='success') {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Sleep with a live countdown displayed in enrich-progress-details
+async function sleepWithCountdown(ms, labelFn) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    const secsLeft = Math.ceil((end - Date.now()) / 1000);
+    const mins = Math.floor(secsLeft / 60);
+    const secs = secsLeft % 60;
+    const timeStr = mins > 0 ? `${mins}m ${secs.toString().padStart(2,'0')}s` : `${secs}s`;
+    state.enrichProgress = { ...state.enrichProgress, rlCountdown: timeStr };
+    const el = document.getElementById('enrich-progress-details');
+    if (el) {
+      const countdownEl = el.querySelector('#rl-countdown');
+      if (countdownEl) countdownEl.textContent = `Resuming in ${timeStr}`;
+    }
+    await sleep(1000);
+  }
+  state.enrichProgress = { ...state.enrichProgress, rlCountdown: null };
+}
 
 // ─── SERVICE WORKER ───────────────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
