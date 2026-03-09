@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.12';
+const APP_VERSION = '0.9.8.15';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -432,6 +432,7 @@ let state = {
   // Lists tab
   listView: 'all',         // 'all' | list id
   listSeparate: false,     // separate smart vs static
+  listSmartFirst: true,    // smart lists above static when separated
   confirmDestructive: true, // confirm before trash/remove actions
   disableZoom: true,        // prevent iOS pinch-to-zoom
   autoFeedSync: false,        // auto-sync feed on open/foreground
@@ -3947,6 +3948,10 @@ function renderLists() {
   const sorted = [...allLists].sort((a,b) => a.name.localeCompare(b.name));
   const smarts = sorted.filter(l => l.type === 'smart');
   const statics = sorted.filter(l => l.type === 'static');
+  const firstGroup  = state.listSmartFirst ? smarts  : statics;
+  const secondGroup = state.listSmartFirst ? statics : smarts;
+  const firstLabel  = state.listSmartFirst ? '✦ SMART LISTS'  : '📋 STATIC LISTS';
+  const secondLabel = state.listSmartFirst ? '📋 STATIC LISTS' : '✦ SMART LISTS';
 
   return `
     <div class="section-header">
@@ -3957,8 +3962,12 @@ function renderLists() {
             style="${state.listSeparate?'color:var(--accent2)':''}">
             ${state.listSeparate ? '⊟ Merge' : '⊞ Separate'}
           </button>` : ''}
-        <button class="btn btn-secondary btn-sm" onclick="showCreateList('static')">+ Static</button>
-        <button class="btn btn-primary btn-sm" onclick="showCreateList('smart')">+ Smart</button>
+        ${state.listSeparate ? `
+          <button class="btn btn-ghost btn-sm" onclick="state.listSmartFirst=!state.listSmartFirst;render()"
+            title="Toggle which list type appears first">
+            ${state.listSmartFirst ? '✦ Smart ↑' : '📋 Static ↑'}
+          </button>` : ''}
+        <button class="btn btn-primary btn-sm" onclick="showNewListMenu(this)">+ New</button>
       </div>
     </div>
 
@@ -3969,13 +3978,13 @@ function renderLists() {
         <p>Create a <strong>Static list</strong> to manually collect posts, or a <strong>Smart list</strong> that auto-populates from a saved search.</p>
       </div>
     ` : separated ? `
-      ${smarts.length > 0 ? `
-        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">✦ SMART LISTS</div>
-        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${smarts.map(renderListCard).join('')}</div>
+      ${firstGroup.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${firstLabel}</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${firstGroup.map(renderListCard).join('')}</div>
       ` : ''}
-      ${statics.length > 0 ? `
-        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">📋 STATIC LISTS</div>
-        <div style="display:flex;flex-direction:column;gap:8px">${statics.map(renderListCard).join('')}</div>
+      ${secondGroup.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${secondLabel}</div>
+        <div style="display:flex;flex-direction:column;gap:8px">${secondGroup.map(renderListCard).join('')}</div>
       ` : ''}
     ` : `
       <div style="display:flex;flex-direction:column;gap:8px">${sorted.map(renderListCard).join('')}</div>
@@ -4094,6 +4103,10 @@ function renderSettings() {
             <input class="input" id="feed-url" placeholder="https://old.reddit.com/user/USERNAME/saved.json?feed=YOUR_FEED_TOKEN&amp;user=USERNAME"
               value="${escHtml(state.redditFeedUrl)}" style="font-size:16px">
             <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → under Private Listings, right-click the JSON button next to 'your saved links' → Copy Link</span>
+            <a class="btn btn-secondary btn-sm" href="https://old.reddit.com/prefs/feeds/" target="_blank" rel="noopener"
+              style="margin-top:8px;width:100%;justify-content:center;text-decoration:none">
+              🔗 Open Reddit Feeds page
+            </a>
           </div>
           <div class="form-group">
             <label>CORS Proxy</label>
@@ -4183,6 +4196,7 @@ function renderSettings() {
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:12px">📊 Library</div>
       ${(() => {
         const active = state.items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted);
+        const trashCount = state.items.filter(i => i.isDisliked && !i.isPermanentlyDeleted).length;
         const deletedCount = state.items.filter(i => i.isPermanentlyDeleted).length;
         return `
         <div style="font-size:13px;line-height:2.2">
@@ -4200,6 +4214,9 @@ function renderSettings() {
               <span style="color:var(--text-muted)">${deadCount.toLocaleString()}</span>
               ${deadCount > 0 ? `<button class="btn btn-ghost btn-sm" style="font-size:11px;padding:2px 8px" onclick="resetDeadToPending()">↩ Retry all</button>` : ''}
             </span>
+          </div>
+          <div style="display:flex;justify-content:space-between;margin-top:4px"><span style="color:var(--text-muted)">Trash</span>
+            <span style="color:var(--text-muted)">${trashCount.toLocaleString()}</span>
           </div>
           ${deletedCount > 0 ? `
           <div style="display:flex;justify-content:space-between;margin-top:4px">
@@ -4435,6 +4452,32 @@ function closeModal() {
 
 // ─── LIST MANAGEMENT ─────────────────────────────────────────────────────────
 
+function showNewListMenu(btn) {
+  document.getElementById('new-list-menu')?.remove();
+  const menu = document.createElement('div');
+  menu.id = 'new-list-menu';
+  menu.style.cssText = 'position:fixed;z-index:300;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,0.25);min-width:140px;overflow:hidden;';
+  const rect = btn.getBoundingClientRect();
+  menu.style.top = (rect.bottom + 6) + 'px';
+  menu.style.right = (window.innerWidth - rect.right) + 'px';
+  menu.innerHTML = `
+    <button onclick="document.getElementById('new-list-menu')?.remove();showCreateList('static')"
+      style="display:block;width:100%;padding:12px 16px;background:none;border:none;text-align:left;color:var(--text);font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;">
+      📋 Static list
+    </button>
+    <div style="height:1px;background:var(--border)"></div>
+    <button onclick="document.getElementById('new-list-menu')?.remove();showCreateList('smart')"
+      style="display:block;width:100%;padding:12px 16px;background:none;border:none;text-align:left;color:var(--text);font-size:14px;cursor:pointer;font-family:'DM Sans',sans-serif;">
+      ✦ Smart list
+    </button>
+  `;
+  document.body.appendChild(menu);
+  setTimeout(() => {
+    document.addEventListener('click', function handler(e) {
+      if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('click', handler); }
+    });
+  }, 0);
+}
 function showCreateList(type) {
   const isSmart = type === 'smart';
   showModal(`
@@ -4775,7 +4818,7 @@ async function syncFromFeed() {
   try {
     while (pages < MAX_PAGES) {
       let feedUrl = state.redditFeedUrl;
-      feedUrl += (feedUrl.includes('?') ? '&' : '?') + 'limit=25';
+      feedUrl += '&limit=25';
       if (after) feedUrl += `&after=${encodeURIComponent(after)}`;
 
       // Route through proxy (required — Reddit blocks direct cross-origin fetches)
