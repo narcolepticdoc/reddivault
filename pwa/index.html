@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.11';
+const APP_VERSION = '0.9.8.12';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2022,6 +2022,16 @@ async function restoreFromBackup(data) {
   }
 
   await loadData();
+
+  // Restore config if present (newer backups only — old backups won't have this key)
+  if (data.config && typeof data.config === 'object') {
+    for (const [key, value] of Object.entries(data.config)) {
+      await db.config.put({ key, value });
+    }
+    // Reload state so restored settings take effect immediately
+    await loadConfig();
+  }
+
   return { added: itemsAdded, lists: (data.lists || []).length };
 }
 
@@ -2038,7 +2048,19 @@ async function exportJSON() {
   const items = await db.items.toArray();
   const lists = await db.lists.toArray();
   const itemLists = await db.item_lists.toArray();
-  const data = JSON.stringify({ items, lists, itemLists, exportedAt: new Date().toISOString() }, null, 2);
+
+  // Persist all meaningful config keys — skip transient sync state
+  const CONFIG_KEYS = [
+    'supabaseUrl', 'supabaseKey',
+    'redditFeedUrl', 'feedProxyUrl', 'feedProxyType',
+    'enrichReqPerMin', 'enrichRetryReqPerMin', 'enrichRateLimitPause', 'enrichMaxAttempts',
+    'confirmDestructive', 'disableZoom', 'autoFeedSync', 'autoFeedSyncInterval',
+    'recentSearches',
+  ];
+  const configRows = await db.config.where('key').anyOf(CONFIG_KEYS).toArray();
+  const config = Object.fromEntries(configRows.map(r => [r.key, r.value]));
+
+  const data = JSON.stringify({ items, lists, itemLists, config, exportedAt: new Date().toISOString() }, null, 2);
   const blob = new Blob([data], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
