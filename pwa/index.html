@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.8';
+const APP_VERSION = '0.9.9.1';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2155,14 +2155,15 @@ function renderHeaderActions() {
 }
 
 function renderHome() {
-  const total = state.items.length;
-  const starred = state.items.filter(i => i.isFavourite).length;
-  const rated = state.items.filter(i => i.rating).length;
-  const needsEnrich = state.items.filter(i => i.enrichStatus === 'pending').length;
+  const active = state.items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted);
+  const total = active.length;
+  const starred = active.filter(i => i.isFavourite).length;
+  const rated = active.filter(i => i.rating).length;
+  const needsEnrich = active.filter(i => i.enrichStatus === 'pending').length;
 
   // Items saved in last 7 days
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const recentItems = state.items
+  const recentItems = active
     .filter(i => i.savedAt && i.savedAt > sevenDaysAgo)
     .sort((a, b) => (b.savedAt || '').localeCompare(a.savedAt || ''))
     .slice(0, 5);
@@ -2871,10 +2872,11 @@ function renderTrashView() {
                 ${item.subreddit ? `<span class="subreddit-tag">r/${escHtml(item.subreddit)}</span>` : ''}
                 ${deletedStr ? `<span style="font-size:11px;color:var(--text-muted);margin-left:auto">Deleted ${deletedStr}</span>` : ''}
               </div>
-              <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:14px;color:var(--text);line-height:1.3;margin-bottom:8px">
+              <div onclick="showPreview(${item.id})" style="font-family:'Syne',sans-serif;font-weight:600;font-size:14px;color:var(--text);line-height:1.3;margin-bottom:8px;cursor:pointer">
                 ${escHtml(item.title || 'Untitled')}
               </div>
               <div style="display:flex;gap:8px;justify-content:flex-end">
+                <button class="btn btn-ghost btn-sm" onclick="showPreview(${item.id})">👁 View</button>
                 <button class="btn btn-ghost btn-sm" onclick="restoreDeletedItem(${item.id})">↩ Restore</button>
                 <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">↗ Open</a>
               </div>
@@ -2903,10 +2905,11 @@ function renderTrashView() {
             ${item.subreddit ? `<span class="subreddit-tag">r/${escHtml(item.subreddit)}</span>` : ''}
             ${item.author ? `<span style="font-size:11px;color:var(--text-muted)">u/${escHtml(item.author)}</span>` : ''}
           </div>
-          <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px;color:var(--text);line-height:1.3;margin-bottom:8px">
+          <div onclick="showPreview(${item.id})" style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px;color:var(--text);line-height:1.3;margin-bottom:8px;cursor:pointer">
             ${escHtml(item.title || 'Untitled')}
           </div>
           <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button class="btn btn-ghost btn-sm" onclick="showPreview(${item.id})">👁 View</button>
             <button class="btn btn-ghost btn-sm" onclick="restoreItem(${item.id})">↩ Restore</button>
             <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">↗ Open</a>
             <button class="btn btn-danger btn-sm" onclick="if(confirm('Permanently delete this item?'))deleteItemPermanently(${item.id})">🗑 Delete</button>
@@ -4369,10 +4372,6 @@ function renderSettings() {
           <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
             onclick="if(confirm('Reset ALL items to pending — re-fetches everything from Reddit. Continue?'))resetAllEnrichment()">
             🔄 Re-enrich Entire Library</button>
-          ${state.items.some(i => i.source === 'feed') ? `
-            <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center;color:var(--danger)"
-              onclick="removeFeedItems()">🗑️ Remove feed-imported items (${state.items.filter(i => i.source === 'feed').length})</button>
-          ` : ''}
           <button class="btn btn-danger btn-sm" style="width:100%;justify-content:center;margin-top:4px"
             onclick="if(confirm('Delete ALL local data? Make sure you have a backup first!'))clearAllData()">⚠️ Clear All Local Data</button>
         </div>
@@ -4851,28 +4850,6 @@ async function syncFromFeed() {
   state.feedSyncing = false;
   state.feedSyncProgress = null;
   render();
-}
-
-async function removeFeedItems() {
-  const feedItems = state.items.filter(i => i.source === 'feed');
-  if (!feedItems.length) { showToast('No feed-imported items found', 'error'); return; }
-  if (!confirm(`Delete ${feedItems.length} item${feedItems.length !== 1 ? 's' : ''} imported via feed sync? This cannot be undone.`)) return;
-  const ids = feedItems.map(i => i.id);
-  await db.items.bulkDelete(ids);
-  // Remove from Supabase too
-  if (state.supabaseUrl && state.supabaseKey) {
-    const redditIds = feedItems.map(i => i.redditId).filter(Boolean);
-    for (let i = 0; i < redditIds.length; i += 50) {
-      const chunk = redditIds.slice(i, i + 50);
-      try {
-        await supabaseFetch(`/reddit_saves?reddit_id=in.(${chunk.map(id => `"${id}"`).join(',')})`, 'DELETE', null);
-      } catch(e) {}
-    }
-  }
-  await loadData();
-  state.feedSyncResult = null;
-  render();
-  showToast(`Deleted ${feedItems.length} feed-imported items`, 'success');
 }
 
 async function clearAllData() {
