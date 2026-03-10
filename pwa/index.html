@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.3';
+const APP_VERSION = '0.9.9.4';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -4081,7 +4081,6 @@ function renderLists() {
             </div>
           </div>
           <div style="display:flex;gap:6px">
-            ${isSmart ? `<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();runListSearch(${list.id})" title="Run search">▶</button>` : ''}
             <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();editList(${list.id})" title="Edit">✏️</button>
             <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();if(confirm('Delete list?'))deleteList(${list.id})" title="Delete" style="color:var(--danger)">🗑️</button>
           </div>
