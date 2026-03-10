@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.2';
+const APP_VERSION = '0.9.9.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -3042,7 +3042,8 @@ function renderBrowse() {
         const graph = buildTagDepGraph();
         return getTagsContaining(state.editingListId, graph);
       })() : new Set();
-      const visibleTags = state.tagTrayCollapsed ? tagLists.filter(l => state.activeTagIds.includes(+l.id)) : tagLists;
+      const visibleTags = (state.tagTrayCollapsed ? tagLists.filter(l => state.activeTagIds.includes(+l.id)) : tagLists)
+        .filter(l => l.id !== state.editingListId); // hide the tag being edited
       return `
       <div style="margin-bottom:10px">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -3221,7 +3222,7 @@ function renderBrowse() {
         ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
       </span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-        ${(q || state.activeTagIds.length > 0) ? `
+        ${(q || state.activeTagIds.length > 0) && !state.editingListId ? `
           <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
             onclick="saveCurrentSearchAsList()">
             + Save as list</button>` : ''}
@@ -3798,7 +3799,7 @@ function handleSearchInput(value) {
     const q = value.trim();
     // Just update the save button visibility — leave count alone until filter runs
     const saveBtn = countEl.querySelector('.save-as-list-btn');
-    if (q && !saveBtn) {
+    if (q && !saveBtn && !state.editingListId) {
       // Re-render the whole count area to show the button
       const items = filteredItems();
       countEl.innerHTML = `
@@ -3810,7 +3811,7 @@ function handleSearchInput(value) {
             onclick="saveCurrentSearchAsList()">+ Save as list</button>
           ${renderSortControl()}
         </div>`;
-    } else if (!q && saveBtn) {
+    } else if ((!q || state.editingListId) && saveBtn) {
       renderBrowseList();
     }
   }
@@ -3919,7 +3920,7 @@ function renderBrowseList() {
         ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
       </span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-      ${q ? `<button class="save-as-list-btn" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
+      ${(q || state.activeTagIds.length > 0) && !state.editingListId ? `<button class="save-as-list-btn" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
           onclick="saveCurrentSearchAsList()">
           + Save as list
         </button>` : ''}
@@ -4076,7 +4077,7 @@ function renderLists() {
             <div style="font-family:'Syne',sans-serif;font-weight:600;font-size:15px">${escHtml(list.name)}</div>
             <div style="font-size:12px;color:var(--text-muted);margin-top:3px">
               ${isSmart ? `<span style="color:var(--accent2)">✦ Smart</span> · ` : ''}${count} item${count!==1?'s':''}
-              ${list.isTag ? `<span style="margin-left:6px;background:var(--accent2);color:#fff;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600">#${escHtml(list.tagName || list.name)}</span>` : ''}
+              ${list.isTag ? `<span style="margin-left:6px;background:var(--accent2);color:#fff;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:600;white-space:nowrap;display:inline-block">#${escHtml(list.tagName || list.name)}</span>` : ''}
             </div>
           </div>
           <div style="display:flex;gap:6px">
@@ -4758,6 +4759,18 @@ async function doCreateList(type) {
     showToast('Tag name can only contain letters, numbers, spaces, & and /  — no special characters', 'error');
     return;
   }
+  // Deduplication
+  const nameLower = name.toLowerCase();
+  const tagNameLower = tagName.toLowerCase();
+  const conflict = state.lists.find(l =>
+    l.name.toLowerCase() === nameLower ||
+    (tagName && (l.tagName || '').toLowerCase() === tagNameLower) ||
+    (tagName && l.name.toLowerCase() === tagNameLower)
+  );
+  if (conflict) {
+    showToast(`A list or tag named "${conflict.name}" already exists`, 'error');
+    return;
+  }
   closeModal();
   const id = await db.lists.add({ name, type, query, isTag, tagName, createdAt: new Date().toISOString() });
   await loadData();
@@ -4793,6 +4806,17 @@ async function doSaveOverList(id) {
   const query = document.getElementById('list-query')?.value?.trim() || '';
   const isTag = document.getElementById('list-is-tag')?.checked || false;
   const tagName = document.getElementById('list-tag-name')?.value?.trim() || '';
+  if (isTag && tagName && !validateTagName(tagName)) {
+    showToast('Tag name can only contain letters, numbers, spaces, & and /  — no special characters', 'error');
+    return;
+  }
+  // Deduplication — allow same name as self
+  const nameLower = name.toLowerCase();
+  const conflict = state.lists.find(l => l.id !== id && l.name.toLowerCase() === nameLower);
+  if (conflict) {
+    showToast(`A list named "${conflict.name}" already exists`, 'error');
+    return;
+  }
   if (isTag && tagName && !validateTagName(tagName)) {
     showToast('Tag name can only contain letters, numbers, spaces, & and /  — no special characters', 'error');
     return;
@@ -4833,12 +4857,16 @@ function editList(id) {
     ${list.type === 'smart' ? `
       <div class="form-group">
         <label>Search query</label>
-        <input class="input" id="edit-list-query" value="${escHtml(list.query || '')}">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:13px;color:var(--text);font-style:${list.query?'normal':'italic'};min-height:36px;word-break:break-word">
+          ${list.query ? escHtml(list.query) : '<span style="color:var(--text-muted)">No query set</span>'}
+        </div>
         ${(() => {
           const { tags } = extractTagTokens(list.query || '');
           const missing = tags.filter(n => !state.lists.find(l => l.isTag && l.type === 'smart' && (l.tagName || l.name) === n));
-          return missing.length ? `<span style="font-size:11px;color:var(--warning)">⚠ Tag${missing.length>1?'s':''} not found: ${missing.map(n=>`#${escHtml(n)}`).join(', ')} — ${missing.length>1?'these tokens are':'this token is'} being ignored</span>` : '';
+          return missing.length ? `<span style="font-size:11px;color:var(--warning)">⚠ Tag${missing.length>1?'s':''} not found: ${missing.map(n=>`#${escHtml(n)}`).join(', ')} — being ignored</span>` : '';
         })()}
+        <button class="btn btn-secondary btn-sm" style="margin-top:8px;width:100%;justify-content:center"
+          onclick="closeModal();runListSearch(${id})">✏️ Edit in search</button>
       </div>
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:4px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
@@ -4863,11 +4891,9 @@ function editList(id) {
 async function doEditList(id) {
   const name = document.getElementById('edit-list-name')?.value?.trim();
   if (!name) { showToast('Name required', 'error'); return; }
-  const query = document.getElementById('edit-list-query')?.value?.trim() ?? undefined;
   const isTagEl = document.getElementById('edit-list-is-tag');
   const tagNameEl = document.getElementById('edit-list-tag-name');
   const updates = { name };
-  if (query !== undefined) updates.query = query;
   if (isTagEl) updates.isTag = isTagEl.checked;
   if (tagNameEl) updates.tagName = tagNameEl.value.trim();
 
@@ -4877,26 +4903,17 @@ async function doEditList(id) {
     return;
   }
 
-  // Cycle detection — check if the new query introduces a cycle
-  if (query !== undefined) {
-    const graph = buildTagDepGraph();
-    const { tags: referencedTagNames } = extractTagTokens(query);
-    for (const tagName of referencedTagNames) {
-      const dep = state.lists.find(l => l.isTag && l.type === 'smart' && (l.tagName || l.name) === tagName);
-      if (dep) {
-        const cyclePath = findCyclePath(id, dep.id, graph);
-        if (cyclePath) {
-          showToast(`⚠ Circular reference: ${cyclePath.join(' → ')}. Remove [#${tagName}] to save.`, 'error');
-          return;
-        }
-      }
-    }
+  // Deduplication — check name not taken by another list
+  const nameLower = name.toLowerCase();
+  const conflict = state.lists.find(l => l.id !== id && (l.name.toLowerCase() === nameLower || (l.tagName || '').toLowerCase() === nameLower));
+  if (conflict) {
+    showToast(`A list named "${conflict.name}" already exists`, 'error');
+    return;
   }
 
   await db.lists.update(id, updates);
   closeModal();
   await loadData();
-  if (updates.query !== undefined) rebuildTagCache(id);
   await markDirty(`list edited: "${name}"`);
   await pushListsToSupabase();
   render();
