@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.9';
+const APP_VERSION = '0.9.9.10';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1339,6 +1339,8 @@ async function checkCloudAhead() {
     } else {
       syncLog(`checkCloudAhead: in sync (diff=${diff}s)`);
       state.syncStatus = 'connected';
+      state.lastSyncedAt = new Date().toISOString();
+      await db.config.put({ key: 'lastSyncedAt', value: state.lastSyncedAt });
       renderHeaderActions();
     }
   } catch(e) {
