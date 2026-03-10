@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.19';
+const APP_VERSION = '0.9.9.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -403,6 +403,7 @@ let state = {
   searchFocused: false,
   // Tag chips — active smart list tags applied to search
   activeTagIds: [],     // list ids of active tag chips
+  tagTrayCollapsed: false, // tag tray collapsed (shows only active tags when collapsed)
   tagMode: 'AND',       // 'AND' | 'OR'
   tagCache: new Map(),  // Map<listId, { count, itemIds: Set }>
   showTrash: false,
@@ -441,6 +442,7 @@ let state = {
   localDirty: false,        // true if local has changes not yet pushed
   cloudAhead: false,        // true if cloud has data not yet pulled
   lastPushedAt: null,       // ISO timestamp of last successful push to cloud
+  lastFeedSync: null,       // ISO timestamp of last successful feed sync
   syncLog: [],              // in-memory diagnostic log, session only
   _lastIndicatorLabel: null,// tracks last rendered indicator to avoid duplicate log entries
 };
@@ -578,6 +580,8 @@ async function loadConfig() {
     if (localDirty) state.localDirty = localDirty.value;
     const lastPushedAt = await db.config.get('lastPushedAt');
     if (lastPushedAt) state.lastPushedAt = lastPushedAt.value;
+    const lastFeedSync = await db.config.get('lastFeedSync');
+    if (lastFeedSync) state.lastFeedSync = lastFeedSync.value;
   } catch(e) {}
 }
 
@@ -3020,7 +3024,7 @@ function renderBrowse() {
     ${tagLists.length > 0 ? `
       <div style="margin-bottom:10px">
         <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-          ${tagLists.map(l => {
+          ${(state.tagTrayCollapsed ? tagLists.filter(l => state.activeTagIds.includes(+l.id)) : tagLists).map(l => {
             const active = state.activeTagIds.includes(+l.id);
             const cached = state.tagCache.get(l.id);
             const count = cached ? cached.count : 0;
@@ -3041,6 +3045,11 @@ function renderBrowse() {
             <button style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text-muted);padding:2px 6px"
               onclick="state.activeTagIds=[];state.tagMode='AND';renderBrowseList();render()">Clear</button>
           ` : ''}
+          <button style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text-muted);padding:2px 4px;margin-left:auto"
+            onclick="state.tagTrayCollapsed=!state.tagTrayCollapsed;render()"
+            title="${state.tagTrayCollapsed ? 'Show all tags' : 'Collapse tag tray'}">
+            ${state.tagTrayCollapsed ? '▸ tags' : '▾'}
+          </button>
         </div>
       </div>
     ` : ''}
@@ -3076,6 +3085,8 @@ function renderBrowse() {
       <div style="margin-top:8px;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;display:grid;gap:6px;line-height:1.8">
         <div><code style="color:var(--accent2);font-size:11px">python tutorial</code> <span style="color:var(--text-muted)">— both words must appear (AND)</span></div>
         <div><code style="color:var(--accent2);font-size:11px">react, vue, svelte</code> <span style="color:var(--text-muted)">— any of these words (OR)</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">(react, vue, svelte)</code> <span style="color:var(--text-muted)">— same as above, parentheses are optional for a pure OR search</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">(dogs, cats) horses cows</code> <span style="color:var(--text-muted)">— must contain horses AND cows AND at least one of dogs/cats (mixed AND + OR)</span></div>
         <div><code style="color:var(--accent2);font-size:11px">"machine learning"</code> <span style="color:var(--text-muted)">— match this exact word or phrase anywhere in the text</span></div>
         <div><code style="color:var(--accent2);font-size:11px">-javascript</code> <span style="color:var(--text-muted)">— exclude this word</span></div>
         <div><code style="color:var(--accent2);font-size:11px">run*</code> <span style="color:var(--text-muted)">— words starting with "run" (running, runner…)</span></div>
@@ -3947,7 +3958,7 @@ function renderLists() {
   }
 
   // Sort and optionally separate
-  const sorted = [...allLists].sort((a,b) => a.name.localeCompare(b.name));
+  const sorted = [...allLists].sort((a,b) => a.name.replace(/^[^a-zA-Z0-9]+/,'').localeCompare(b.name.replace(/^[^a-zA-Z0-9]+/,'')));
   const smarts = sorted.filter(l => l.type === 'smart');
   const statics = sorted.filter(l => l.type === 'static');
   const tagLists = smarts.filter(l => l.isTag);
@@ -4110,6 +4121,9 @@ function renderSettings() {
       ${!state.redditFeedUrl ? `
         <p style="font-size:12px;color:var(--warning);margin-top:8px">⚠️ No feed URL configured — expand settings below to set up.</p>
       ` : ''}
+      ${state.lastFeedSync ? `
+        <p style="font-size:11px;color:var(--text-muted);margin-top:8px">Last synced: ${new Date(state.lastFeedSync).toLocaleString()}</p>
+      ` : ''}
       <div style="margin-top:12px;display:grid;gap:10px">
         <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;font-size:13px">
           <span>
@@ -4135,7 +4149,7 @@ function renderSettings() {
             <input class="input" id="feed-url" placeholder="https://old.reddit.com/user/USERNAME/saved.json?feed=YOUR_FEED_TOKEN&amp;user=USERNAME"
               value="${escHtml(state.redditFeedUrl)}" style="font-size:16px">
             <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → under Private Listings, right-click the JSON button next to 'your saved links' → Copy Link</span>
-            <button class="btn btn-secondary btn-sm" onclick="window.open('https://old.reddit.com/prefs/feeds/','_system')"
+            <button class="btn btn-secondary btn-sm" onclick="window.location.href='https://old.reddit.com/prefs/feeds/'"
               style="margin-top:8px;width:100%;justify-content:center">
               🔗 Open Reddit Feeds page
             </button>
@@ -4279,11 +4293,12 @@ function renderSettings() {
         To get your CSV: go to <strong style="color:var(--text)">reddit.com/settings</strong> → Data Request → download and find <strong style="color:var(--text)">saved_posts.csv</strong>.
       </p>
       <details style="margin-bottom:12px">
-        <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">ℹ️ About enrichment</summary>
+        <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">ℹ️ About importing and enrichment</summary>
         <div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-top:8px;display:grid;gap:8px">
-          <p>Reddit's CSV export contains only post IDs and URLs — titles, subreddits, authors and post content must be fetched separately. Enrichment runs in two phases: first a fast bulk pass via <strong style="color:var(--text)">Arctic Shift</strong> (thousands of items in seconds), then a slower per-item pass via Reddit's public JSON for anything Arctic Shift didn't have.</p>
-          <p>Some items will still fail due to deleted posts or private subreddits. Use the <strong style="color:var(--text)">Retry</strong> button after the initial pass — a small number of items need 2–3 attempts before they either succeed or are confirmed unavailable.</p>
-          <p>This is a one-time process for imported items. New items from feed sync arrive already fully enriched.</p>
+          <p><strong style="color:var(--text)">Before importing your CSV</strong>, it's worth setting up feed sync first if you haven't already. The feed pulls your most recent saves (up to ~1000) with full metadata already attached — no enrichment needed for those. If you have fewer than 1000 saved items in total, the feed alone may be sufficient and you won't need the CSV at all. The CSV is mainly useful for recovering older saves that fall outside the feed's range.</p>
+          <p>Items that arrive solely from the CSV will need enrichment to retrieve their titles, subreddits, authors and content. <strong style="color:var(--text)">Start with Arctic Shift</strong> — it's a Reddit archive that can resolve thousands of items in seconds. Because it's an archive it may not have the very latest posts, or posts that were deleted before being archived.</p>
+          <p>Once Arctic Shift finishes, check how many items are still unresolved. The <strong style="color:var(--text)">Reddit</strong> pass can recover more but is significantly slower due to rate limiting — whether it's worth running depends on how complete you want your library to be and how many items are still missing.</p>
+          <p>The <strong style="color:var(--text)">Retry</strong> button re-queues items that failed due to rate limit hits or temporary errors. Some items need 2–3 passes before they either resolve or are confirmed permanently unavailable as deleted or private posts.</p>
         </div>
       </details>
       <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()" style="margin-bottom:12px">
@@ -4644,7 +4659,7 @@ function showListMenu(itemId) {
   }
 
   const inListIds = new Set(state.itemLists.filter(il => il.itemId === itemId).map(il => il.listId));
-  const sorted = [...state.lists].sort((a,b) => a.name.localeCompare(b.name));
+  const sorted = [...state.lists].sort((a,b) => a.name.replace(/^[^a-zA-Z0-9]+/,'').localeCompare(b.name.replace(/^[^a-zA-Z0-9]+/,'')));
 
   showModal(`
     <div class="modal-title">Add to List</div>
@@ -4927,7 +4942,9 @@ async function syncFromFeed() {
 
     await loadData();
     state.feedSyncResult = { added, skipped, pages };
-    await db.config.put({ key: 'lastFeedSync', value: new Date().toISOString() });
+    const feedSyncTs = new Date().toISOString();
+    await db.config.put({ key: 'lastFeedSync', value: feedSyncTs });
+    state.lastFeedSync = feedSyncTs;
 
     if (added > 0 && skipped === 0 && pages >= MAX_PAGES) {
       const msg = `${added} items added but no overlap found — may have unseen saves beyond Reddit's limit`;
