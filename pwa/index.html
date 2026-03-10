@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.15';
+const APP_VERSION = '0.9.8.18';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -433,6 +433,7 @@ let state = {
   listView: 'all',         // 'all' | list id
   listSeparate: false,     // separate smart vs static
   listSmartFirst: true,    // smart lists above static when separated
+  tagsCollapsed: false,    // tags subsection collapsed in separate mode
   confirmDestructive: true, // confirm before trash/remove actions
   disableZoom: true,        // prevent iOS pinch-to-zoom
   autoFeedSync: false,        // auto-sync feed on open/foreground
@@ -3948,15 +3949,54 @@ function renderLists() {
   const sorted = [...allLists].sort((a,b) => a.name.localeCompare(b.name));
   const smarts = sorted.filter(l => l.type === 'smart');
   const statics = sorted.filter(l => l.type === 'static');
+  const tagLists = smarts.filter(l => l.isTag);
+  const nonTagSmarts = smarts.filter(l => !l.isTag);
   const firstGroup  = state.listSmartFirst ? smarts  : statics;
   const secondGroup = state.listSmartFirst ? statics : smarts;
   const firstLabel  = state.listSmartFirst ? '✦ SMART LISTS'  : '📋 STATIC LISTS';
   const secondLabel = state.listSmartFirst ? '📋 STATIC LISTS' : '✦ SMART LISTS';
 
+  const renderSmartGroup = () => {
+    if (smarts.length === 0) return '';
+    const hasTagSub = tagLists.length > 0 && nonTagSmarts.length > 0;
+    const allAreTags = tagLists.length > 0 && nonTagSmarts.length === 0;
+    if (!hasTagSub) {
+      // all smart lists are tags, or none are — flat list, no subsection
+      return `<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${smarts.map(renderListCard).join('')}</div>`;
+    }
+    return `
+      <div style="margin-bottom:8px;padding:10px 12px;background:rgba(244,114,182,0.04);border:1px solid rgba(244,114,182,0.18);border-radius:10px;">
+        <div onclick="state.tagsCollapsed=!state.tagsCollapsed;render()"
+          style="font-size:11px;color:var(--accent3);font-weight:600;letter-spacing:0.05em;display:flex;align-items:center;justify-content:space-between;cursor:pointer;padding:2px 0;margin-bottom:${state.tagsCollapsed?'0':'8px'}">
+          <span>🏷 TAGS</span>
+          <span style="font-size:10px;transition:transform 0.2s;display:inline-block;transform:rotate(${state.tagsCollapsed?'-90deg':'0deg'})">▼</span>
+        </div>
+        ${state.tagsCollapsed ? '' : `<div style="display:flex;flex-direction:column;gap:8px">${tagLists.map(renderListCard).join('')}</div>`}
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${nonTagSmarts.map(renderListCard).join('')}</div>
+    `;
+  };
+
+  const renderSeparated = () => {
+    const firstIsSmarts = state.listSmartFirst;
+    const firstContent  = firstIsSmarts ? renderSmartGroup() : `<div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${statics.map(renderListCard).join('')}</div>`;
+    const secondContent = firstIsSmarts ? `<div style="display:flex;flex-direction:column;gap:8px">${statics.map(renderListCard).join('')}</div>` : renderSmartGroup();
+    return `
+      ${firstGroup.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${firstLabel}</div>
+        ${firstContent}
+      ` : ''}
+      ${secondGroup.length > 0 ? `
+        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${secondLabel}</div>
+        ${secondContent}
+      ` : ''}
+    `;
+  };
+
   return `
     <div class="section-header">
       <div class="section-title">Lists</div>
-      <div style="display:flex;gap:6px">
+      <div style="display:flex;align-items:center;gap:6px;flex:1;margin-left:8px">
         ${allLists.length > 1 ? `
           <button class="btn btn-ghost btn-sm" onclick="state.listSeparate=!state.listSeparate;render()"
             style="${state.listSeparate?'color:var(--accent2)':''}">
@@ -3967,8 +4007,8 @@ function renderLists() {
             title="Toggle which list type appears first">
             ${state.listSmartFirst ? '✦ Smart ↑' : '📋 Static ↑'}
           </button>` : ''}
-        <button class="btn btn-primary btn-sm" onclick="showNewListMenu(this)">+ New</button>
       </div>
+      <button class="btn btn-primary btn-sm" onclick="showNewListMenu(this)">+ New</button>
     </div>
 
     ${allLists.length === 0 ? `
@@ -3977,16 +4017,7 @@ function renderLists() {
         <h3>No lists yet</h3>
         <p>Create a <strong>Static list</strong> to manually collect posts, or a <strong>Smart list</strong> that auto-populates from a saved search.</p>
       </div>
-    ` : separated ? `
-      ${firstGroup.length > 0 ? `
-        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${firstLabel}</div>
-        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">${firstGroup.map(renderListCard).join('')}</div>
-      ` : ''}
-      ${secondGroup.length > 0 ? `
-        <div style="font-size:11px;color:var(--text-muted);font-weight:600;letter-spacing:0.05em;margin-bottom:8px">${secondLabel}</div>
-        <div style="display:flex;flex-direction:column;gap:8px">${secondGroup.map(renderListCard).join('')}</div>
-      ` : ''}
-    ` : `
+    ` : separated ? renderSeparated() : `
       <div style="display:flex;flex-direction:column;gap:8px">${sorted.map(renderListCard).join('')}</div>
     `}
   `;
@@ -4103,10 +4134,10 @@ function renderSettings() {
             <input class="input" id="feed-url" placeholder="https://old.reddit.com/user/USERNAME/saved.json?feed=YOUR_FEED_TOKEN&amp;user=USERNAME"
               value="${escHtml(state.redditFeedUrl)}" style="font-size:16px">
             <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → under Private Listings, right-click the JSON button next to 'your saved links' → Copy Link</span>
-            <a class="btn btn-secondary btn-sm" href="https://old.reddit.com/prefs/feeds/" target="_blank" rel="noopener"
-              style="margin-top:8px;width:100%;justify-content:center;text-decoration:none">
+            <button class="btn btn-secondary btn-sm" onclick="window.open('https://old.reddit.com/prefs/feeds/','_system')"
+              style="margin-top:8px;width:100%;justify-content:center">
               🔗 Open Reddit Feeds page
-            </a>
+            </button>
           </div>
           <div class="form-group">
             <label>CORS Proxy</label>
