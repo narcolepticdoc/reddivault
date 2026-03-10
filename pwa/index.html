@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.6';
+const APP_VERSION = '0.9.9.9';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -547,13 +547,11 @@ async function loadConfig() {
   try {
     const url = await db.config.get('supabaseUrl');
     const key = await db.config.get('supabaseKey');
-    const lastSync = await db.config.get('lastSync');
     const enrichRpm = await db.config.get('enrichReqPerMin');
     const retryRpm = await db.config.get('enrichRetryReqPerMin');
     const rlPause = await db.config.get('enrichRateLimitPause');
     if (url) state.supabaseUrl = url.value;
     if (key) state.supabaseKey = key.value;
-    if (lastSync) state.lastSync = lastSync.value;
     const maxAttempts = await db.config.get('enrichMaxAttempts');
     const lastRunRL = await db.config.get('lastRunRateLimitHits');
     if (enrichRpm) state.enrichReqPerMin = enrichRpm.value;
@@ -1609,13 +1607,18 @@ async function syncFromSupabase() {
 
     // Pull complete — lastPushedAt (delta cursor) does not advance on pull.
     // lastSyncedAt (display label) does — we are now confirmed in sync.
+    // markClean is NOT called here — it would advance lastPushedAt incorrectly.
     state.lastSyncedAt = pullStartedAt;
     await db.config.put({ key: 'lastSyncedAt', value: pullStartedAt });
     state.syncStatus = 'connected';
     state.cloudAhead = false;
+    state.localDirty = false;
+    _retryCount = 0;
+    if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+    await db.config.put({ key: 'localDirty', value: false });
     await loadData();
     await pullPreferences();
-    await markClean();
+    renderHeaderActions();
     syncLog(`syncFromSupabase: complete`, 'ok');
     if (isDelta && allRemoteItems.length === 0 && !changedLists?.length) {
       showToast('Already up to date ✓', 'success');
@@ -1680,11 +1683,10 @@ async function deltaPullBeforePush() {
       await loadData();
     }
 
-    // Lists
+    // Lists — upsert changed, reconcile deletions, refresh memberships for changed lists
     const remoteLists = await supabaseFetch(`/reddit_lists?select=*${deltaFilter}`);
     if (remoteLists && remoteLists.length > 0) {
       syncLog(`deltaPullBeforePush: merging ${remoteLists.length} remote list(s)`);
-      // Delegate to the same reconcile logic used in syncFromSupabase
       for (const l of remoteLists) {
         const existing = state.lists.find(loc => loc.name === l.name);
         if (!existing) {
@@ -1693,6 +1695,49 @@ async function deltaPullBeforePush() {
             isTag: l.is_tag || false, tagName: l.tag_name || '',
             createdAt: l.created_at,
           });
+        } else {
+          await db.lists.update(existing.id, {
+            type: l.type, query: l.query || '',
+            isTag: l.is_tag || false, tagName: l.tag_name || '',
+          });
+        }
+      }
+      // Check for deletions — any local list not on the remote should be removed
+      const allRemoteNames = await supabaseFetch('/reddit_lists?select=name');
+      const remoteNameSet = new Set(allRemoteNames.map(l => l.name));
+      const localLists = await db.lists.toArray();
+      for (const l of localLists) {
+        if (!remoteNameSet.has(l.name)) {
+          await db.lists.delete(l.id);
+          await db.item_lists.where('listId').equals(l.id).delete();
+        }
+      }
+      // Reconcile memberships for changed static lists
+      await loadData();
+      const freshLists = await db.lists.toArray();
+      const allLocalItems = await db.items.toArray();
+      for (const rl of remoteLists.filter(l => l.type === 'static')) {
+        const local = freshLists.find(fl => fl.name === rl.name);
+        if (!local) continue;
+        const remoteMembers = await supabaseFetch(
+          `/reddit_item_lists?list_name=eq.${encodeURIComponent(rl.name)}&select=reddit_id`
+        );
+        const remoteMemberIds = new Set(remoteMembers.map(r => r.reddit_id));
+        const localMemberships = await db.item_lists.where('listId').equals(local.id).toArray();
+        const localMemberRedditIds = new Set(
+          localMemberships.map(il => allLocalItems.find(i => i.id === il.itemId)?.redditId).filter(Boolean)
+        );
+        for (const redditId of remoteMemberIds) {
+          if (!localMemberRedditIds.has(redditId)) {
+            const item = allLocalItems.find(i => i.redditId === redditId);
+            if (item) await db.item_lists.add({ itemId: item.id, listId: local.id });
+          }
+        }
+        for (const il of localMemberships) {
+          const redditId = allLocalItems.find(i => i.id === il.itemId)?.redditId;
+          if (redditId && !remoteMemberIds.has(redditId)) {
+            await db.item_lists.delete(il.id);
+          }
         }
       }
       await loadData();
@@ -1705,9 +1750,8 @@ async function deltaPullBeforePush() {
   }
 }
 
-async function pushToSupabase(items) {
+async function pushToSupabase(items, skipClean = false) {
   if (!state.supabaseUrl || !state.supabaseKey) return;
-  await deltaPullBeforePush();
   const payload = items.map(i => ({
     reddit_id: i.redditId,
     type: i.type,
@@ -1728,16 +1772,16 @@ async function pushToSupabase(items) {
   try {
     await supabaseFetch('/reddit_saves?on_conflict=reddit_id', 'POST', payload);
     syncLog(`push: ${items.length} item${items.length !== 1 ? 's' : ''} pushed to cloud`, 'ok');
-    await markClean();
+    if (!skipClean) await markClean();
   } catch(e) {
     syncLog(`push: failed — ${e.message}`, 'error');
     console.warn('Push failed:', e);
   }
 }
 
-async function pushListsToSupabase() {
+async function pushListsToSupabase(skipPull = false) {
   if (!state.supabaseUrl || !state.supabaseKey) return;
-  await deltaPullBeforePush();
+  if (!skipPull) await deltaPullBeforePush();
   syncLog('pushListsToSupabase: starting');
   try {
     const lists = await db.lists.toArray();
@@ -1785,6 +1829,7 @@ async function pushListsToSupabase() {
 async function deleteListFromSupabase(listName) {
   if (!state.supabaseUrl || !state.supabaseKey) return;
   try {
+    await deltaPullBeforePush();
     await supabaseFetch(`/reddit_item_lists?list_name=eq.${encodeURIComponent(listName)}`, 'DELETE', null);
     await supabaseFetch(`/reddit_lists?name=eq.${encodeURIComponent(listName)}`, 'DELETE', null);
     await markClean();
@@ -1799,13 +1844,15 @@ async function pushAllToSupabase() {
   }
   showToast('Pushing all local data to cloud…', 'info');
   try {
+    await deltaPullBeforePush(); // pull once before the entire operation
     const allItems = await db.items.toArray();
     const BATCH = 200;
     for (let i = 0; i < allItems.length; i += BATCH) {
-      await pushToSupabase(allItems.slice(i, i + BATCH));
+      await pushToSupabase(allItems.slice(i, i + BATCH), true); // skipClean — markClean called once at end
       showToast(`Pushing… ${Math.min(i + BATCH, allItems.length)} / ${allItems.length}`, 'info');
     }
-    await pushListsToSupabase();
+    await pushListsToSupabase(true); // pull already done above, skipPull=true
+    // markClean already called by pushListsToSupabase
     showToast(`✓ Pushed ${allItems.length.toLocaleString()} items + lists to cloud`, 'success');
   } catch(e) {
     showToast('Push failed: ' + e.message, 'error');
@@ -2807,6 +2854,7 @@ async function purgeDeletedItems() {
   }
   _setSyncing(false);
   syncLog(`purgeDeletedItems: complete`, 'ok');
+  if (state.supabaseUrl) await markClean();
   await loadData();
   render();
 }
@@ -2832,6 +2880,7 @@ async function deleteAllTrashed() {
   }
   _setSyncing(false);
   syncLog(`deleteAllTrashed: complete`, 'ok');
+  if (state.supabaseUrl) await markClean();
   await loadData();
   render();
 }
@@ -2857,6 +2906,7 @@ async function trashAllDead() {
   _setSyncing(false);
   state.showDead = false;
   syncLog(`trashAllDead: complete`, 'ok');
+  if (state.supabaseUrl) await markClean();
   await loadData();
   render();
 }
@@ -2868,6 +2918,7 @@ async function pushItemUpdate(id, fields) {
   try {
     await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', fields);
     state.syncStatus = 'connected';
+    await markClean();
   } catch(e) {
     syncLog(`pushItemUpdate failed for ${item.redditId} — ${e.message}`, 'error');
     await markDirty('item update push failed');
@@ -2882,6 +2933,7 @@ async function pushItemDelete(redditId) {
     state.syncStatus = 'connected';
     syncLog(`pushItemDelete: ok — ${redditId}`, 'ok');
     _setSyncing(false);
+    await markClean();
   } catch(e) {
     syncLog(`pushItemDelete failed for ${redditId} — ${e.message}`, 'error');
     _setSyncing(false);
