@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.4';
+const APP_VERSION = '0.9.9.5';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1414,13 +1414,14 @@ async function syncFromSupabase() {
   // will have updated_at >= pullStartedAt, so it won't be missed next time.
   const pullStartedAt = new Date().toISOString();
 
-  // Delta sync: only fetch rows modified since our last successful pull.
-  // Falls back to full scan if no lastSync timestamp exists (first-time setup).
-  const lastSync = state.lastSync || null;
-  const isDelta = !!lastSync;
-  const deltaFilter = isDelta ? `&updated_at=gt.${encodeURIComponent(lastSync)}` : '';
+  // Delta sync: only fetch rows modified since our last successful push.
+  // This is the correct cursor — we want everything that changed on the cloud
+  // after we last wrote to it. Falls back to full scan on first-time setup.
+  const cursor = state.lastPushedAt || null;
+  const isDelta = !!cursor;
+  const deltaFilter = isDelta ? `&updated_at=gt.${encodeURIComponent(cursor)}` : '';
 
-  syncLog(`syncFromSupabase: starting ${isDelta ? 'delta' : 'full'} pull${isDelta ? ` (since ${lastSync})` : ''}`);
+  syncLog(`syncFromSupabase: starting ${isDelta ? 'delta' : 'full'} pull${isDelta ? ` (since ${cursor})` : ''}`);
   state.syncStatus = 'syncing';
   renderHeaderActions();
   try {
@@ -1504,7 +1505,7 @@ async function syncFromSupabase() {
     // Lists sync: delta on list records, full rebuild of memberships only when lists changed.
     let changedLists = [];
     try {
-      const listsDeltaFilter = isDelta ? `&updated_at=gt.${encodeURIComponent(lastSync)}` : '';
+      const listsDeltaFilter = isDelta ? `&updated_at=gt.${encodeURIComponent(cursor)}` : '';
       changedLists = await supabaseFetch(`/reddit_lists?select=*${listsDeltaFilter}`);
       const listsChanged = !isDelta || changedLists.length > 0;
 
@@ -1601,9 +1602,7 @@ async function syncFromSupabase() {
       syncLog(`syncFromSupabase: lists sync skipped — ${e.message}`, 'warn');
     }
 
-    // Save the timestamp we recorded at the START of this pull
-    await db.config.put({ key: 'lastSync', value: pullStartedAt });
-    state.lastSync = pullStartedAt;
+    // Pull complete — do not advance lastPushedAt here; that cursor only moves on push.
     state.syncStatus = 'connected';
     state.cloudAhead = false;
     await loadData();
@@ -1625,8 +1624,81 @@ async function syncFromSupabase() {
   }
 }
 
+// Lightweight delta pull run before every push.
+// Fetches anything on the cloud newer than our last push, merges it in locally,
+// so we never blindly overwrite changes from another device.
+// If no lastPushedAt exists (first push ever) this is a no-op — the full startup
+// pull will have already fetched everything.
+async function deltaPullBeforePush() {
+  if (!state.supabaseUrl || !state.supabaseKey || !state.lastPushedAt) return;
+  syncLog('deltaPullBeforePush: checking for remote changes since last push');
+  try {
+    const cursor = state.lastPushedAt;
+    const deltaFilter = `&updated_at=gt.${encodeURIComponent(cursor)}`;
+
+    // Items
+    const remoteItems = await supabaseFetch(`/reddit_saves?select=*&order=updated_at.desc${deltaFilter}`);
+    if (remoteItems && remoteItems.length > 0) {
+      syncLog(`deltaPullBeforePush: merging ${remoteItems.length} remote item(s)`);
+      for (const r of remoteItems) {
+        const existing = await db.items.where('redditId').equals(r.reddit_id).first();
+        if (!existing) {
+          await db.items.add({
+            redditId: r.reddit_id, type: r.type, subreddit: r.subreddit,
+            title: r.title, url: r.url, permalink: r.permalink,
+            body: r.body, author: r.author, score: r.score,
+            savedAt: r.saved_at, postCreatedAt: r.post_created_at,
+            enrichStatus: r.enrich_status || 'pending',
+            isFavourite: r.is_favourite || false, rating: r.rating || null,
+            isDisliked: r.is_disliked || false,
+            syncedAt: new Date().toISOString(),
+          });
+        } else {
+          // Only overwrite if remote is genuinely newer than our local copy
+          const remoteTs = new Date(r.updated_at || 0).getTime();
+          const localTs  = new Date(existing.syncedAt || 0).getTime();
+          if (remoteTs > localTs) {
+            await db.items.update(existing.id, {
+              isFavourite: r.is_favourite || false,
+              rating: r.rating || null,
+              isDisliked: r.is_disliked || false,
+              enrichStatus: r.enrich_status || existing.enrichStatus,
+              syncedAt: new Date().toISOString(),
+            });
+          }
+        }
+      }
+      await loadData();
+    }
+
+    // Lists
+    const remoteLists = await supabaseFetch(`/reddit_lists?select=*${deltaFilter}`);
+    if (remoteLists && remoteLists.length > 0) {
+      syncLog(`deltaPullBeforePush: merging ${remoteLists.length} remote list(s)`);
+      // Delegate to the same reconcile logic used in syncFromSupabase
+      for (const l of remoteLists) {
+        const existing = state.lists.find(loc => loc.name === l.name);
+        if (!existing) {
+          await db.lists.add({
+            name: l.name, type: l.type, query: l.query || '',
+            isTag: l.is_tag || false, tagName: l.tag_name || '',
+            createdAt: l.created_at,
+          });
+        }
+      }
+      await loadData();
+    }
+
+    syncLog('deltaPullBeforePush: done', 'ok');
+  } catch(e) {
+    syncLog(`deltaPullBeforePush: failed — ${e.message}`, 'warn');
+    // Non-fatal — proceed with push rather than blocking it
+  }
+}
+
 async function pushToSupabase(items) {
   if (!state.supabaseUrl || !state.supabaseKey) return;
+  await deltaPullBeforePush();
   const payload = items.map(i => ({
     reddit_id: i.redditId,
     type: i.type,
@@ -1656,6 +1728,7 @@ async function pushToSupabase(items) {
 
 async function pushListsToSupabase() {
   if (!state.supabaseUrl || !state.supabaseKey) return;
+  await deltaPullBeforePush();
   syncLog('pushListsToSupabase: starting');
   try {
     const lists = await db.lists.toArray();
@@ -4249,7 +4322,7 @@ function updateSpeedHints() {
 }
 
 function renderSettings() {
-  const lastSyncStr = state.lastSync ? new Date(state.lastSync).toLocaleString() : 'Never';
+  const lastSyncStr = state.lastPushedAt ? new Date(state.lastPushedAt).toLocaleString() : 'Never';
   const unenriched  = state.items.filter(i => i.enrichStatus === 'pending').length;
   const deadCount   = state.items.filter(i => i.enrichStatus === 'dead').length;
   const isNewUser   = state.items.length === 0;
@@ -4399,7 +4472,7 @@ function renderSettings() {
       <div class="sync-status" style="margin-bottom:10px">
         <div class="status-dot ${state.syncStatus}"></div>
         <span>${state.syncStatus === 'connected' ? 'Connected' : state.syncStatus === 'syncing' ? 'Syncing...' : 'Not connected'}</span>
-        ${state.lastSync ? `<span style="margin-left:auto;color:var(--text-muted);font-size:11px">Last: ${lastSyncStr}</span>` : ''}
+        ${state.lastPushedAt ? `<span style="margin-left:auto;color:var(--text-muted);font-size:11px">Last synced: ${lastSyncStr}</span>` : ''}
       </div>
       ${state.supabaseUrl ? `
         <div style="display:flex;gap:8px;margin-bottom:12px">
