@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.8.18';
+const APP_VERSION = '0.9.8.19';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -3539,8 +3539,9 @@ async function saveCurrentSearchAsList() {
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:4px">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
         <input type="checkbox" id="list-is-tag" style="width:16px;height:16px">
-        <span style="font-size:13px;font-weight:600">Show as tag chip in search</span>
+        <span style="font-size:13px;font-weight:600">Show as tag chip</span>
       </label>
+      <span style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:8px">Pins this smart list to the tag tray above search results for one-tap filtering. Also groups it under 🏷 Tags in the Lists tab.</span>
       <div class="form-group" style="margin:0">
         <label style="font-size:11px">Short tag name (optional)</label>
         <input class="input" id="list-tag-name" placeholder="e.g. js, audio, fav" style="font-size:13px">
@@ -4015,7 +4016,7 @@ function renderLists() {
       <div class="empty">
         <div class="empty-icon">📋</div>
         <h3>No lists yet</h3>
-        <p>Create a <strong>Static list</strong> to manually collect posts, or a <strong>Smart list</strong> that auto-populates from a saved search.</p>
+        <p>Create a <strong>Static list</strong> to manually collect posts, or a <strong>Smart list</strong> that auto-populates from a saved search. Smart lists can also be pinned as <strong>tag chips</strong> in the search bar for quick filtering.</p>
       </div>
     ` : separated ? renderSeparated() : `
       <div style="display:flex;flex-direction:column;gap:8px">${sorted.map(renderListCard).join('')}</div>
@@ -4141,6 +4142,7 @@ function renderSettings() {
           </div>
           <div class="form-group">
             <label>CORS Proxy</label>
+            <p style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:8px">Reddit blocks direct requests from browser-based apps, so feed sync must route through a proxy server. Your feed URL (which contains your private token) passes through whichever proxy you choose.</p>
             <div style="display:flex;gap:8px;margin-bottom:8px">
               <label id="proxy-label-cloudflare" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${state.feedProxyType==='cloudflare'?'border-color:var(--accent2);background:rgba(99,102,241,0.08)':''}">
                 <input type="radio" name="proxy-type" value="cloudflare" ${state.feedProxyType==='cloudflare'?'checked':''}
@@ -4174,11 +4176,11 @@ function renderSettings() {
             <div id="proxy-worker-row" ${state.feedProxyType==='corsfix'?'style="display:none"':''}>
               <input class="input" id="feed-proxy-url" placeholder="https://your-worker.workers.dev"
                 value="${escHtml(state.feedProxyUrl)}" style="font-size:16px">
-              <span style="font-size:11px;color:var(--text-muted)">Your deployed Cloudflare Worker URL</span>
+              <span style="font-size:11px;color:var(--text-muted)">Your deployed Cloudflare Worker URL. Your feed URL stays within your own Cloudflare account. Requires a one-time deploy of the included Worker script.</span>
             </div>
             <div id="proxy-corsfix-note" ${state.feedProxyType!=='corsfix'?'style="display:none"':''}>
               <input id="feed-proxy-url" type="hidden" value="">
-              <span style="font-size:11px;color:var(--text-muted)">Uses proxy.corsfix.com — no setup required. Free tier, no account needed.</span>
+              <span style="font-size:11px;color:var(--text-muted)">Third-party proxy — no setup required, but your feed URL (including its private token) passes through proxy.corsfix.com's servers. May be capacity limited. Suitable for testing or if you prefer not to manage your own Worker.</span>
             </div>
           </div>
           <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center">Save Feed Settings</button>
@@ -4279,9 +4281,9 @@ function renderSettings() {
       <details style="margin-bottom:12px">
         <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">ℹ️ About enrichment</summary>
         <div style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-top:8px;display:grid;gap:8px">
-          <p>Reddit's CSV export contains only post IDs and URLs — titles, subreddits, authors and post content must be fetched separately. Because this uses Reddit's public (non-API) access, requests are rate limited to 8–10 per minute, so a large library can take several hours to fully enrich.</p>
-          <p>Some items will fail on the first pass due to deleted posts, private subreddits, or rate limit hits. Use the <strong style="color:var(--text)">Retry Run</strong> after the initial pass completes — some items need 2–3 passes before they either succeed or are confirmed unavailable.</p>
-          <p>This is a one-time process. New items from feed sync arrive already fully enriched.</p>
+          <p>Reddit's CSV export contains only post IDs and URLs — titles, subreddits, authors and post content must be fetched separately. Enrichment runs in two phases: first a fast bulk pass via <strong style="color:var(--text)">Arctic Shift</strong> (thousands of items in seconds), then a slower per-item pass via Reddit's public JSON for anything Arctic Shift didn't have.</p>
+          <p>Some items will still fail due to deleted posts or private subreddits. Use the <strong style="color:var(--text)">Retry</strong> button after the initial pass — a small number of items need 2–3 attempts before they either succeed or are confirmed unavailable.</p>
+          <p>This is a one-time process for imported items. New items from feed sync arrive already fully enriched.</p>
         </div>
       </details>
       <div class="drop-zone" id="drop-zone" onclick="document.getElementById('csv-file').click()" style="margin-bottom:12px">
@@ -4526,8 +4528,9 @@ function showCreateList(type) {
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:4px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
           <input type="checkbox" id="list-is-tag" style="width:16px;height:16px">
-          <span style="font-size:13px;font-weight:600">Show as tag chip in search</span>
+          <span style="font-size:13px;font-weight:600">Show as tag chip</span>
         </label>
+        <span style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:8px">Pins this smart list to the tag tray above search results for one-tap filtering. Also groups it under 🏷 Tags in the Lists tab.</span>
         <div class="form-group" style="margin:0">
           <label style="font-size:11px">Short tag name (optional)</label>
           <input class="input" id="list-tag-name" placeholder="e.g. js, audio, fav" style="font-size:13px">
@@ -4589,8 +4592,9 @@ function editList(id) {
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:4px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
           <input type="checkbox" id="edit-list-is-tag" ${list.isTag ? 'checked' : ''} style="width:16px;height:16px">
-          <span style="font-size:13px;font-weight:600">Show as tag chip in search</span>
+          <span style="font-size:13px;font-weight:600">Show as tag chip</span>
         </label>
+        <span style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:8px">Pins this smart list to the tag tray above search results for one-tap filtering. Also groups it under 🏷 Tags in the Lists tab.</span>
         <div class="form-group" style="margin:0">
           <label style="font-size:11px">Short tag name (optional)</label>
           <input class="input" id="edit-list-tag-name" value="${escHtml(list.tagName || '')}" placeholder="e.g. js, audio, fav" style="font-size:13px">
