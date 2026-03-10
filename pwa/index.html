@@ -317,7 +317,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.5';
+const APP_VERSION = '0.9.9.6';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -442,7 +442,8 @@ let state = {
   autoFeedSyncInterval: 60,   // minimum minutes between auto syncs
   localDirty: false,        // true if local has changes not yet pushed
   cloudAhead: false,        // true if cloud has data not yet pulled
-  lastPushedAt: null,       // ISO timestamp of last successful push to cloud
+  lastPushedAt: null,       // ISO timestamp of last successful push to cloud (delta cursor)
+  lastSyncedAt: null,       // ISO timestamp of last confirmed in-sync (push or pull) — display only
   lastFeedSync: null,       // ISO timestamp of last successful feed sync
   syncLog: [],              // in-memory diagnostic log, session only
   _lastIndicatorLabel: null,// tracks last rendered indicator to avoid duplicate log entries
@@ -580,7 +581,9 @@ async function loadConfig() {
     const localDirty = await db.config.get('localDirty');
     if (localDirty) state.localDirty = localDirty.value;
     const lastPushedAt = await db.config.get('lastPushedAt');
+    const lastSyncedAt = await db.config.get('lastSyncedAt');
     if (lastPushedAt) state.lastPushedAt = lastPushedAt.value;
+    if (lastSyncedAt) state.lastSyncedAt = lastSyncedAt.value;
     const lastFeedSync = await db.config.get('lastFeedSync');
     if (lastFeedSync) state.lastFeedSync = lastFeedSync.value;
   } catch(e) {}
@@ -1300,10 +1303,12 @@ async function markClean(pushedAt) {
   state.localDirty = false;
   state.cloudAhead = false;
   state.lastPushedAt = ts;
+  state.lastSyncedAt = ts;
   _retryCount = 0;
   if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
   await db.config.put({ key: 'localDirty', value: false });
   await db.config.put({ key: 'lastPushedAt', value: ts });
+  await db.config.put({ key: 'lastSyncedAt', value: ts });
   if (wasDirty) syncLog('Clean: dirty flag cleared', 'ok');
   try {
     await supabaseFetch('/user_preferences?on_conflict=key', 'POST',
@@ -1602,7 +1607,10 @@ async function syncFromSupabase() {
       syncLog(`syncFromSupabase: lists sync skipped — ${e.message}`, 'warn');
     }
 
-    // Pull complete — do not advance lastPushedAt here; that cursor only moves on push.
+    // Pull complete — lastPushedAt (delta cursor) does not advance on pull.
+    // lastSyncedAt (display label) does — we are now confirmed in sync.
+    state.lastSyncedAt = pullStartedAt;
+    await db.config.put({ key: 'lastSyncedAt', value: pullStartedAt });
     state.syncStatus = 'connected';
     state.cloudAhead = false;
     await loadData();
@@ -1628,7 +1636,8 @@ async function syncFromSupabase() {
 // Fetches anything on the cloud newer than our last push, merges it in locally,
 // so we never blindly overwrite changes from another device.
 // If no lastPushedAt exists (first push ever) this is a no-op — the full startup
-// pull will have already fetched everything.
+// pull will have already fetched everything. lastPushedAt is the correct cursor
+// here (not lastSyncedAt) because we want items changed since we last *wrote*.
 async function deltaPullBeforePush() {
   if (!state.supabaseUrl || !state.supabaseKey || !state.lastPushedAt) return;
   syncLog('deltaPullBeforePush: checking for remote changes since last push');
@@ -2239,7 +2248,7 @@ function renderHeaderActions() {
   } else {
     dot = '#22c55e';
     label = 'In sync';
-    title = `Fully synced · last push ${state.lastPushedAt ? new Date(state.lastPushedAt).toLocaleTimeString() : 'unknown'}`;
+    title = `Fully synced · last sync ${state.lastSyncedAt ? new Date(state.lastSyncedAt).toLocaleTimeString() : 'unknown'}`;
     logMsg = 'ok:Indicator → In sync';
   }
   // Only log when the indicator label actually changes
@@ -4322,7 +4331,7 @@ function updateSpeedHints() {
 }
 
 function renderSettings() {
-  const lastSyncStr = state.lastPushedAt ? new Date(state.lastPushedAt).toLocaleString() : 'Never';
+  const lastSyncStr = state.lastSyncedAt ? new Date(state.lastSyncedAt).toLocaleString() : 'Never';
   const unenriched  = state.items.filter(i => i.enrichStatus === 'pending').length;
   const deadCount   = state.items.filter(i => i.enrichStatus === 'dead').length;
   const isNewUser   = state.items.length === 0;
@@ -4472,7 +4481,7 @@ function renderSettings() {
       <div class="sync-status" style="margin-bottom:10px">
         <div class="status-dot ${state.syncStatus}"></div>
         <span>${state.syncStatus === 'connected' ? 'Connected' : state.syncStatus === 'syncing' ? 'Syncing...' : 'Not connected'}</span>
-        ${state.lastPushedAt ? `<span style="margin-left:auto;color:var(--text-muted);font-size:11px">Last synced: ${lastSyncStr}</span>` : ''}
+        ${state.lastSyncedAt ? `<span style="margin-left:auto;color:var(--text-muted);font-size:11px">Last synced: ${lastSyncStr}</span>` : ''}
       </div>
       ${state.supabaseUrl ? `
         <div style="display:flex;gap:8px;margin-bottom:12px">
