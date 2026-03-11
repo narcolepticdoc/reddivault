@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.14';
+const APP_VERSION = '0.9.9.15';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -415,6 +415,7 @@ let state = {
   authorFreq: {},
   recentSearches: [],
   searchFocused: false,
+  recentSearchesOpen: false, // collapsed by default
   // Tag chips — active smart list tags applied to search
   activeTagIds: [],     // list ids of active tag chips
   tagTrayCollapsed: false, // tag tray collapsed (shows only active tags when collapsed)
@@ -2478,7 +2479,7 @@ function renderHome() {
     ${recentBuckets.length > 0 ? `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
         <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:11px;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted)">Saved this week</div>
-        <button class="btn btn-ghost btn-sm" onclick="state.sortBy='savedAt';state.sortDir='desc';showPage('browse')" style="font-size:11px">See all →</button>
+        <button class="btn btn-ghost btn-sm" onclick="newSearch({sortBy:'savedAt',sortDir:'desc'})" style="font-size:11px">See all →</button>
       </div>
       <div style="display:flex;flex-direction:column;gap:16px">
         ${recentBuckets.map(bucket => `
@@ -3342,12 +3343,12 @@ function renderBrowse() {
       <div class="search-wrap" style="flex:1;min-width:0">
         <span class="search-icon">🔍</span>
         <input class="input" id="search-input"
-          placeholder='Search… "phrase"  a,b,c  *wild*  r:sub  -exclude'
+          placeholder='Search… "phrase"  a,b,c  *wild*  r/sub  u/name  -exclude'
           value="${escHtml(state.search)}"
           oninput="handleSearchInput(this.value)"
-          onfocus="state.searchFocused=true;renderRecentSearches()"
-          onblur="setTimeout(()=>{state.searchFocused=false;renderRecentSearches()},300)"
-          onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderBrowseList();renderRecentSearches()}"
+          onfocus="state.searchFocused=true"
+          onblur="setTimeout(()=>{state.searchFocused=false},300)"
+          onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderBrowseList();}"
           style="width:100%;padding-right:${state.search ? '36px' : '12px'}">
         ${state.search ? `
           <button style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1;padding:0"
@@ -3375,14 +3376,33 @@ function renderBrowse() {
         <div><code style="color:var(--accent2);font-size:11px">run*</code> <span style="color:var(--text-muted)">— words starting with "run" (running, runner…)</span></div>
         <div><code style="color:var(--accent2);font-size:11px">*ness</code> <span style="color:var(--text-muted)">— words ending with "ness" (happiness, darkness…)</span></div>
         <div><code style="color:var(--accent2);font-size:11px">*witch*</code> <span style="color:var(--text-muted)">— words containing "witch" (switch, bewitched…)</span></div>
-        <div><code style="color:var(--accent2);font-size:11px">r:programming</code> <span style="color:var(--text-muted)">— filter by subreddit</span></div>
-        <div><code style="color:var(--accent2);font-size:11px">u:username</code> <span style="color:var(--text-muted)">— filter by author</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">r/programming</code> <span style="color:var(--text-muted)">— filter by subreddit</span></div>
+        <div><code style="color:var(--accent2);font-size:11px">u/username</code> <span style="color:var(--text-muted)">— filter by author</span></div>
         <div style="margin-top:2px;color:var(--text-muted);font-size:11px">Bare words search titles only (enable "Search body text" in Filters to include post/comment text). Use wildcards for partial matching or quotes for exact phrases. Use r: and u: to search by subreddit or author.</div>
       </div>
     </details>
 
     <!-- ── Recent searches ──────────────────────────────────────────────── -->
-    <div id="recent-searches-row" style="display:none;margin:-4px 0 10px"></div>
+    ${state.recentSearches.length > 0 ? `
+      <div style="margin:-2px 0 8px">
+        <button onclick="state.recentSearchesOpen=!state.recentSearchesOpen;render()"
+          style="background:none;border:none;cursor:pointer;display:flex;align-items:center;gap:5px;padding:2px 0;color:var(--text-muted);font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase">
+          <span style="transition:transform 0.15s;display:inline-block;transform:rotate(${state.recentSearchesOpen?'90':'0'}deg)">▶</span>
+          Recent (${state.recentSearches.length})
+        </button>
+        ${state.recentSearchesOpen ? `
+          <div id="recent-searches-row" style="margin-top:6px">
+            <div style="display:flex;flex-wrap:wrap;gap:6px">
+              ${state.recentSearches.map((s, i) => `
+                <div style="display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:4px 10px;font-size:12px;cursor:pointer;max-width:200px"
+                  onclick="applySearch(${JSON.stringify(s)});state.recentSearchesOpen=false;renderBrowseList()">
+                  <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escHtml(s)}</span>
+                  <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:0;line-height:1;flex-shrink:0"
+                    title="Remove" onclick="event.stopPropagation();removeRecentSearch(${JSON.stringify(s)})">✕</button>
+                </div>`).join('')}
+            </div>
+          </div>` : ''}
+      </div>` : ''}
 
     <!-- ── Filter panel (slide-down) ────────────────────────────────────── -->
     ${state.showFilters ? `
@@ -3486,6 +3506,9 @@ function renderBrowse() {
         ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
       </span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
+        ${(q || state.activeTagIds.length > 0 || hasActiveFilters() || state.sortBy !== 'postCreatedAt' || state.sortDir !== 'desc') ? `
+          <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text-muted);padding:2px 4px;white-space:nowrap;opacity:0.8"
+            onclick="newSearch()" title="Clear search, filters and sort">✕ New search</button>` : ''}
         ${(q || state.activeTagIds.length > 0) && !state.editingListId ? `
           <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
             onclick="saveCurrentSearchAsList()">
@@ -3569,6 +3592,29 @@ function applyListOptions(optionsJson) {
   state.sortBy          = opts.sortBy          || 'postCreatedAt';
   state.sortDir         = opts.sortDir         || 'desc';
   state.searchBody      = opts.searchBody      || false;
+}
+
+function optionsSummaryParts(optionsJson) {
+  // Returns an array of short human-readable strings describing saved options.
+  // Used in list cards, list detail view, and edit modal.
+  let opts = {};
+  try { if (optionsJson) opts = JSON.parse(optionsJson); } catch(e) {}
+  const parts = [];
+  if (opts.filterType && opts.filterType !== 'all')
+    parts.push(opts.filterType === 'post' ? '📝 Posts only' : '💬 Comments only');
+  if (opts.filterRating)      parts.push(`★${opts.filterRating}+`);
+  if (opts.filterFavourite)   parts.push('⭐ Faves');
+  if (opts.filterHasLinks)    parts.push('🔗 Has links');
+  if (opts.searchBody)        parts.push('📄 Body search');
+  if (opts.filterSubreddit)   parts.push(`r/${opts.filterSubreddit}`);
+  if (opts.filterAuthor)      parts.push(`u/${opts.filterAuthor}`);
+  if (opts.filterDateFrom || opts.filterDateTo) parts.push('📅 Date range');
+  const sortLabels = { savedAt: 'Date saved', title: 'Title', subreddit: 'Subreddit', affinity: 'Affinity', rating: 'Rating' };
+  if (opts.sortBy && opts.sortBy !== 'postCreatedAt')
+    parts.push(`Sort: ${sortLabels[opts.sortBy] || opts.sortBy}${opts.sortDir === 'asc' ? ' ↑' : ''}`);
+  else if (opts.sortDir === 'asc')
+    parts.push('Sort: Post date ↑');
+  return parts;
 }
 
 function hasNonDefaultOptions() {
@@ -3702,7 +3748,7 @@ function parseSearchQuery(raw) {
   // A "bare comma query" is one that contains commas but no parens, quotes, or field prefixes
   const hasParens  = /\(/.test(str);
   const hasQuotes  = /"/.test(str);
-  const hasField   = /\b(r|u|type):/.test(str);
+  const hasField   = /\b(r|u|type)[:\/]/.test(str);
   const hasCommas  = /,/.test(str);
 
   if (hasCommas && !hasParens && !hasQuotes && !hasField) {
@@ -3741,7 +3787,7 @@ function parseSearchQuery(raw) {
   });
 
   // Parse remainder: field prefixes, quoted strings, bare words, negation
-  const re = /(-?)(?:(r|u|type):(\S+)|"([^"]+)"|(\S+))/g;
+  const re = /(-?)(?:(r|u|type)[:\/](\S+)|"([^"]+)"|(\S+))/g;
   let m;
   while ((m = re.exec(str)) !== null) {
     const negate = m[1] === '-';
@@ -4078,7 +4124,7 @@ async function removeRecentSearch(query) {
   state.recentSearches = state.recentSearches.filter(s => s !== query);
   await db.config.put({ key: 'recentSearches', value: state.recentSearches });
   await pushPreference('recentSearches', state.recentSearches);
-  renderRecentSearches();
+  render();
 }
 
 function applySearch(query) {
@@ -4111,7 +4157,7 @@ let _filterAuthorTimer = null;
 
 function handleSearchInput(value) {
   state.search = value;
-  renderRecentSearches();
+  render();
 
   // Always update the save button immediately (cheap, no filtering needed)
   const countEl = document.getElementById('search-result-info');
@@ -4144,7 +4190,7 @@ function handleSearchInput(value) {
   const lastChar = value[value.length - 1];
   const words = value.trim().split(/\s+/);
   const currentWord = words[words.length - 1];
-  const bareWord = currentWord.replace(/^[-"r\/u\:]*/,'').replace(/"/g,'');
+  const bareWord = currentWord.replace(/^[-"r\/u\:\/]*/,'').replace(/"/g,'');
 
   const shouldTrigger = lastChar === ' ' || bareWord.length >= 4;
 
@@ -4266,6 +4312,30 @@ function clearFilters() {
   state.filterAuthor = '';
   state.searchBody = false;
   render();
+}
+
+// Resets all search state to a clean slate, then navigates to Browse.
+// Used by "See all" on the home screen and the "New Search" button in Browse.
+function newSearch(opts = {}) {
+  state.search = '';
+  state.activeTagIds = [];
+  state.tagMode = 'AND';
+  state.editingListId = null;
+  state.showFilters = false;
+  state.filterType = 'all';
+  state.filterRating = 0;
+  state.filterHasLinks = false;
+  state.filterFavourite = false;
+  state.filterDateFrom = '';
+  state.filterDateTo = '';
+  state.filterSubreddit = '';
+  state.filterAuthor = '';
+  state.searchBody = false;
+  state.sortBy = opts.sortBy || 'postCreatedAt';
+  state.sortDir = opts.sortDir || 'desc';
+  const input = document.getElementById('search-input');
+  if (input) input.value = '';
+  showPage('browse');
 }
 
 function setFilter(type, value) {
@@ -4419,6 +4489,11 @@ function renderLists() {
           </div>
         </div>
         ${isSmart && list.query ? `<div style="font-size:11px;color:var(--text-muted);margin-top:6px;font-style:italic">${escHtml(list.query)}</div>` : ''}
+        ${isSmart && list.optionsJson ? (() => {
+          const parts = optionsSummaryParts(list.optionsJson);
+          if (!parts.length) return '';
+          return `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">${parts.map(p => `<span style="font-size:10px;background:rgba(124,58,237,0.12);color:var(--accent2);border-radius:6px;padding:2px 6px;white-space:nowrap">${escHtml(p)}</span>`).join('')}</div>`;
+        })() : ''}
       </div>`;
   };
 
@@ -4455,7 +4530,13 @@ function renderLists() {
         <div class="section-title" style="flex:1;text-align:center">${escHtml(list.name)}</div>
         <button class="btn btn-ghost btn-sm" onclick="editList(${list.id})">✏️</button>
       </div>
-      ${isSmart && list.query ? `<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;padding:8px 12px;background:rgba(168,85,247,0.08);border-radius:8px">✦ Smart: ${escHtml(list.query)}</div>` : ''}
+      ${isSmart ? (() => {
+        const parts = list.optionsJson ? optionsSummaryParts(list.optionsJson) : [];
+        const queryLine = list.query ? `<div>✦ Smart: <em>${escHtml(list.query)}</em></div>` : '';
+        const optsLine = parts.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:6px">${parts.map(p => `<span style="font-size:10px;background:rgba(124,58,237,0.2);color:var(--accent2);border-radius:6px;padding:2px 6px;white-space:nowrap">${escHtml(p)}</span>`).join('')}</div><div style="font-size:10px;color:var(--text-muted);margin-top:5px">Filters &amp; sort apply here only — not when used as a #tag.</div>` : '';
+        if (!queryLine && !optsLine) return '';
+        return `<div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;padding:8px 12px;background:rgba(168,85,247,0.08);border-radius:8px">${queryLine}${optsLine}</div>`;
+      })() : ''}
 
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;min-height:24px">
         <span style="font-size:12px;color:var(--text-muted)">${itemCount.toLocaleString()} item${itemCount!==1?'s':''}</span>
@@ -5206,24 +5287,12 @@ function editList(id) {
           onclick="closeModal();runListSearch(${id})">✏️ Edit in search</button>
       </div>
       ${(() => {
-        let opts = {};
-        try { if (list.optionsJson) opts = JSON.parse(list.optionsJson); } catch(e) {}
-        const hasOpts = Object.values(opts).some(v => v !== undefined && v !== null && v !== false && v !== '' && v !== 0);
-        if (!hasOpts) return '';
-        const parts = [];
-        if (opts.filterType && opts.filterType !== 'all') parts.push(opts.filterType === 'post' ? '📝 Posts only' : '💬 Comments only');
-        if (opts.filterRating) parts.push(`★${opts.filterRating}+ rating`);
-        if (opts.filterFavourite) parts.push('⭐ Favourites');
-        if (opts.filterHasLinks) parts.push('🔗 Has links');
-        if (opts.searchBody) parts.push('📄 Search body');
-        if (opts.sortBy && opts.sortBy !== 'postCreatedAt') parts.push(`Sort: ${opts.sortBy}`);
-        if (opts.sortDir === 'asc') parts.push('↑ Ascending');
-        if (opts.filterSubreddit) parts.push(`r/${opts.filterSubreddit}`);
-        if (opts.filterAuthor) parts.push(`u/${opts.filterAuthor}`);
-        if (opts.filterDateFrom || opts.filterDateTo) parts.push('📅 Date range');
-        return `<div style="background:var(--surface);border:1px solid rgba(124,58,237,0.25);border-radius:10px;padding:10px 12px;font-size:12px;color:var(--text-muted);line-height:1.5;margin-top:4px">
-          <strong style="color:var(--text)">📌 Saved filters & sort:</strong> ${parts.join(' · ')}<br>
-          <span>These apply when opening the list directly. When used as a <strong>#tag</strong>, only the query above is matched.</span>
+        const parts = optionsSummaryParts(list.optionsJson);
+        if (!parts.length) return '';
+        return `<div style="background:var(--surface);border:1px solid rgba(124,58,237,0.25);border-radius:10px;padding:10px 12px;font-size:12px;color:var(--text-muted);line-height:1.6;margin-top:4px">
+          <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px">${parts.map(p => `<span style="font-size:11px;background:rgba(124,58,237,0.12);color:var(--accent2);border-radius:6px;padding:2px 7px;white-space:nowrap">${escHtml(p)}</span>`).join('')}</div>
+          <strong style="color:var(--text)">📌 Saved filters &amp; sort</strong> — applied when opening this list directly.<br>
+          When used as a <strong>#tag</strong> in another search, only the query above is matched — filters and sort are ignored so compound searches stay predictable.
         </div>`;
       })()}
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:4px">
