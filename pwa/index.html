@@ -181,7 +181,6 @@
       border-top: 1px solid var(--border);
       transition: transform 0.3s cubic-bezier(0.32,0.72,0,1);
       will-change: transform;
-      touch-action: pan-x;
     }
     .preview-drag-handle {
       width: 36px; height: 4px; border-radius: 2px;
@@ -324,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.12';
+const APP_VERSION = '0.9.9.13';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2726,57 +2725,91 @@ async function showPreview(itemId) {
 
   document.body.appendChild(overlay);
 
-  // Swipe-down-to-dismiss gesture
+  // Swipe-to-dismiss gestures: swipe down from header/handle, or swipe right from left edge
   const sheet = overlay.querySelector('#preview-sheet');
   const header = sheet.querySelector('.preview-header');
   const handle = sheet.querySelector('.preview-drag-handle');
-  let touchStartY = 0, touchStartX = 0, dragging = false, dismissed = false;
+  let touchStartY = 0, touchStartX = 0, gestureMode = null, dismissed = false;
+  // gestureMode: null (undecided) | 'down' | 'right' | 'none'
+
+  function dismissSheet(direction) {
+    if (dismissed) return;
+    dismissed = true;
+    sheet.style.transition = 'transform 0.3s cubic-bezier(0.32,0.72,0,1)';
+    sheet.style.transform = direction === 'right' ? 'translateX(110%)' : 'translateY(110%)';
+    overlay.style.transition = 'opacity 0.25s ease';
+    overlay.style.opacity = '0';
+    setTimeout(() => overlay.remove(), 280);
+  }
+
+  function snapBack() {
+    sheet.style.transition = 'transform 0.3s cubic-bezier(0.32,0.72,0,1)';
+    sheet.style.transform = '';
+    overlay.style.background = '';
+  }
 
   function onTouchStart(e) {
     if (dismissed) return;
-    // Only initiate from header or drag handle
     touchStartY = e.touches[0].clientY;
     touchStartX = e.touches[0].clientX;
-    dragging = true;
-    sheet.style.transition = 'none'; // disable during drag
+    gestureMode = null;
+    sheet.style.transition = 'none';
   }
 
   function onTouchMove(e) {
-    if (!dragging || dismissed) return;
+    if (dismissed) return;
     const dy = e.touches[0].clientY - touchStartY;
     const dx = e.touches[0].clientX - touchStartX;
-    // Only track if gesture is more vertical than horizontal
-    if (Math.abs(dx) > Math.abs(dy) && dy < 20) { dragging = false; return; }
-    if (dy < 0) { sheet.style.transform = `translateY(${dy * 0.15}px)`; return; } // resist upward
-    e.preventDefault(); // prevent page scroll while swiping down
-    const progress = Math.min(dy / window.innerHeight, 1);
-    sheet.style.transform = `translateY(${dy}px)`;
-    overlay.style.background = `rgba(0,0,0,${0.85 * (1 - progress * 0.8)})`;
-  }
+    const adx = Math.abs(dx), ady = Math.abs(dy);
 
-  function onTouchEnd(e) {
-    if (!dragging || dismissed) return;
-    dragging = false;
-    const dy = e.changedTouches[0].clientY - touchStartY;
-    const dt = e.timeStamp;
-    // Commit dismiss if dragged far enough or fast enough
-    const shouldDismiss = dy > 120;
-    sheet.style.transition = 'transform 0.3s cubic-bezier(0.32,0.72,0,1)';
-    if (shouldDismiss) {
-      dismissed = true;
-      sheet.style.transform = `translateY(110%)`;
-      overlay.style.transition = 'opacity 0.25s ease';
-      overlay.style.opacity = '0';
-      setTimeout(() => overlay.remove(), 280);
-    } else {
-      sheet.style.transform = '';
-      overlay.style.background = '';
+    // Decide gesture mode on first meaningful movement
+    if (gestureMode === null) {
+      if (adx < 6 && ady < 6) return; // not moved enough yet
+      const fromLeftEdge = touchStartX < 40;
+      const headerBottom = header.getBoundingClientRect().bottom;
+      const fromHeaderZone = touchStartY <= headerBottom;
+      if (fromLeftEdge && dx > 0 && adx > ady) {
+        gestureMode = 'right';
+      } else if (fromHeaderZone && ady > adx) {
+        gestureMode = 'down';
+      } else {
+        gestureMode = 'none'; // not a recognised gesture zone — ignore
+      }
+    }
+
+    if (gestureMode === 'right') {
+      if (dx < 0) return; // no leftward drag
+      e.preventDefault();
+      const progress = Math.min(dx / window.innerWidth, 1);
+      sheet.style.transform = `translateX(${dx}px)`;
+      overlay.style.background = `rgba(0,0,0,${0.85 * (1 - progress * 0.9)})`;
+    } else if (gestureMode === 'down') {
+      if (dy < 0) { sheet.style.transform = `translateY(${dy * 0.15}px)`; return; }
+      e.preventDefault();
+      const progress = Math.min(dy / window.innerHeight, 1);
+      sheet.style.transform = `translateY(${dy}px)`;
+      overlay.style.background = `rgba(0,0,0,${0.85 * (1 - progress * 0.8)})`;
     }
   }
 
-  [handle, header].forEach(el => {
-    el.addEventListener('touchstart', onTouchStart, { passive: true });
-  });
+  function onTouchEnd(e) {
+    if (dismissed || gestureMode === null || gestureMode === 'none') return;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    if (gestureMode === 'right' && dx > 80) {
+      dismissSheet('right');
+    } else if (gestureMode === 'down' && dy > 120) {
+      dismissSheet('down');
+    } else {
+      snapBack();
+    }
+    gestureMode = null;
+  }
+
+  // Register on the whole overlay — gestureMode detection decides what to track.
+  // Down swipes only commit when starting from header/handle (checked via touchStartY
+  // falling within the header bounds), right-edge swipes work from anywhere.
+  overlay.addEventListener('touchstart', onTouchStart, { passive: true });
   overlay.addEventListener('touchmove', onTouchMove, { passive: false });
   overlay.addEventListener('touchend', onTouchEnd, { passive: true });
 }
