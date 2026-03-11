@@ -179,6 +179,13 @@
       width: 100%; height: 92vh;
       display: flex; flex-direction: column;
       border-top: 1px solid var(--border);
+      transition: transform 0.3s cubic-bezier(0.32,0.72,0,1);
+      will-change: transform;
+      touch-action: pan-x;
+    }
+    .preview-drag-handle {
+      width: 36px; height: 4px; border-radius: 2px;
+      background: var(--border); margin: 10px auto 0; flex-shrink: 0;
     }
     .preview-header {
       padding: 16px 20px 12px; border-bottom: 1px solid var(--border);
@@ -317,7 +324,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.10';
+const APP_VERSION = '0.9.9.12';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2694,7 +2701,8 @@ async function showPreview(itemId) {
   }
 
   overlay.innerHTML = `
-    <div class="preview-sheet">
+    <div class="preview-sheet" id="preview-sheet">
+      <div class="preview-drag-handle"></div>
       <div class="preview-header">
         <div style="flex:1;min-width:0">
           ${metaHtml}
@@ -2717,6 +2725,60 @@ async function showPreview(itemId) {
     </div>`;
 
   document.body.appendChild(overlay);
+
+  // Swipe-down-to-dismiss gesture
+  const sheet = overlay.querySelector('#preview-sheet');
+  const header = sheet.querySelector('.preview-header');
+  const handle = sheet.querySelector('.preview-drag-handle');
+  let touchStartY = 0, touchStartX = 0, dragging = false, dismissed = false;
+
+  function onTouchStart(e) {
+    if (dismissed) return;
+    // Only initiate from header or drag handle
+    touchStartY = e.touches[0].clientY;
+    touchStartX = e.touches[0].clientX;
+    dragging = true;
+    sheet.style.transition = 'none'; // disable during drag
+  }
+
+  function onTouchMove(e) {
+    if (!dragging || dismissed) return;
+    const dy = e.touches[0].clientY - touchStartY;
+    const dx = e.touches[0].clientX - touchStartX;
+    // Only track if gesture is more vertical than horizontal
+    if (Math.abs(dx) > Math.abs(dy) && dy < 20) { dragging = false; return; }
+    if (dy < 0) { sheet.style.transform = `translateY(${dy * 0.15}px)`; return; } // resist upward
+    e.preventDefault(); // prevent page scroll while swiping down
+    const progress = Math.min(dy / window.innerHeight, 1);
+    sheet.style.transform = `translateY(${dy}px)`;
+    overlay.style.background = `rgba(0,0,0,${0.85 * (1 - progress * 0.8)})`;
+  }
+
+  function onTouchEnd(e) {
+    if (!dragging || dismissed) return;
+    dragging = false;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    const dt = e.timeStamp;
+    // Commit dismiss if dragged far enough or fast enough
+    const shouldDismiss = dy > 120;
+    sheet.style.transition = 'transform 0.3s cubic-bezier(0.32,0.72,0,1)';
+    if (shouldDismiss) {
+      dismissed = true;
+      sheet.style.transform = `translateY(110%)`;
+      overlay.style.transition = 'opacity 0.25s ease';
+      overlay.style.opacity = '0';
+      setTimeout(() => overlay.remove(), 280);
+    } else {
+      sheet.style.transform = '';
+      overlay.style.background = '';
+    }
+  }
+
+  [handle, header].forEach(el => {
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+  });
+  overlay.addEventListener('touchmove', onTouchMove, { passive: false });
+  overlay.addEventListener('touchend', onTouchEnd, { passive: true });
 }
 
 function closePreview() {
@@ -4172,8 +4234,20 @@ function renderItemCard(item, showActions, removeFromListId = null) {
           </div>
           <!-- Right group: open links -->
           <div style="margin-left:auto;display:flex;gap:4px;align-items:center">
-            <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener" title="Open">↗</a>
-            ${item.type !== 'comment' && permalinkUrl !== openUrl ? `<a class="btn btn-ghost btn-sm" href="${escHtml(permalinkUrl)}" target="_blank" rel="noopener" title="Reddit thread">💬</a>` : ''}
+            ${(() => {
+              const links = [];
+              if (item.url && !item.url.includes('reddit.com')) links.push(fullUrl(item.url));
+              if (item.body) {
+                const mdLinks = [...item.body.matchAll(/\[([^\]]{1,200})\]\((https?:\/\/[^)]+)\)/g)];
+                for (const m of mdLinks) { const u = fullUrl(m[2]); if (!links.includes(u)) links.push(u); }
+                const bareLinks = [...item.body.matchAll(/(?<!\()(https?:\/\/[^\s)>"\]]+)/g)];
+                for (const m of bareLinks) { const u = fullUrl(m[1]); if (!links.includes(u)) links.push(u); }
+              }
+              if (links.length === 0) return '';
+              if (links.length === 1) return `<a class="btn btn-ghost btn-sm" href="${escHtml(links[0])}" target="_blank" rel="noopener" title="Open link">🔗</a>`;
+              return `<button class="btn btn-ghost btn-sm" onclick="showLinkPicker(${item.id})" title="Open link (${links.length})">🔗${links.length}</button>`;
+            })()}
+            <a class="btn btn-ghost btn-sm" href="${escHtml(permalinkUrl)}" target="_blank" rel="noopener" title="Open on Reddit">↗</a>
           </div>
           <!-- Danger group: destructive actions, separated by gap -->
           <div style="display:flex;gap:4px;align-items:center;padding-left:4px;border-left:1px solid var(--border)">
@@ -4816,6 +4890,7 @@ function showModal(html) {
   overlay.innerHTML = `<div class="modal"><div class="modal-handle"></div>${html}</div>`;
   overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
   document.body.appendChild(overlay);
+
 }
 
 function closeModal() {
