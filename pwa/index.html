@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.21';
+const APP_VERSION = '0.9.9.22';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -3858,36 +3858,51 @@ function parseSearchQuery(raw) {
   const hasField   = /\b(r|u|type)[:\/]/.test(str);
   const hasCommas  = /,/.test(str);
 
-  if (hasCommas && !hasParens && !hasQuotes && !hasField) {
-    // Treat entire query as OR group
-    // Each term can be individually negated with a leading -
+  if (hasCommas && !hasParens && !hasField) {
+    // Treat entire query as OR group.
+    // Each comma-separated part may be a bare word, a quoted phrase, or a wildcard.
+    // Parts with a leading - are negated; if any are negated fall through to AND parsing.
     const parts = str.split(',').map(s => s.trim()).filter(Boolean);
-    const values = parts.map(p => p.replace(/^-/, '').toLowerCase());
     const anyNegated = parts.some(p => p.startsWith('-'));
-    if (values.length) {
-      if (anyNegated) {
-        // Mixed negation — fall through to normal AND parsing instead
-        // e.g. "-python, javascript" should mean NOT python AND javascript, not OR
-      } else {
-        tokens.push({ type: 'orGroup', values: values.map(_parseWildcard), negate: false });
+    if (parts.length && !anyNegated) {
+      const orTokens = [];
+      const partRe = /^(-?)(?:"([^"]+)"|(\S+))$/;
+      for (const part of parts) {
+        const pm = part.match(partRe);
+        if (!pm) continue;
+        if (pm[2]) {
+          // Quoted phrase
+          orTokens.push({ exact: true, value: pm[2].toLowerCase() });
+        } else if (pm[3]) {
+          const parsed = _parseWildcard(pm[3].toLowerCase());
+          if (parsed.value) orTokens.push(parsed);
+        }
+      }
+      if (orTokens.length) {
+        tokens.push({ type: 'orGroup', values: orTokens, negate: false });
         return tokens;
       }
     }
   }
 
-  // Extract explicit OR groups: (a, b, c) or ([#tag], [#tag2], word)
+  // Extract explicit OR groups: (a, b, c) or ([#tag], [#tag2], "phrase", word)
   str = str.replace(/\(([^)]+)\)/g, (_, inner) => {
-    // Split by comma, each part may be a [#tag] token or a plain term
+    // Split by comma, each part may be a [#tag] token, a quoted phrase, or a plain term
     const parts = inner.split(',').map(s => s.trim()).filter(Boolean);
     const orTokens = [];
     for (const part of parts) {
       const tagMatch = part.match(/^\[#([^\]]+)\]$/);
       if (tagMatch) {
         orTokens.push({ isTagRef: true, name: tagMatch[1].trim() });
-      } else {
-        const parsed = _parseWildcard(part.toLowerCase());
-        if (parsed.value) orTokens.push(parsed);
+        continue;
       }
+      const quoteMatch = part.match(/^"([^"]+)"$/);
+      if (quoteMatch) {
+        orTokens.push({ exact: true, value: quoteMatch[1].toLowerCase() });
+        continue;
+      }
+      const parsed = _parseWildcard(part.toLowerCase());
+      if (parsed.value) orTokens.push(parsed);
     }
     if (orTokens.length) tokens.push({ type: 'orGroup', values: orTokens, negate: false });
     return '';
