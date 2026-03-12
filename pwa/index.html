@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.23';
+const APP_VERSION = '0.9.9.24';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -5585,6 +5585,7 @@ function attachEventListeners() {
           mode = (dx > 0 && Math.abs(dx) > Math.abs(dy)) ? 'right' : 'none';
         }
         if (mode === 'right') {
+          if (state.listView === 'all') { mode = 'none'; return; } // not in detail view
           e.preventDefault();
           content.style.transform = `translateX(${Math.max(0, dx)}px)`;
           content.style.transition = 'none';
@@ -5593,6 +5594,13 @@ function attachEventListeners() {
 
       content.addEventListener('touchend', e => {
         if (!tracking || mode !== 'right') { content.style.transform = ''; return; }
+        // Guard — listener persists on the element across renders, only act in detail view
+        if (state.listView === 'all') {
+          content.style.transition = 'transform 0.3s cubic-bezier(0.32,0.72,0,1)';
+          content.style.transform = '';
+          tracking = false; mode = null;
+          return;
+        }
         const dx = e.changedTouches[0].clientX - startX;
         if (dx > 80) {
           content.style.transition = 'transform 0.25s cubic-bezier(0.32,0.72,0,1)';
