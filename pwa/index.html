@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.16';
+const APP_VERSION = '0.9.9.17';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -3294,7 +3294,7 @@ function renderBrowse() {
           <span style="font-size:13px;color:var(--accent2)">✏️ Editing: <strong>${escHtml(editingList.name)}</strong></span>
           <div style="display:flex;gap:6px">
             <button class="btn btn-primary btn-sm" onclick="saveCurrentSearchAsList(${state.editingListId})">Save as list</button>
-            <button class="btn btn-ghost btn-sm" onclick="state.editingListId=null;render()" title="Stop editing">✕</button>
+            <button class="btn btn-ghost btn-sm" onclick="state.editingListId=null;newSearch()" title="Stop editing">✕</button>
           </div>
         </div>` : '';
     })() : ''}
@@ -4104,13 +4104,13 @@ async function saveCurrentSearchAsList(existingListId) {
     </div>` : ''}
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:4px">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
-        <input type="checkbox" id="list-is-tag" style="width:16px;height:16px">
+        <input type="checkbox" id="list-is-tag" ${existingListId && state.lists.find(l=>l.id===existingListId)?.isTag ? 'checked' : ''} style="width:16px;height:16px">
         <span style="font-size:13px;font-weight:600">Show as tag chip</span>
       </label>
       <span style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:8px">Pins this smart list to the tag tray above search results for one-tap filtering. Also groups it under 🏷 Tags in the Lists tab.</span>
       <div class="form-group" style="margin:0">
         <label style="font-size:11px">Short tag name (optional)</label>
-        <input class="input" id="list-tag-name" placeholder="e.g. js, audio, fav" style="font-size:13px">
+        <input class="input" id="list-tag-name" value="${escHtml(existingListId && state.lists.find(l=>l.id===existingListId)?.tagName || '')}" placeholder="e.g. js, audio, fav" style="font-size:13px">
         <span style="font-size:11px;color:var(--text-muted)">Shown as #name in the tag tray. Uses list name if blank.</span>
       </div>
     </div>
@@ -5154,13 +5154,13 @@ function showCreateList(type) {
       </div>
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px;margin-top:4px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
-          <input type="checkbox" id="list-is-tag" style="width:16px;height:16px">
+          <input type="checkbox" id="list-is-tag" ${existingListId && state.lists.find(l=>l.id===existingListId)?.isTag ? 'checked' : ''} style="width:16px;height:16px">
           <span style="font-size:13px;font-weight:600">Show as tag chip</span>
         </label>
         <span style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:8px">Pins this smart list to the tag tray above search results for one-tap filtering. Also groups it under 🏷 Tags in the Lists tab.</span>
         <div class="form-group" style="margin:0">
           <label style="font-size:11px">Short tag name (optional)</label>
-          <input class="input" id="list-tag-name" placeholder="e.g. js, audio, fav" style="font-size:13px">
+          <input class="input" id="list-tag-name" value="${escHtml(existingListId && state.lists.find(l=>l.id===existingListId)?.tagName || '')}" placeholder="e.g. js, audio, fav" style="font-size:13px">
           <span style="font-size:11px;color:var(--text-muted)">Shown as #name in the tag tray. Uses list name if blank.</span>
         </div>
       </div>
@@ -5201,8 +5201,13 @@ async function doCreateList(type) {
   if (type === 'smart') rebuildTagCache(id);
   await markDirty(`list created: "${name}"`);
   await pushListsToSupabase();
+  state.editingListId = null;
+  state.search = '';
+  state.activeTagIds = [];
+  state.sortBy = 'postCreatedAt';
+  state.sortDir = 'desc';
   state.listView = id;
-  render();
+  showPage('lists');
   showToast(`List "${name}" created`, 'success');
 }
 
@@ -5254,8 +5259,13 @@ async function doSaveOverList(id) {
   rebuildTagCache(id);
   await markDirty(`list updated: "${name}"`);
   await pushListsToSupabase();
+  state.editingListId = null;
+  state.search = '';
+  state.activeTagIds = [];
+  state.sortBy = 'postCreatedAt';
+  state.sortDir = 'desc';
   state.listView = id;
-  render();
+  showPage('lists');
   showToast(`List "${name}" updated`, 'success');
 }
 
