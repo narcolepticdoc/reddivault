@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.17';
+const APP_VERSION = '0.9.9.19';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1893,6 +1893,71 @@ async function resetAllEnrichment() {
   render();
 }
 
+async function repairSavedAtDates() {
+  // Detect "import clumps" — groups of items where many share the same savedAt
+  // hour, which indicates a bulk CSV import where we used new Date() as a
+  // synthetic timestamp.  For those items, replace savedAt with postCreatedAt
+  // as a better (if imperfect) approximation of when they were actually saved.
+
+  const allItems = await db.items.toArray();
+  const total = allItems.length;
+  if (!total) { showToast('No items found', 'warning'); return; }
+
+  // Group by truncated-to-hour savedAt
+  const hourBuckets = {};
+  for (const item of allItems) {
+    if (!item.savedAt) continue;
+    const hour = item.savedAt.slice(0, 13); // "2024-03-15T14"
+    hourBuckets[hour] = (hourBuckets[hour] || 0) + 1;
+  }
+
+  // A clump is any hour bucket that contains ≥5% of the library OR ≥50 items
+  const clumpThreshold = Math.max(50, Math.floor(total * 0.05));
+  const clumpHours = new Set(
+    Object.entries(hourBuckets)
+      .filter(([, count]) => count >= clumpThreshold)
+      .map(([hour]) => hour)
+  );
+
+  if (clumpHours.size === 0) {
+    showToast('No import clumps detected — savedAt looks healthy', 'success');
+    return;
+  }
+
+  // Count affected items (only patch if postCreatedAt is available)
+  const affected = allItems.filter(i =>
+    i.savedAt && clumpHours.has(i.savedAt.slice(0, 13)) && i.postCreatedAt
+  );
+  const noPostDate = allItems.filter(i =>
+    i.savedAt && clumpHours.has(i.savedAt.slice(0, 13)) && !i.postCreatedAt
+  );
+
+  const clumpSummary = [...clumpHours]
+    .sort()
+    .map(h => `${h}:xx (${hourBuckets[h]} items)`)
+    .join(', ');
+
+  const confirmed = confirm(
+    `Found ${clumpHours.size} import clump${clumpHours.size > 1 ? 's' : ''}:\n${clumpSummary}\n\n` +
+    `${affected.length} items will have savedAt replaced with their post creation date.\n` +
+    (noPostDate.length ? `${noPostDate.length} items have no post date and will be skipped.\n\n` : '\n') +
+    `This is irreversible. Continue?`
+  );
+  if (!confirmed) return;
+
+  showToast('Patching savedAt…', 'info');
+  let patched = 0;
+  for (const item of affected) {
+    await db.items.update(item.id, { savedAt: item.postCreatedAt });
+    patched++;
+  }
+
+  await markDirty(`repairSavedAtDates: patched ${patched} items`);
+  await loadData();
+  render();
+  showToast(`Patched ${patched} item${patched !== 1 ? 's' : ''} — savedAt now reflects post creation date`, 'success');
+}
+
 async function repairCSVDuplicates() {
   const allItems = await db.items.toArray();
 
@@ -3283,7 +3348,7 @@ function renderBrowse() {
   const deadCount = state.items.filter(i => i.enrichStatus === 'dead' && !i.isPermanentlyDeleted).length;
   const trashCount = state.items.filter(i => i.isDisliked && !i.isPermanentlyDeleted).length;
   const favCount = state.items.filter(i => i.isFavourite).length;
-  const tagLists = state.lists.filter(l => l.isTag && l.type === 'smart');
+  const tagLists = state.lists.filter(l => l.isTag && l.type === 'smart').slice().sort((a,b) => (a.tagName||a.name).localeCompare(b.tagName||b.name));
 
   return `
     <!-- ── Editing list banner ──────────────────────────────────────────── -->
@@ -4572,7 +4637,7 @@ function renderLists() {
   const sorted = [...allLists].sort((a,b) => a.name.replace(/^[^a-zA-Z0-9]+/,'').localeCompare(b.name.replace(/^[^a-zA-Z0-9]+/,'')));
   const smarts = sorted.filter(l => l.type === 'smart');
   const statics = sorted.filter(l => l.type === 'static');
-  const tagLists = smarts.filter(l => l.isTag);
+  const tagLists = smarts.filter(l => l.isTag).slice().sort((a,b) => (a.tagName||a.name).localeCompare(b.tagName||b.name));
   const nonTagSmarts = smarts.filter(l => !l.isTag);
   const firstGroup  = state.listSmartFirst ? smarts  : statics;
   const secondGroup = state.listSmartFirst ? statics : smarts;
@@ -4863,6 +4928,7 @@ function renderSettings() {
           <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Comments</span><span style="font-size:12px">${active.filter(i=>i.type==='comment').length.toLocaleString()}</span></div>
           <div style="display:flex;justify-content:space-between;margin-top:4px"><span style="color:var(--text-muted)">Lists</span><span>${state.lists.length}</span></div>
           <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Smart</span><span style="font-size:12px">${state.lists.filter(l=>l.type==='smart').length}</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:28px;font-size:12px">↳ Tags</span><span style="font-size:12px">${state.lists.filter(l=>l.type==='smart'&&l.isTag).length}</span></div>
           <div style="display:flex;justify-content:space-between"><span style="color:var(--text-muted);padding-left:14px;font-size:12px">↳ Static</span><span style="font-size:12px">${state.lists.filter(l=>l.type==='static').length}</span></div>
           <div style="display:flex;justify-content:space-between;margin-top:4px"><span style="color:var(--text-muted)">Need enrichment</span>
             <span style="${unenriched>0?'color:var(--warning)':''}">${unenriched}</span>
@@ -5064,6 +5130,8 @@ function renderSettings() {
           <div style="font-size:11px;color:var(--text-muted)">These tools were used during initial setup and should rarely be needed.</div>
           <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
             onclick="repairItemTypes()">🔧 Repair Post/Comment Types</button>
+          <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
+            onclick="repairSavedAtDates()">📅 Patch Import Date Clumps</button>
           <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
             onclick="if(confirm('Normalise CSV item IDs, merge duplicates and re-queue for enrichment. Continue?'))repairCSVDuplicates()">
             🔧 Repair CSV Duplicates & Re-enrich</button>
