@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.22';
+const APP_VERSION = '0.9.9.23';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -5561,6 +5561,56 @@ function attachEventListeners() {
   // Populate sync log if visible
   const logEl = document.getElementById('sync-log-entries');
   if (logEl) renderSyncLogEntries(logEl);
+
+  // Swipe right from left edge to go back when viewing a list detail
+  if (state.page === 'lists' && state.listView !== 'all') {
+    const content = document.getElementById('main-content');
+    if (content && !content._swipeBackAttached) {
+      content._swipeBackAttached = true;
+      let startX = 0, startY = 0, mode = null, tracking = false;
+
+      content.addEventListener('touchstart', e => {
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+        mode = null;
+        tracking = startX < 40; // only arm from left edge
+      }, { passive: true });
+
+      content.addEventListener('touchmove', e => {
+        if (!tracking) return;
+        const dx = e.touches[0].clientX - startX;
+        const dy = e.touches[0].clientY - startY;
+        if (mode === null) {
+          if (Math.abs(dx) < 6 && Math.abs(dy) < 6) return;
+          mode = (dx > 0 && Math.abs(dx) > Math.abs(dy)) ? 'right' : 'none';
+        }
+        if (mode === 'right') {
+          e.preventDefault();
+          content.style.transform = `translateX(${Math.max(0, dx)}px)`;
+          content.style.transition = 'none';
+        }
+      }, { passive: false });
+
+      content.addEventListener('touchend', e => {
+        if (!tracking || mode !== 'right') { content.style.transform = ''; return; }
+        const dx = e.changedTouches[0].clientX - startX;
+        if (dx > 80) {
+          content.style.transition = 'transform 0.25s cubic-bezier(0.32,0.72,0,1)';
+          content.style.transform = `translateX(${window.innerWidth}px)`;
+          setTimeout(() => {
+            content.style.transform = '';
+            content.style.transition = '';
+            state.listView = 'all';
+            render();
+          }, 220);
+        } else {
+          content.style.transition = 'transform 0.3s cubic-bezier(0.32,0.72,0,1)';
+          content.style.transform = '';
+        }
+        tracking = false; mode = null;
+      }, { passive: true });
+    }
+  }
 
   const restoreInput = document.getElementById('restore-file');
   if (restoreInput) {
