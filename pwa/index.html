@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.15';
+const APP_VERSION = '0.9.9.16';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -2235,6 +2235,9 @@ function showPage(page) {
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   document.getElementById(`nav-${page}`)?.classList.add('active');
   render();
+  const content = document.getElementById('main-content');
+  if (content) content.scrollTop = 0;
+  window.scrollTo(0, 0);
 }
 
 function render() {
@@ -3360,6 +3363,12 @@ function renderBrowse() {
         ${hasActiveFilters() ? '⚙️ Filters ●' : '⚙️ Filters'}
       </button>
     </div>
+    ${(state.search || state.activeTagIds.length > 0 || hasActiveFilters() || state.sortBy !== 'postCreatedAt' || state.sortDir !== 'desc') ? `
+      <div style="margin-top:6px">
+        <button onclick="newSearch()" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text-muted);padding:0;opacity:0.7">
+          ✕ Clear search &amp; filters
+        </button>
+      </div>` : ''}
 
     <!-- ── Search syntax hint ──────────────────────────────────────────── -->
     <details style="margin:-2px 0 8px;font-size:11px;color:var(--text-muted)">
@@ -3393,13 +3402,13 @@ function renderBrowse() {
         ${state.recentSearchesOpen ? `
           <div id="recent-searches-row" style="margin-top:6px">
             <div style="display:flex;flex-wrap:wrap;gap:6px">
-              ${state.recentSearches.map((s, i) => `
+              ${state.recentSearches.map(s => { const i = _sl(s); return `
                 <div style="display:inline-flex;align-items:center;gap:4px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:4px 10px;font-size:12px;cursor:pointer;max-width:200px"
-                  onclick="applySearch(${JSON.stringify(s)});state.recentSearchesOpen=false;renderBrowseList()">
+                  onclick="runSavedSearch(${i});state.recentSearchesOpen=false">
                   <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)">${escHtml(s)}</span>
                   <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:11px;padding:0;line-height:1;flex-shrink:0"
-                    title="Remove" onclick="event.stopPropagation();removeRecentSearch(${JSON.stringify(s)})">✕</button>
-                </div>`).join('')}
+                    title="Remove" onclick="event.stopPropagation();removeSavedSearchByIndex(${i})">✕</button>
+                </div>`; }).join('')}
             </div>
           </div>` : ''}
       </div>` : ''}
@@ -3506,9 +3515,6 @@ function renderBrowse() {
         ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
       </span>
       <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-        ${(q || state.activeTagIds.length > 0 || hasActiveFilters() || state.sortBy !== 'postCreatedAt' || state.sortDir !== 'desc') ? `
-          <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--text-muted);padding:2px 4px;white-space:nowrap;opacity:0.8"
-            onclick="newSearch()" title="Clear search, filters and sort">✕ New search</button>` : ''}
         ${(q || state.activeTagIds.length > 0) && !state.editingListId ? `
           <button style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
             onclick="saveCurrentSearchAsList()">
@@ -4157,7 +4163,10 @@ let _filterAuthorTimer = null;
 
 function handleSearchInput(value) {
   state.search = value;
-  render();
+  // Do NOT call render() here — that destroys the input and dismisses the keyboard.
+  // Update the search input's clear button visibility manually instead.
+  const clearBtn = document.querySelector('#search-input + button');
+  if (clearBtn) clearBtn.style.display = value ? '' : 'none';
 
   // Always update the save button immediately (cheap, no filtering needed)
   const countEl = document.getElementById('search-result-info');
