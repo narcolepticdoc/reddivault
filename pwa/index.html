@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.19';
+const APP_VERSION = '0.9.9.21';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -461,6 +461,7 @@ let state = {
   lastPushedAt: null,       // ISO timestamp of last successful push to cloud (delta cursor)
   lastSyncedAt: null,       // ISO timestamp of last confirmed in-sync (push or pull) — display only
   lastFeedSync: null,       // ISO timestamp of last successful feed sync
+  savedAtClumpy: null,      // null=unchecked, true=clumps found, false=clean
   syncLog: [],              // in-memory diagnostic log, session only
   _lastIndicatorLabel: null,// tracks last rendered indicator to avoid duplicate log entries
 };
@@ -621,6 +622,7 @@ async function loadData() {
 function rebuildFilterLists() {
   const visible = state.items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted && i.enrichStatus !== 'dead');
   state.subredditList = [...new Set(visible.map(i => i.subreddit).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+
   state.authorList    = [...new Set(visible.map(i => i.author).filter(s => s && s !== '[deleted]' && s !== 'AutoModerator'))].sort((a, b) => a.localeCompare(b));
 }
 
@@ -1953,6 +1955,20 @@ async function repairSavedAtDates() {
   }
 
   await markDirty(`repairSavedAtDates: patched ${patched} items`);
+
+  // Push patched items to Supabase so cloud stays in sync
+  if (state.supabaseUrl && state.supabaseKey) {
+    showToast('Syncing patched dates to cloud…', 'info');
+    const patched_items = await db.items.toArray();
+    const toSync = patched_items.filter(i =>
+      i.savedAt && affected.some(a => a.id === i.id)
+    );
+    for (let i = 0; i < toSync.length; i += 200) {
+      await pushToSupabase(toSync.slice(i, i + 200));
+    }
+  }
+
+  state.savedAtClumpy = null; // force re-check on next loadData
   await loadData();
   render();
   showToast(`Patched ${patched} item${patched !== 1 ? 's' : ''} — savedAt now reflects post creation date`, 'success');
@@ -3164,6 +3180,19 @@ function setSort(by) {
   if (sc) sc.outerHTML = renderSortControl();
 }
 
+function checkSavedAtClumps() {
+  // Flat threshold — 100 items in one hour is never organic, always an import event.
+  // Only runs once per session; result cached in state.savedAtClumpy.
+  if (state.savedAtClumpy !== null) return;
+  const hourBuckets = {};
+  for (const item of state.items) {
+    if (!item.savedAt) continue;
+    const hour = item.savedAt.slice(0, 13);
+    hourBuckets[hour] = (hourBuckets[hour] || 0) + 1;
+  }
+  state.savedAtClumpy = Object.values(hourBuckets).some(c => c >= 100);
+}
+
 function renderSortControl(onChangeFn = 'setSort') {
   const opts = [
     { key: 'affinity',     label: '✦ Affinity' },
@@ -3573,6 +3602,13 @@ function renderBrowse() {
         </button>
       </div>
     ` : ''}
+
+    <!-- ── savedAt clump warning ──────────────────────────────────────── -->
+    ${state.sortBy === 'savedAt' && (checkSavedAtClumps(), state.savedAtClumpy) ? `
+      <div style="font-size:11px;color:var(--warning);background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.25);border-radius:8px;padding:6px 10px;margin-bottom:6px;line-height:1.5">
+        ⚠ Most items share a synthetic import date — sort order may not reflect when you actually saved things.
+        <button onclick="showPage('settings')" style="background:none;border:none;cursor:pointer;color:var(--accent2);font-size:11px;padding:0;white-space:nowrap">Run the patch tool →</button>
+      </div>` : ''}
 
     <!-- ── Result count + save search + sort ───────────────────────────── -->
     <div id="search-result-info" style="display:flex;align-items:center;justify-content:space-between;margin-top:8px;margin-bottom:4px;min-height:24px;gap:8px">
