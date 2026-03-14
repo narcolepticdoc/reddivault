@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.25';
+const APP_VERSION = '0.9.9.26';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -3893,8 +3893,21 @@ function parseSearchQuery(raw) {
       if (orTokens.length) {
         tokens.push({ type: 'orGroup', values: orTokens, negate: false });
       }
-      // Field tokens from comma list were pushed directly — collapse them below
-      if (tokens.length) return tokens; // collapse step handles fieldOrGroup merging
+      // Fall through to collapse step below — it will merge multiple field tokens
+      // of the same type into a fieldOrGroup.
+      if (tokens.length) {
+        // Skip the paren/remainder parsing — go straight to collapse and return
+        const fieldTypes2 = ['subreddit', 'author'];
+        for (const field of fieldTypes2) {
+          const ft = tokens.filter(t => t.type === 'field' && t.field === field && !t.negate);
+          if (ft.length > 1) {
+            const idx = tokens.indexOf(ft[0]);
+            tokens.splice(0, tokens.length, ...tokens.filter(t => !(t.type === 'field' && t.field === field && !t.negate)));
+            tokens.splice(idx, 0, { type: 'fieldOrGroup', field, values: ft.map(t => t.value) });
+          }
+        }
+        return tokens;
+      }
     }
   }
 
@@ -4352,7 +4365,9 @@ function handleSearchInput(value) {
   const currentWord = words[words.length - 1];
   const bareWord = currentWord.replace(/^[-"r\/u\:\/]*/,'').replace(/"/g,'');
 
-  const shouldTrigger = lastChar === ' ' || bareWord.length >= 4;
+  // Trigger if: space typed, bare word ≥4 chars, or current word is a complete field token (r/x or u/x with ≥1 char after slash)
+  const isCompleteFieldToken = /^[rRuU][:/]\S+$/.test(currentWord);
+  const shouldTrigger = lastChar === ' ' || bareWord.length >= 4 || isCompleteFieldToken;
 
   clearTimeout(_searchDebounceTimer);
   if (shouldTrigger) {
