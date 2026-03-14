@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.27';
+const APP_VERSION = '0.9.9.28';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -3880,8 +3880,9 @@ function parseSearchQuery(raw) {
         if (pm[2]) {
           // Field token inside comma list — emit as regular field token, collapse later
           const fieldMap = { r: 'subreddit', u: 'author', type: 'type' };
+          const _fv = pm[3].toLowerCase();
           tokens.push({ type: pm[2] === 'type' ? 'typeFilter' : 'field',
-            field: fieldMap[pm[2]], value: pm[3].toLowerCase(), negate: pm[1] === '-' });
+            field: fieldMap[pm[2]], value: _fv.replace(/\*+$/, ''), prefixWild: _fv.endsWith('*'), negate: pm[1] === '-' });
         } else if (pm[4]) {
           // Quoted phrase
           orTokens.push({ exact: true, value: pm[4].toLowerCase() });
@@ -3903,7 +3904,7 @@ function parseSearchQuery(raw) {
           if (ft.length > 1) {
             const idx = tokens.indexOf(ft[0]);
             tokens.splice(0, tokens.length, ...tokens.filter(t => !(t.type === 'field' && t.field === field && !t.negate)));
-            tokens.splice(idx, 0, { type: 'fieldOrGroup', field, values: ft.map(t => t.value) });
+            tokens.splice(idx, 0, { type: 'fieldOrGroup', field, values: ft.map(t => t.value), prefixWilds: ft.map(t => !!t.prefixWild) });
           }
         }
         return tokens;
@@ -3939,8 +3940,8 @@ function parseSearchQuery(raw) {
   let m;
   while ((m = re.exec(str)) !== null) {
     const negate = m[1] === '-';
-    if (m[2] === 'r')    { tokens.push({ type: 'field', field: 'subreddit', value: m[3].toLowerCase().replace(/,+$/, ''), negate }); continue; }
-    if (m[2] === 'u')    { tokens.push({ type: 'field', field: 'author',    value: m[3].toLowerCase().replace(/,+$/, ''), negate }); continue; }
+    if (m[2] === 'r')    { const _rv = m[3].toLowerCase().replace(/,+$/, ''); tokens.push({ type: 'field', field: 'subreddit', value: _rv.replace(/\*+$/, ''), prefixWild: _rv.endsWith('*'), negate }); continue; }
+    if (m[2] === 'u')    { const _uv = m[3].toLowerCase().replace(/,+$/, ''); tokens.push({ type: 'field', field: 'author',    value: _uv.replace(/\*+$/, ''), prefixWild: _uv.endsWith('*'), negate }); continue; }
     if (m[2] === 'type') { tokens.push({ type: 'typeFilter', value: m[3].toLowerCase().replace(/,+$/, ''), negate }); continue; }
     if (m[4]) {
       // Quoted phrase — exact substring, no word boundary
@@ -3967,6 +3968,7 @@ function parseSearchQuery(raw) {
         type: 'fieldOrGroup',
         field,
         values: fieldTokens.map(t => t.value),
+        prefixWilds: fieldTokens.map(t => !!t.prefixWild),
       });
     }
   }
@@ -4055,10 +4057,10 @@ function itemMatchesTokens(item, tokens, _visited) {
       });
     } else if (t.type === 'field') {
       const fieldVal = (item[t.field] || '').toLowerCase();
-      match = fieldVal === t.value;
+      match = t.prefixWild ? fieldVal.startsWith(t.value) : fieldVal === t.value;
     } else if (t.type === 'fieldOrGroup') {
       const fieldVal = (item[t.field] || '').toLowerCase();
-      match = t.values.some(v => fieldVal === v);
+      match = t.values.some((v, i) => t.prefixWilds?.[i] ? fieldVal.startsWith(v) : fieldVal === v);
     } else if (t.type === 'typeFilter') {
       match = item.type === t.value;
     } else {
