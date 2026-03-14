@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.26';
+const APP_VERSION = '0.9.9.27';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -4055,10 +4055,10 @@ function itemMatchesTokens(item, tokens, _visited) {
       });
     } else if (t.type === 'field') {
       const fieldVal = (item[t.field] || '').toLowerCase();
-      match = fieldVal.includes(t.value);
+      match = fieldVal === t.value;
     } else if (t.type === 'fieldOrGroup') {
       const fieldVal = (item[t.field] || '').toLowerCase();
-      match = t.values.some(v => fieldVal.includes(v));
+      match = t.values.some(v => fieldVal === v);
     } else if (t.type === 'typeFilter') {
       match = item.type === t.value;
     } else {
