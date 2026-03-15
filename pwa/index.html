@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.33';
+const APP_VERSION = '0.9.9.34';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -3448,17 +3448,16 @@ function renderBrowse() {
           onkeydown="if(event.key==='Enter'&&state.search.trim()){commitSearch(state.search);renderBrowseList();}"
           autocapitalize="none" autocorrect="off" spellcheck="false"
           style="width:100%;padding-right:${state.search ? '36px' : '12px'}">
-        ${state.search ? `
-          <button style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1;padding:0"
-            onclick="applySearch('')">✕</button>
-        ` : ''}
+        <button id="search-clear-x"
+          style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:16px;line-height:1;padding:0;display:${state.search ? 'block' : 'none'}"
+          onclick="applySearch('')">✕</button>
       </div>
       <button onclick="state.showFilters=!state.showFilters;render()"
         style="background:${hasActiveFilters()?'var(--accent2)':'var(--surface)'};border:1px solid ${hasActiveFilters()?'var(--accent2)':'var(--border)'};border-radius:10px;padding:0 14px;height:44px;cursor:pointer;font-size:13px;color:${hasActiveFilters()?'#fff':'var(--text-muted)'};white-space:nowrap;flex-shrink:0;align-self:stretch">
         ${hasActiveFilters() ? '⚙️ Filters ●' : '⚙️ Filters'}
       </button>
     </div>
-    <div style="min-height:18px;margin-top:4px">
+    <div style="min-height:18px;margin-top:4px;text-align:right">
       <button id="clear-search-btn" onclick="newSearch()"
         style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text-muted);padding:0;opacity:0.7;visibility:${(state.search || state.activeTagIds.length > 0 || hasActiveFilters() || state.sortBy !== 'postCreatedAt' || state.sortDir !== 'desc') ? 'visible' : 'hidden'}">
         ✕ Clear search &amp; filters
@@ -4331,8 +4330,8 @@ function handleSearchInput(value) {
   state.search = value;
   // Do NOT call render() here — that destroys the input and dismisses the keyboard.
   // Manually update the inline ✕ inside the search wrap
-  const inlineClear = document.querySelector('#search-input + button');
-  if (inlineClear) inlineClear.style.display = value ? '' : 'none';
+  const inlineClear = document.getElementById('search-clear-x');
+  if (inlineClear) inlineClear.style.display = value ? 'block' : 'none';
   // Update the persistent clear button visibility
   const clearBtn = document.getElementById('clear-search-btn');
   if (clearBtn) {
