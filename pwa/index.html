@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.30';
+const APP_VERSION = '0.9.9.31';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -5790,9 +5790,8 @@ async function autoFeedSyncIfDue() {
 
 function _buildProxyUrl(feedUrl) {
   if (state.feedProxyType === 'corsfix') {
-    // CORSfix requires the target URL to be encoded so its own parser
-    // doesn't treat & params in the Reddit URL as its own query params
-    return `https://proxy.corsfix.com/?${encodeURIComponent(feedUrl)}`;
+    // CORSfix syntax: raw URL appended directly — no encoding
+    return `https://proxy.corsfix.com/?${feedUrl}`;
   }
   // Cloudflare Worker syntax: {workerUrl}?url={encoded-url}
   const base = state.feedProxyUrl || '/api/reddit-feed';
@@ -5820,7 +5819,10 @@ async function syncFromFeed() {
   try {
     while (pages < MAX_PAGES) {
       let feedUrl = state.redditFeedUrl;
-      feedUrl += '&limit=25';
+      // CORSfix can't handle extra & params appended to the target URL —
+      // pass clean URL for corsfix, append params for Cloudflare Worker
+      const isCorsfix = state.feedProxyType === 'corsfix';
+      if (!isCorsfix) feedUrl += '&limit=25';
       if (after) feedUrl += `&after=${encodeURIComponent(after)}`;
 
       // Route through proxy (required — Reddit blocks direct cross-origin fetches)
