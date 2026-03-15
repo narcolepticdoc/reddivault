@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.32';
+const APP_VERSION = '0.9.9.33';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -3458,12 +3458,12 @@ function renderBrowse() {
         ${hasActiveFilters() ? '⚙️ Filters ●' : '⚙️ Filters'}
       </button>
     </div>
-    ${(state.search || state.activeTagIds.length > 0 || hasActiveFilters() || state.sortBy !== 'postCreatedAt' || state.sortDir !== 'desc') ? `
-      <div style="margin-top:6px">
-        <button onclick="newSearch()" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text-muted);padding:0;opacity:0.7">
-          ✕ Clear search &amp; filters
-        </button>
-      </div>` : ''}
+    <div style="min-height:18px;margin-top:4px">
+      <button id="clear-search-btn" onclick="newSearch()"
+        style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--text-muted);padding:0;opacity:0.7;visibility:${(state.search || state.activeTagIds.length > 0 || hasActiveFilters() || state.sortBy !== 'postCreatedAt' || state.sortDir !== 'desc') ? 'visible' : 'hidden'}">
+        ✕ Clear search &amp; filters
+      </button>
+    </div>
 
     <!-- ── Search syntax hint ──────────────────────────────────────────── -->
     <details style="margin:-2px 0 8px;font-size:11px;color:var(--text-muted)">
@@ -4330,32 +4330,19 @@ let _filterAuthorTimer = null;
 function handleSearchInput(value) {
   state.search = value;
   // Do NOT call render() here — that destroys the input and dismisses the keyboard.
-  // Update the search input's clear button visibility manually instead.
-  const clearBtn = document.querySelector('#search-input + button');
-  if (clearBtn) clearBtn.style.display = value ? '' : 'none';
-
-  // Always update the save button immediately (cheap, no filtering needed)
-  const countEl = document.getElementById('search-result-info');
-  if (countEl) {
-    const q = value.trim();
-    // Just update the save button visibility — leave count alone until filter runs
-    const saveBtn = countEl.querySelector('.save-as-list-btn');
-    if (q && !saveBtn && !state.editingListId) {
-      // Re-render the whole count area to show the button
-      const items = filteredItems();
-      countEl.innerHTML = `
-        <span style="font-size:12px;color:var(--text-muted);flex-shrink:0">
-          ${items.length.toLocaleString()} ${q ? 'result' : 'item'}${items.length!==1?'s':''}
-        </span>
-        <div style="display:flex;align-items:center;gap:6px;margin-left:auto">
-          <button class="save-as-list-btn" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--accent2);padding:2px 4px;white-space:nowrap"
-            onclick="saveCurrentSearchAsList()">+ Save as list</button>
-          ${renderSortControl()}
-        </div>`;
-    } else if ((!q || state.editingListId) && saveBtn) {
-      renderBrowseList();
-    }
+  // Manually update the inline ✕ inside the search wrap
+  const inlineClear = document.querySelector('#search-input + button');
+  if (inlineClear) inlineClear.style.display = value ? '' : 'none';
+  // Update the persistent clear button visibility
+  const clearBtn = document.getElementById('clear-search-btn');
+  if (clearBtn) {
+    const hasState = value || state.activeTagIds.length > 0 || hasActiveFilters() ||
+      state.sortBy !== 'postCreatedAt' || state.sortDir !== 'desc';
+    clearBtn.style.visibility = hasState ? 'visible' : 'hidden';
   }
+
+  // Count and save button are updated by renderBrowseList() when debounce fires.
+  // Don't call filteredItems() here — it causes stale/misleading counts mid-typing.
 
   if (!value.trim()) {
     renderBrowseList();
@@ -4369,7 +4356,7 @@ function handleSearchInput(value) {
 
   // Trigger if: space typed, bare word ≥4 chars, or current word is a complete field token (r/x or u/x with ≥1 char after slash)
   const isCompleteFieldToken = /^[rRuU][:/]\S+$/.test(currentWord);
-  const shouldTrigger = lastChar === ' ' || bareWord.length >= 4 || isCompleteFieldToken;
+  const shouldTrigger = lastChar === ' ' || bareWord.length >= 3 || isCompleteFieldToken;
 
   clearTimeout(_searchDebounceTimer);
   if (shouldTrigger) {
@@ -5542,7 +5529,7 @@ function showListMenu(itemId) {
   if (state.lists.length === 0) {
     showModal(`
       <div class="modal-title">Add to List</div>
-      <p style="color:var(--text-muted);font-size:13px">No lists yet. Create one in the Lists tab first.</p>
+      <p style="color:var(--text-muted);font-size:13px">No static lists yet. Create one in the Lists tab first.</p>
       <div style="display:flex;gap:8px;margin-top:16px">
         <button class="btn btn-secondary" onclick="closeModal()" style="flex:1;justify-content:center">Cancel</button>
         <button class="btn btn-primary" onclick="closeModal();showPage('lists')" style="flex:1;justify-content:center">Go to Lists</button>
@@ -5552,7 +5539,7 @@ function showListMenu(itemId) {
   }
 
   const inListIds = new Set(state.itemLists.filter(il => il.itemId === itemId).map(il => il.listId));
-  const sorted = [...state.lists].sort((a,b) => a.name.replace(/^[^a-zA-Z0-9]+/,'').localeCompare(b.name.replace(/^[^a-zA-Z0-9]+/,'')));
+  const sorted = [...state.lists].filter(l => l.type === 'static').sort((a,b) => a.name.replace(/^[^a-zA-Z0-9]+/,'').localeCompare(b.name.replace(/^[^a-zA-Z0-9]+/,'')));
 
   showModal(`
     <div class="modal-title">Add to List</div>
