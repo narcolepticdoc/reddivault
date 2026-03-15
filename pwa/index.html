@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.31';
+const APP_VERSION = '0.9.9.32';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -5790,7 +5790,7 @@ async function autoFeedSyncIfDue() {
 
 function _buildProxyUrl(feedUrl) {
   if (state.feedProxyType === 'corsfix') {
-    // CORSfix syntax: raw URL appended directly — no encoding
+    // CORSfix syntax: https://proxy.corsfix.com/?{full-url} (no encoding)
     return `https://proxy.corsfix.com/?${feedUrl}`;
   }
   // Cloudflare Worker syntax: {workerUrl}?url={encoded-url}
@@ -5819,10 +5819,7 @@ async function syncFromFeed() {
   try {
     while (pages < MAX_PAGES) {
       let feedUrl = state.redditFeedUrl;
-      // CORSfix can't handle extra & params appended to the target URL —
-      // pass clean URL for corsfix, append params for Cloudflare Worker
-      const isCorsfix = state.feedProxyType === 'corsfix';
-      if (!isCorsfix) feedUrl += '&limit=25';
+      feedUrl += '&limit=25';
       if (after) feedUrl += `&after=${encodeURIComponent(after)}`;
 
       // Route through proxy (required — Reddit blocks direct cross-origin fetches)
