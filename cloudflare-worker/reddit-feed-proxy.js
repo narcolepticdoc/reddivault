@@ -1,24 +1,49 @@
 // Cloudflare Worker — Reddit feed CORS proxy
 // Deploy at: https://workers.cloudflare.com
-// Set your PWA domain in ALLOWED_ORIGIN below, then deploy.
 
-const ALLOWED_ORIGIN = 'https://reddivault.vercel.app';
+// Allowed origins — exact matches or hostname suffix patterns.
+// The request Origin is checked against this list and reflected back if it matches,
+// so multiple origins and Vercel preview URLs are all supported.
+const ALLOWED_ORIGINS = [
+  'https://reddivault.vercel.app',       // production
+];
+const ALLOWED_ORIGIN_SUFFIXES = [
+  '-narcolepticdocs-projects.vercel.app', // narcolepticdocs Vercel preview deployments
+  'localhost',                            // local development
+];
+
+function getAllowedOrigin(request) {
+  const origin = request.headers.get('Origin') || '';
+  if (ALLOWED_ORIGINS.includes(origin)) return origin;
+  try {
+    const host = new URL(origin).hostname;
+    if (ALLOWED_ORIGIN_SUFFIXES.some(s => host === s || host.endsWith(s))) return origin;
+  } catch {}
+  return null;
+}
 
 export default {
   async fetch(request) {
+    const allowedOrigin = getAllowedOrigin(request);
+
     // CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, {
         headers: {
-          'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+          'Access-Control-Allow-Origin': allowedOrigin || 'null',
           'Access-Control-Allow-Methods': 'GET',
           'Access-Control-Max-Age': '86400',
+          'Vary': 'Origin',
         }
       });
     }
 
     if (request.method !== 'GET') {
       return new Response('Method not allowed', { status: 405 });
+    }
+
+    if (!allowedOrigin) {
+      return new Response('Origin not allowed', { status: 403 });
     }
 
     const reqUrl = new URL(request.url);
@@ -49,7 +74,7 @@ export default {
       const body = await response.text().catch(() => '');
       return new Response(JSON.stringify({ error: `Reddit returned ${response.status}`, detail: body.slice(0, 200) }), {
         status: response.status,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': ALLOWED_ORIGIN }
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': allowedOrigin, 'Vary': 'Origin' }
       });
     }
 
@@ -57,8 +82,9 @@ export default {
     return new Response(JSON.stringify(data), {
       headers: {
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+        'Access-Control-Allow-Origin': allowedOrigin,
         'Cache-Control': 'no-store',
+        'Vary': 'Origin',
       }
     });
   }
