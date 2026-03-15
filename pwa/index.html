@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.28';
+const APP_VERSION = '0.9.9.30';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -5790,8 +5790,9 @@ async function autoFeedSyncIfDue() {
 
 function _buildProxyUrl(feedUrl) {
   if (state.feedProxyType === 'corsfix') {
-    // CORSfix syntax: https://proxy.corsfix.com/?{full-url} (no key, no encoding)
-    return `https://proxy.corsfix.com/?${feedUrl}`;
+    // CORSfix requires the target URL to be encoded so its own parser
+    // doesn't treat & params in the Reddit URL as its own query params
+    return `https://proxy.corsfix.com/?${encodeURIComponent(feedUrl)}`;
   }
   // Cloudflare Worker syntax: {workerUrl}?url={encoded-url}
   const base = state.feedProxyUrl || '/api/reddit-feed';
@@ -5824,8 +5825,14 @@ async function syncFromFeed() {
 
       // Route through proxy (required — Reddit blocks direct cross-origin fetches)
       const url = _buildProxyUrl(feedUrl);
+      syncLog(`feedSync: fetching via ${state.feedProxyType || 'cloudflare'} — ${url.slice(0, 120)}`);
       const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status} — check your feed URL is correct`);
+      if (!res.ok) {
+        let detail = '';
+        try { const t = await res.text(); detail = t.slice(0, 200); } catch(e) {}
+        syncLog(`feedSync: HTTP ${res.status} — ${detail}`, 'error');
+        throw new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
+      }
       const json = await res.json();
 
       const children = json?.data?.children || [];
