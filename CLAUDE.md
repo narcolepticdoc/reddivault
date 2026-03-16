@@ -19,7 +19,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 - **`vercel.json`** — Vercel deployment config (auto-deploys from GitHub)
 
 **Live URL:** https://reddivault.vercel.app
-**Current version:** v0.9.10.0
+**Current version:** v0.9.8.15
 
 ---
 
@@ -42,7 +42,9 @@ Reddit public JSON API   → PWA enrichment (no auth needed)
 
 **Soft delete** — "permanently deleted" items are never removed from the DB. They get `isPermanentlyDeleted: true` + `deletedAt` timestamp locally, and `deleted_at` set in Supabase. This prevents them from resurfacing via feed sync. Actual DB purge is a separate explicit action.
 
-**URL enrichment** — Reddit CSV exports are sparse (IDs and URLs only). The app fetches `https://old.reddit.com{permalink}.json` for each item to get title, body, author, score, subreddit. No auth needed. Rate limiting: configurable delay (default 7.5s between requests).
+**URL enrichment** — two-phase process:
+1. **Arctic Shift bulk pass** (`enrichViaArcticShift`) — hits `arctic-shift.photon-reddit.com` API with up to 500 IDs/request. No auth, generous rate limits. Resolves thousands of items in minutes. Posts and comments use separate endpoints (`/api/posts/ids`, `/api/comments/ids`). 500ms delay between batches.
+2. **Reddit per-item fallback** (`enrichItemFromReddit`) — unchanged slow loop for items Arctic Shift didn't have. Rate limiting: configurable delay (default 7.5s). Only runs on the items Phase 1 missed.
 
 **No folder column** — early versions had a `folder` text column. This was renamed to `deleted_at timestamptz` in a Supabase migration. There are no folders in the current schema — organisation is via Lists.
 
@@ -128,6 +130,9 @@ state.supabaseUrl    // Supabase project URL
 state.supabaseKey    // Supabase anon key
 state.redditFeedUrl  // Reddit private RSS feed URL
 state.feedProxyUrl   // Cloudflare worker URL
+state.listView           // 'all' | list id — which list is open
+state.listSeparate       // separate smart vs static lists in Lists tab
+state.listSmartFirst     // smart lists appear above static when separated (default: true)
 state.disableZoom    // iOS viewport zoom disabled
 state.confirmDestructive // confirm before destructive actions
 ```
@@ -322,7 +327,8 @@ These can be read with standard file tools if you need to investigate why a spec
 │   ├── popup.js
 │   └── background.js
 ├── cloudflare-worker/
-│   └── reddit-feed-proxy.js           ← CORS proxy worker
+│   ├── reddit-feed-proxy.js           ← CORS proxy worker
+│   └── wrangler.toml                  ← Cloudflare CI/CD config (wrangler deploy)
 └── docs/
     └── transcripts/
         ├── journal.txt
