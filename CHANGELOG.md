@@ -5,6 +5,29 @@ Newest releases at the top.
 
 ---
 
+## [0.9.10.0] – 2026-03-16
+### Changed
+- **Affinity sort**: precompute `maxAuthorFreq` once in `loadData()` instead of
+  recomputing `Math.max(...Object.values())` on every sort comparison — eliminates
+  ~10,000 redundant object enumerations per affinity sort on a 1,000-item library.
+- **Date and affinity sort**: precompute sort keys (timestamps / affinity scores)
+  into a Map before sorting, replacing repeated `new Date()` construction and
+  `affinityScore()` recalculation inside comparators.
+- **`filteredItems()`**: consolidate 5 sequential `.filter()` chains (visibility,
+  dead/alive, favourite, plus rating/links/date/subreddit/author panel filters)
+  into 2 single-pass filters, reducing intermediate array allocations.
+- **Search parsing**: add `cachedParseSearch()` memoisation wrapper so identical
+  query strings are not re-parsed by the regex-heavy `parseSearchQuery()` on
+  consecutive `filteredItems()` calls.
+- **`pushListsToSupabase()`**: build an `itemId→redditId` Map before the list
+  loop, replacing O(n) `allItems.find()` per membership entry with O(1) Map
+  lookup.
+- **Item card rendering**: precompute `itemId→listCount` Map once per render
+  pass (`_rebuildListCountMap()`), replacing O(n) `state.itemLists.filter()`
+  scan per rendered card.
+
+---
+
 ## [0.9.7.6] – 2026-03-09
 ### Added
 - CORS proxy selector in Settings → Sync New Saves → Feed connection settings:
