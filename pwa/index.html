@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.10.0';
+const APP_VERSION = '0.9.10.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -1977,6 +1977,41 @@ async function repairSavedAtDates() {
   showToast(`Patched ${patched} item${patched !== 1 ? 's' : ''} — savedAt now reflects post creation date`, 'success');
 }
 
+async function repairCommentTitles() {
+  // Find all comments whose title is the feed fallback placeholder
+  // "Comment in r/subreddit" — reset them to pending so the Reddit
+  // enricher fetches the real parent post title on next enrichment run.
+  const allItems = await db.items.toArray();
+  const affected = allItems.filter(i =>
+    i.type === 'comment' &&
+    (i.title || '').match(/^Comment in r\//)
+  );
+
+  if (!affected.length) {
+    showToast('No placeholder comment titles found', 'success');
+    return;
+  }
+
+  const confirmed = confirm(
+    `Found ${affected.length} comment${affected.length !== 1 ? 's' : ''} with placeholder titles (e.g. "Comment in r/...").\n\n` +
+    `These will be reset to pending so the next enrichment run fetches their real parent post titles.\n\nContinue?`
+  );
+  if (!confirmed) return;
+
+  for (const item of affected) {
+    await db.items.update(item.id, {
+      enriched: false,
+      enrichStatus: 'pending',
+      enrichAttempts: 0,
+    });
+  }
+
+  await markDirty(`repairCommentTitles: reset ${affected.length} items`);
+  await loadData();
+  render();
+  showToast(`${affected.length} comment${affected.length !== 1 ? 's' : ''} queued for re-enrichment`, 'success');
+}
+
 async function repairCSVDuplicates() {
   const allItems = await db.items.toArray();
 
@@ -3073,6 +3108,24 @@ async function purgeDeletedItems() {
   render();
 }
 
+async function purgeSingleItem(id) {
+  const item = state.items.find(i => i.id === id);
+  if (!item) return;
+  syncLog(`purgeSingleItem: removing ${item.redditId} from DB`);
+  await db.items.delete(id);
+  if (state.supabaseUrl && item.redditId) {
+    try {
+      await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'DELETE', null);
+    } catch(e) {
+      syncLog(`purgeSingleItem: failed for ${item.redditId} — ${e.message}`, 'error');
+      await markDirty('purgeSingleItem push failed');
+    }
+  }
+  syncLog(`purgeSingleItem: complete`, 'ok');
+  await loadData();
+  render();
+}
+
 async function deleteAllTrashed() {
   const trashed = state.items.filter(i => i.isDisliked && !i.isPermanentlyDeleted);
   if (!trashed.length) return;
@@ -3270,6 +3323,7 @@ function renderTrashView() {
                 <button class="btn btn-ghost btn-sm" onclick="showPreview(${item.id})">👁 View</button>
                 <button class="btn btn-ghost btn-sm" onclick="restoreDeletedItem(${item.id})">↩ Restore</button>
                 <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">↗ Open</a>
+                <button class="btn btn-danger btn-sm" onclick="if(confirm('Remove from database entirely? It may reappear on next feed sync.'))purgeSingleItem(${item.id})">⚠ Purge</button>
               </div>
             </div>`;
         }).join('')}
@@ -5252,6 +5306,8 @@ function renderSettings() {
           <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
             onclick="repairItemTypes()">🔧 Repair Post/Comment Types</button>
           <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
+            onclick="repairCommentTitles()">💬 Fix Placeholder Comment Titles</button>
+          <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
             onclick="repairSavedAtDates()">📅 Patch Import Date Clumps</button>
           <button class="btn btn-secondary btn-sm" style="width:100%;justify-content:center"
             onclick="if(confirm('Normalise CSV item IDs, merge duplicates and re-queue for enrichment. Continue?'))repairCSVDuplicates()">
@@ -5871,10 +5927,15 @@ async function syncFromFeed() {
 
         const type = kind === 't1' ? 'comment' : 'post';
 
+        // For comments, prefer link_title (parent post title from feed).
+        // If absent, store a placeholder and mark for enrichment so the
+        // Reddit .json enricher can fetch the real parent post title.
+        const commentTitle = type === 'comment' ? (d.link_title || null) : null;
+        const needsEnrich = type === 'comment' && !commentTitle;
         const item = {
           redditId,
           type,
-          title: d.title || (type === 'comment' ? `Comment in r/${d.subreddit}` : ''),
+          title: d.title || commentTitle || (type === 'comment' ? `Comment in r/${d.subreddit}` : ''),
           body: type === 'comment' ? (d.body || '') : (d.selftext || ''),
           author: d.author || '',
           subreddit: d.subreddit || '',
@@ -5883,8 +5944,8 @@ async function syncFromFeed() {
           score: d.score || 0,
           savedAt: new Date().toISOString(),
           postCreatedAt: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,
-          enriched: true,
-          enrichStatus: 'enriched',
+          enriched: !needsEnrich,
+          enrichStatus: needsEnrich ? 'pending' : 'enriched',
           source: 'feed',
         };
 
