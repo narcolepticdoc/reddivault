@@ -323,7 +323,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.9.34';
+const APP_VERSION = '0.9.10.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -615,6 +615,8 @@ async function loadData() {
     if (item.isDisliked || item.enrichStatus === 'dead' || item.isPermanentlyDeleted) continue;
     state.authorFreq[item.author] = (state.authorFreq[item.author] || 0) + 1;
   }
+  const freqVals = Object.values(state.authorFreq);
+  state.maxAuthorFreq = freqVals.length ? Math.max(...freqVals) : 1;
   rebuildTagCache();
   rebuildFilterLists();
 }
@@ -1821,10 +1823,11 @@ async function pushListsToSupabase(skipPull = false) {
       syncLog(`pushListsToSupabase: ${lists.length} list${lists.length !== 1 ? 's' : ''} upserted`);
     }
 
+    const idToRedditId = new Map(allItems.map(i => [i.id, i.redditId]));
     for (const list of lists) {
       const memberRedditIds = itemLists
         .filter(il => il.listId === list.id)
-        .map(il => allItems.find(i => i.id === il.itemId)?.redditId)
+        .map(il => idToRedditId.get(il.itemId))
         .filter(Boolean);
       await supabaseFetch(`/reddit_item_lists?list_name=eq.${encodeURIComponent(list.name)}`, 'DELETE', null);
       if (memberRedditIds.length) {
@@ -3839,6 +3842,15 @@ function getTagsContaining(listId, graph) {
   return result;
 }
 
+// Memoise parseSearchQuery for repeated calls with the same input (e.g. filteredItems)
+let _parsedQueryCache = { raw: null, tokens: [] };
+function cachedParseSearch(raw) {
+  if (raw === _parsedQueryCache.raw) return _parsedQueryCache.tokens;
+  const tokens = parseSearchQuery(raw);
+  _parsedQueryCache = { raw, tokens };
+  return tokens;
+}
+
 function parseSearchQuery(raw) {
   const tokens = [];
   // Normalise curly/smart quotes to straight quotes (iOS autocorrect)
@@ -4080,19 +4092,31 @@ function affinityScore(item) {
   const ratingPts = item.rating ? (item.rating / 5) * 50 : 10;
   const favPts = item.isFavourite ? 30 : 0;
   const freq = item.author ? (state.authorFreq[item.author] || 0) : 0;
-  const maxFreq = Math.max(1, ...Object.values(state.authorFreq).length ? Object.values(state.authorFreq) : [1]);
+  const maxFreq = state.maxAuthorFreq || 1;
   const authorPts = (Math.log(freq + 1) / Math.log(maxFreq + 1)) * 15;
   return ratingPts + favPts + authorPts;
 }
 
 function sortItems(items, applyAuthorBoost = false) {
   const dir = state.sortDir === 'asc' ? 1 : -1;
+
+  // Precompute timestamps / scores to avoid repeated object creation inside sort comparisons
+  let _sortKey;
+  if (state.sortBy === 'postCreatedAt' || state.sortBy === 'savedAt') {
+    const field = state.sortBy;
+    _sortKey = new Map();
+    for (const item of items) _sortKey.set(item, new Date(item[field] || 0).getTime());
+  } else if (state.sortBy === 'affinity') {
+    _sortKey = new Map();
+    for (const item of items) _sortKey.set(item, affinityScore(item));
+  }
+
   const sorted = [...items].sort((a, b) => {
     switch (state.sortBy) {
       case 'affinity':
-        return dir * (affinityScore(a) - affinityScore(b));
       case 'postCreatedAt':
-        return dir * ((new Date(a.postCreatedAt||0)) - (new Date(b.postCreatedAt||0)));
+      case 'savedAt':
+        return dir * (_sortKey.get(a) - _sortKey.get(b));
       case 'score':
         return dir * ((a.score||0) - (b.score||0));
       case 'subreddit':
@@ -4101,7 +4125,7 @@ function sortItems(items, applyAuthorBoost = false) {
         return dir * (a.title||'').localeCompare(b.title||'');
       case 'rating':
         return dir * ((a.rating||0) - (b.rating||0));
-      default: // savedAt
+      default: // savedAt fallback
         return dir * ((new Date(a.savedAt||0)) - (new Date(b.savedAt||0)));
     }
   });
@@ -4128,15 +4152,16 @@ function filteredItems() {
   if (state.showTrash) return sortItems(items.filter(i => i.isDisliked && !i.isPermanentlyDeleted));
 
   // Normal browse — exclude disliked, permanently deleted, and dead unless filtering for dead
-  items = items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted);
-  if (state.showDead) {
-    items = items.filter(i => i.enrichStatus === 'dead');
-  } else {
-    items = items.filter(i => i.enrichStatus !== 'dead');
+  {
+    const wantDead = state.showDead;
+    const wantFav = state.filterFavourite;
+    items = items.filter(i => {
+      if (i.isDisliked || i.isPermanentlyDeleted) return false;
+      if (wantDead ? i.enrichStatus !== 'dead' : i.enrichStatus === 'dead') return false;
+      if (wantFav && !i.isFavourite) return false;
+      return true;
+    });
   }
-
-  // Favourite filter
-  if (state.filterFavourite) items = items.filter(i => i.isFavourite);
 
   // Active tag chips — use pre-computed cache for fast Set lookups
   if (state.activeTagIds.length > 0) {
@@ -4175,7 +4200,7 @@ function filteredItems() {
   // Type filter (panel or search token)
   let typeOverride = null;
   if (state.search.trim()) {
-    const tokens = parseSearchQuery(state.search);
+    const tokens = cachedParseSearch(state.search);
     const typeToken = tokens.find(t => t.type === 'typeFilter' && !t.negate);
     if (typeToken) typeOverride = typeToken.value;
     const filterTokens = tokens.filter(t => t.type !== 'typeFilter' || t.negate);
@@ -4184,36 +4209,32 @@ function filteredItems() {
   const effectiveType = typeOverride || state.filterType;
   if (effectiveType !== 'all') items = items.filter(i => i.type === effectiveType);
 
-  // Filter panel — rating
-  if (state.filterRating > 0) items = items.filter(i => (i.rating || 0) >= state.filterRating);
+  // Filter panel — single-pass for rating, links, date, subreddit, author
+  {
+    const hasRating = state.filterRating > 0;
+    const hasLinks = state.filterHasLinks;
+    const hasDate = state.filterDateFrom || state.filterDateTo;
+    const subTrim = state.filterSubreddit.trim().toLowerCase();
+    const authTrim = state.filterAuthor.trim().toLowerCase();
 
-  // Filter panel — has links (URLs in body)
-  if (state.filterHasLinks) {
-    const urlRe = /https?:\/\/\S+/;
-    items = items.filter(i => urlRe.test(i.body || '') || urlRe.test(i.url || ''));
-  }
+    if (hasRating || hasLinks || hasDate || subTrim || authTrim) {
+      const urlRe = hasLinks ? /https?:\/\/\S+/ : null;
+      const dateField = hasDate ? state.filterDateField : null;
+      const dateFrom = hasDate && state.filterDateFrom ? new Date(state.filterDateFrom).getTime() : 0;
+      const dateTo = hasDate && state.filterDateTo ? new Date(state.filterDateTo).getTime() + 86399999 : Infinity;
 
-  // Filter panel — date range
-  if (state.filterDateFrom || state.filterDateTo) {
-    const field = state.filterDateField;
-    const from = state.filterDateFrom ? new Date(state.filterDateFrom).getTime() : 0;
-    const to   = state.filterDateTo   ? new Date(state.filterDateTo).getTime() + 86399999 : Infinity;
-    items = items.filter(i => {
-      const d = new Date(i[field] || 0).getTime();
-      return d >= from && d <= to;
-    });
-  }
-
-  // Filter panel — subreddit
-  if (state.filterSubreddit.trim()) {
-    const s = state.filterSubreddit.trim().toLowerCase();
-    items = items.filter(i => (i.subreddit || '').toLowerCase().includes(s));
-  }
-
-  // Filter panel — author
-  if (state.filterAuthor.trim()) {
-    const a = state.filterAuthor.trim().toLowerCase();
-    items = items.filter(i => (i.author || '').toLowerCase().includes(a));
+      items = items.filter(i => {
+        if (hasRating && (i.rating || 0) < state.filterRating) return false;
+        if (hasLinks && !urlRe.test(i.body || '') && !urlRe.test(i.url || '')) return false;
+        if (hasDate) {
+          const d = new Date(i[dateField] || 0).getTime();
+          if (d < dateFrom || d > dateTo) return false;
+        }
+        if (subTrim && !(i.subreddit || '').toLowerCase().includes(subTrim)) return false;
+        if (authTrim && !(i.author || '').toLowerCase().includes(authTrim)) return false;
+        return true;
+      });
+    }
   }
 
   return sortItems(items, true);
@@ -4427,10 +4448,20 @@ function renderRecentSearches() {
     </div>`;
 }
 
+// Precomputed item→list-count map, rebuilt before each browse render
+let _listCountMap = new Map();
+function _rebuildListCountMap() {
+  _listCountMap = new Map();
+  for (const il of state.itemLists) {
+    _listCountMap.set(il.itemId, (_listCountMap.get(il.itemId) || 0) + 1);
+  }
+}
+
 function renderBrowseItems(items) {
   if (items.length === 0) {
     return `<div class="empty"><div class="empty-icon">🔍</div><h3>No results</h3><p>Try adjusting your search or filters.</p></div>`;
   }
+  _rebuildListCountMap();
   return items.map(item => renderItemCard(item, true)).join('');
 }
 
@@ -4511,7 +4542,7 @@ function renderItemCard(item, showActions, removeFromListId = null) {
   const badgeClass = item.type === 'comment' ? 'badge-comment' : 'badge-post';
   const badgeLabel = item.type === 'comment' ? '💬 Comment' : '📝 Post';
   const needsEnrich = !item.enriched;
-  const inListCount = state.itemLists.filter(il => il.itemId === item.id).length;
+  const inListCount = _listCountMap.get(item.id) || 0;
 
   // Date display: show post created date if available, otherwise saved date
   const postDate = item.postCreatedAt
@@ -4684,6 +4715,7 @@ function renderLists() {
 
     const staticItems = isSmart ? [] : sortItems(state.items.filter(i => pinnedIds.has(i.id) && !i.isDisliked && !i.isPermanentlyDeleted && i.enrichStatus !== 'dead'));
 
+    _rebuildListCountMap();
     const renderListCard = (i) => renderItemCard(i, true, list.id);
     const itemCount = (isSmart ? smartItems : staticItems).length + extraPinnedItems.length;
 
