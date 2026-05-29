@@ -63,12 +63,9 @@ export default {
       return new Response('Missing feed token', { status: 403 });
     }
 
-    // Reddit aggressively blocks browser-spoofing User-Agents coming from
-    // datacenter IPs (Cloudflare Workers run on Cloudflare's IPs) and responds
-    // with a 403 + HTML challenge page instead of JSON. Reddit's API rules ask
-    // for a unique, descriptive User-Agent in the format
-    // `<platform>:<app ID>:<version> (by /u/<username>)`. A descriptive,
-    // non-browser UA is far less likely to be blocked than a fake Chrome string.
+    // Use a descriptive, non-browser User-Agent per Reddit's API guidelines
+    // (`<platform>:<app ID>:<version> (by /u/<username>)`) rather than a fake
+    // browser string, which Reddit penalises.
     const response = await fetch(target, {
       headers: {
         'User-Agent': 'web:reddivault:v0.9.10 (+https://reddivault.vercel.app)',
@@ -84,10 +81,14 @@ export default {
       });
     }
 
-    const data = await response.json();
-    return new Response(JSON.stringify(data), {
+    // Pass the body through unchanged. Reddit's private feed is served as
+    // Atom XML (.rss), so don't assume JSON — forward the raw text and
+    // preserve the upstream Content-Type.
+    const body = await response.text();
+    const contentType = response.headers.get('Content-Type') || 'application/atom+xml; charset=utf-8';
+    return new Response(body, {
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': contentType,
         'Access-Control-Allow-Origin': allowedOrigin,
         'Cache-Control': 'no-store',
         'Vary': 'Origin',
