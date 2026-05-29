@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.10.7';
+const APP_VERSION = '0.9.10.8';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -5126,9 +5126,9 @@ function renderSettings() {
         <div style="margin-top:12px;display:grid;gap:10px">
           <div class="form-group">
             <label>Private Feed URL</label>
-            <input class="input" id="feed-url" placeholder="https://old.reddit.com/user/USERNAME/saved.json?feed=YOUR_FEED_TOKEN&amp;user=USERNAME"
+            <input class="input" id="feed-url" placeholder="https://old.reddit.com/user/USERNAME/saved.rss?feed=YOUR_FEED_TOKEN&amp;user=USERNAME"
               value="${escHtml(state.redditFeedUrl)}" style="font-size:16px">
-            <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → under Private Listings, right-click the JSON button next to 'your saved links' → Copy Link</span>
+            <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → under Private Listings, right-click the RSS button next to 'your saved links' → Copy Link. (A .json URL also works — it's converted to RSS automatically, since Reddit now blocks the JSON feed.)</span>
             <button class="btn btn-secondary btn-sm" onclick="window.location.href='https://old.reddit.com/prefs/feeds/'"
               style="margin-top:8px;width:100%;justify-content:center">
               🔗 Open Reddit Feeds page
@@ -6001,6 +6001,86 @@ function _buildProxyUrl(feedUrl) {
   return `${base}?url=${encodeURIComponent(feedUrl)}`;
 }
 
+// Reddit's WAF ("network security") now blocks the .json private-feed
+// endpoint with a 403 + HTML challenge page, while the .rss (Atom XML) feed
+// still works. Normalise whatever feed URL the user saved to the .rss form so
+// sync hits the endpoint Reddit allows. Also ensures the &user= param is
+// present (the feed token alone does not always validate) by deriving the
+// username from the /user/NAME/ path when needed.
+function _feedToRssUrl(feedUrl) {
+  let u = feedUrl;
+  if (/\.json(\?|$)/i.test(u)) {
+    u = u.replace(/\.json(\?|$)/i, '.rss$1');
+  } else if (!/\.rss(\?|$)/i.test(u)) {
+    // No extension (e.g. .../saved?feed=...) — insert .rss before the query.
+    u = u.replace(/(\/saved)(\?|$)/i, '$1.rss$2');
+  }
+  if (!/[?&]user=/.test(u)) {
+    const m = u.match(/\/user\/([^/]+)\//);
+    if (m) u += (u.includes('?') ? '&' : '?') + 'user=' + encodeURIComponent(m[1]);
+  }
+  return u;
+}
+
+// Reddit wraps the real post/comment body between <!-- SC_OFF --> and
+// <!-- SC_ON --> markers, followed by a "submitted by … [link] [comments]"
+// footer we don't want. Extract the inner markup, strip tags, decode entities.
+function _rssContentToText(html) {
+  if (!html) return '';
+  let inner = html;
+  const off = html.indexOf('<!-- SC_OFF -->');
+  const on = html.indexOf('<!-- SC_ON -->');
+  if (off !== -1 && on !== -1 && on > off) inner = html.slice(off + 15, on);
+  const tmp = document.createElement('div');
+  tmp.innerHTML = inner;
+  return (tmp.textContent || '').replace(/\s+/g, ' ').trim();
+}
+
+// Parse a Reddit Atom (.rss) feed into the same { kind, data } shape the feed
+// sync loop already expects from the old JSON endpoint, so the downstream
+// item-construction code is unchanged. kind: 't1' = comment, 't3' = post.
+function parseRedditFeedXml(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+  if (doc.getElementsByTagName('parsererror').length) {
+    throw new Error('Could not parse Reddit feed (invalid XML)');
+  }
+  const entries = Array.from(doc.getElementsByTagName('entry'));
+  return entries.map(entry => {
+    const txt = (tag) => entry.getElementsByTagName(tag)[0]?.textContent || '';
+    const id = txt('id').trim();                     // e.g. t3_abc123 / t1_def456
+    const kind = id.startsWith('t1') ? 't1' : 't3';
+    const author = txt('name').replace(/^\/?u\//, '').trim();
+    const catEl = entry.getElementsByTagName('category')[0];
+    const subreddit = (catEl?.getAttribute('term') || '').trim();
+    const linkEl = entry.getElementsByTagName('link')[0];
+    const href = linkEl?.getAttribute('href') || '';
+    let permalink = href;
+    try { permalink = new URL(href).pathname; } catch {}
+    const title = txt('title').trim();
+    const body = _rssContentToText(txt('content'));
+    const published = txt('published') || txt('updated');
+    const created = published ? Math.floor(new Date(published).getTime() / 1000) : null;
+    return {
+      kind,
+      data: {
+        name: id,
+        title,
+        // For comments the feed title is the parent-post title — reuse it so
+        // the existing loop treats the comment as already having a title.
+        link_title: kind === 't1' ? title : undefined,
+        author,
+        subreddit,
+        url: href,
+        permalink,
+        body,
+        selftext: body,
+        score: 0,            // RSS omits score; enrichment fills it in
+        created_utc: created,
+      },
+    };
+  });
+}
+
 async function syncFromFeed() {
   if (!state.redditFeedUrl) { showToast('No feed URL configured', 'error'); return; }
   if (state.feedSyncing) return;
@@ -6021,7 +6101,10 @@ async function syncFromFeed() {
   syncLog('feedSync: starting');
   try {
     while (pages < MAX_PAGES) {
-      let feedUrl = state.redditFeedUrl;
+      // Reddit blocks the .json feed endpoint via its WAF; use the .rss
+      // (Atom XML) endpoint, which still works. _feedToRssUrl normalises
+      // whatever URL the user saved (.json / no extension) to the .rss form.
+      let feedUrl = _feedToRssUrl(state.redditFeedUrl);
       feedUrl += '&limit=25';
       if (after) feedUrl += `&after=${encodeURIComponent(after)}`;
 
@@ -6035,20 +6118,16 @@ async function syncFromFeed() {
         // Reddit blocks requests from datacenter IPs (proxies) with a 403 and
         // an HTML challenge/block page rather than JSON. Detect that and show a
         // clear, actionable message instead of dumping raw HTML at the user.
-        const looksLikeRedditBlock = res.status === 403 && /<body|theme-beta|<!doctype|<html/i.test(detail);
+        const looksLikeRedditBlock = res.status === 403 && /<body|theme-beta|<!doctype|<html|network security/i.test(detail);
         if (looksLikeRedditBlock) {
-          const hint = state.feedProxyType === 'corsfix'
-            ? 'Reddit is blocking the shared corsfix proxy (HTTP 403). Try switching to your own Cloudflare Worker proxy, which uses a Reddit-friendly User-Agent.'
-            : 'Reddit blocked the proxy request (HTTP 403). If your Cloudflare Worker is on an older version, redeploy the latest reddit-feed-proxy.js — it now sends a descriptive User-Agent that Reddit accepts.';
           syncLog(`feedSync: HTTP 403 — Reddit block page (${state.feedProxyType || 'cloudflare'})`, 'error');
-          throw new Error(hint);
+          throw new Error('Reddit blocked the feed request (HTTP 403). Check that your Private Feed URL and token are current — copy a fresh one from old.reddit.com/prefs/feeds/.');
         }
         syncLog(`feedSync: HTTP ${res.status} — ${detail}`, 'error');
         throw new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
       }
-      const json = await res.json();
-
-      const children = json?.data?.children || [];
+      const xml = await res.text();
+      const children = parseRedditFeedXml(xml);
       if (children.length === 0) break; // no more items
       pages++;
       syncLog(`feedSync: page ${pages} — ${children.length} items from Reddit, ${existing.size} known locally`);
@@ -6103,9 +6182,12 @@ async function syncFromFeed() {
         state.feedSyncProgress = { page: pages, added, skipped };
       }
 
-      // Pagination — stop if no more pages or we hit all-known items
-      after = json?.data?.after;
-      if (!after) break;
+      // Pagination — the Atom feed has no explicit "after" cursor, so use the
+      // last entry's fullname (t3_…/t1_…) as the cursor for the next page.
+      // A short page means we've reached the end of the feed.
+      const prevAfter = after;
+      after = children.length === 25 ? children[children.length - 1].data.name : null;
+      if (!after || after === prevAfter) break;
 
       // If entire page was skipped (all known), stop — we've reached existing saves
       if (newItems.length === 0 && children.length > 0) {
