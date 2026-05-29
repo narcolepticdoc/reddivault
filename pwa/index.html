@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.10.6';
+const APP_VERSION = '0.9.10.7';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -6032,6 +6032,17 @@ async function syncFromFeed() {
       if (!res.ok) {
         let detail = '';
         try { const t = await res.text(); detail = t.slice(0, 200); } catch(e) {}
+        // Reddit blocks requests from datacenter IPs (proxies) with a 403 and
+        // an HTML challenge/block page rather than JSON. Detect that and show a
+        // clear, actionable message instead of dumping raw HTML at the user.
+        const looksLikeRedditBlock = res.status === 403 && /<body|theme-beta|<!doctype|<html/i.test(detail);
+        if (looksLikeRedditBlock) {
+          const hint = state.feedProxyType === 'corsfix'
+            ? 'Reddit is blocking the shared corsfix proxy (HTTP 403). Try switching to your own Cloudflare Worker proxy, which uses a Reddit-friendly User-Agent.'
+            : 'Reddit blocked the proxy request (HTTP 403). If your Cloudflare Worker is on an older version, redeploy the latest reddit-feed-proxy.js — it now sends a descriptive User-Agent that Reddit accepts.';
+          syncLog(`feedSync: HTTP 403 — Reddit block page (${state.feedProxyType || 'cloudflare'})`, 'error');
+          throw new Error(hint);
+        }
         syncLog(`feedSync: HTTP ${res.status} — ${detail}`, 'error');
         throw new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
       }
