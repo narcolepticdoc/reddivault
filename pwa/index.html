@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.10.8';
+const APP_VERSION = '0.9.10.9';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -6022,18 +6022,71 @@ function _feedToRssUrl(feedUrl) {
   return u;
 }
 
-// Reddit wraps the real post/comment body between <!-- SC_OFF --> and
-// <!-- SC_ON --> markers, followed by a "submitted by … [link] [comments]"
-// footer we don't want. Extract the inner markup, strip tags, decode entities.
-function _rssContentToText(html) {
+// Convert a Reddit RSS <content> HTML body to Markdown so links and basic
+// formatting survive (renderMarkdown turns it back into HTML for display).
+// Reddit wraps the real body between <!-- SC_OFF --> and <!-- SC_ON -->; the
+// trailing "submitted by … [link] [comments]" footer is dropped. Relative
+// reddit links (/u/x, /r/y) are absolutised so renderMarkdown links them.
+function _rssContentToMarkdown(html) {
   if (!html) return '';
   let inner = html;
   const off = html.indexOf('<!-- SC_OFF -->');
   const on = html.indexOf('<!-- SC_ON -->');
   if (off !== -1 && on !== -1 && on > off) inner = html.slice(off + 15, on);
+  const root = document.createElement('div');
+  root.innerHTML = inner;
+
+  const absolutize = (href) => {
+    if (!href) return '';
+    if (href.startsWith('/')) return 'https://www.reddit.com' + href;
+    return href;
+  };
+
+  const walk = (node) => {
+    let out = '';
+    node.childNodes.forEach(child => {
+      if (child.nodeType === 3) {            // text node
+        out += child.textContent;
+      } else if (child.nodeType === 1) {     // element
+        const tag = child.tagName.toLowerCase();
+        const kids = walk(child);
+        switch (tag) {
+          case 'a': {
+            const href = absolutize(child.getAttribute('href') || '');
+            out += /^https?:\/\//.test(href) ? `[${kids}](${href})` : kids;
+            break;
+          }
+          case 'strong': case 'b': out += `**${kids}**`; break;
+          case 'em': case 'i':     out += `*${kids}*`; break;
+          case 'del': case 's':    out += `~~${kids}~~`; break;
+          case 'code':             out += `\`${kids}\``; break;
+          case 'pre':              out += `\n\`\`\`\n${child.textContent}\n\`\`\`\n`; break;
+          case 'li':               out += `- ${kids}\n`; break;
+          case 'blockquote':       out += kids.split('\n').map(l => l ? `> ${l}` : l).join('\n') + '\n'; break;
+          case 'br':               out += '\n'; break;
+          case 'h1':               out += `\n# ${kids}\n\n`; break;
+          case 'h2':               out += `\n## ${kids}\n\n`; break;
+          case 'h3':               out += `\n### ${kids}\n\n`; break;
+          case 'p': case 'div':    out += `${kids}\n\n`; break;
+          default:                 out += kids;
+        }
+      }
+    });
+    return out;
+  };
+
+  return walk(root).replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// Recover a link post's external destination URL: Reddit's content footer has
+// an anchor whose text is exactly "[link]". For self-posts/comments it points
+// back to the thread, which is the right fallback anyway.
+function _rssExternalLink(html) {
+  if (!html) return '';
   const tmp = document.createElement('div');
-  tmp.innerHTML = inner;
-  return (tmp.textContent || '').replace(/\s+/g, ' ').trim();
+  tmp.innerHTML = html;
+  const a = Array.from(tmp.getElementsByTagName('a')).find(x => x.textContent.trim() === '[link]');
+  return a ? (a.getAttribute('href') || '') : '';
 }
 
 // Parse a Reddit Atom (.rss) feed into the same { kind, data } shape the feed
@@ -6057,7 +6110,11 @@ function parseRedditFeedXml(xmlText) {
     let permalink = href;
     try { permalink = new URL(href).pathname; } catch {}
     const title = txt('title').trim();
-    const body = _rssContentToText(txt('content'));
+    const contentHtml = txt('content');
+    const body = _rssContentToMarkdown(contentHtml);
+    // For link posts the entry <link> is the comments page; recover the real
+    // external destination from the footer's [link] anchor when present.
+    const url = _rssExternalLink(contentHtml) || href;
     const published = txt('published') || txt('updated');
     const created = published ? Math.floor(new Date(published).getTime() / 1000) : null;
     return {
@@ -6070,7 +6127,7 @@ function parseRedditFeedXml(xmlText) {
         link_title: kind === 't1' ? title : undefined,
         author,
         subreddit,
-        url: href,
+        url,
         permalink,
         body,
         selftext: body,
