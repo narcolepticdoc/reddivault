@@ -63,9 +63,15 @@ export default {
       return new Response('Missing feed token', { status: 403 });
     }
 
+    // Reddit aggressively blocks browser-spoofing User-Agents coming from
+    // datacenter IPs (Cloudflare Workers run on Cloudflare's IPs) and responds
+    // with a 403 + HTML challenge page instead of JSON. Reddit's API rules ask
+    // for a unique, descriptive User-Agent in the format
+    // `<platform>:<app ID>:<version> (by /u/<username>)`. A descriptive,
+    // non-browser UA is far less likely to be blocked than a fake Chrome string.
     const response = await fetch(target, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'web:reddivault:v0.9.10 (+https://reddivault.vercel.app)',
         'Accept': 'application/json',
       }
     });
