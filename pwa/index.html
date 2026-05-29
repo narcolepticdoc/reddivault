@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.10.9';
+const APP_VERSION = '0.9.10.10';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -435,6 +435,7 @@ let state = {
   redditFeedUrl: '',
   feedProxyUrl: '',
   feedProxyType: 'cloudflare', // 'cloudflare' | 'corsfix'
+  feedFormat: 'rss', // 'rss' | 'json' — Reddit currently WAF-blocks .json
   feedSyncing: false,
   feedSyncProgress: null,   // { page, added, skipped } while syncing
   feedSyncResult: null,
@@ -590,6 +591,8 @@ async function loadConfig() {
     if (proxyUrl) state.feedProxyUrl = proxyUrl.value;
     const proxyType = await db.config.get('feedProxyType');
     if (proxyType) state.feedProxyType = proxyType.value;
+    const feedFormat = await db.config.get('feedFormat');
+    if (feedFormat) state.feedFormat = feedFormat.value;
     const confirmDestructive = await db.config.get('confirmDestructive');
     if (confirmDestructive) state.confirmDestructive = confirmDestructive.value;
     const disableZoom = await db.config.get('disableZoom');
@@ -1397,6 +1400,7 @@ async function pushImportantPreferences() {
       { key: 'redditFeedUrl',      value: state.redditFeedUrl,      updated_at: new Date().toISOString() },
       { key: 'feedProxyUrl',       value: state.feedProxyUrl,       updated_at: new Date().toISOString() },
       { key: 'feedProxyType',      value: state.feedProxyType,      updated_at: new Date().toISOString() },
+      { key: 'feedFormat',         value: state.feedFormat,         updated_at: new Date().toISOString() },
       { key: 'confirmDestructive', value: state.confirmDestructive, updated_at: new Date().toISOString() },
     ]);
     syncLog('pushImportantPreferences: ok', 'ok');
@@ -1427,6 +1431,10 @@ async function pullPreferences() {
       if (row.key === 'feedProxyType' && row.value) {
         state.feedProxyType = row.value;
         await db.config.put({ key: 'feedProxyType', value: row.value });
+      }
+      if (row.key === 'feedFormat' && row.value) {
+        state.feedFormat = row.value;
+        await db.config.put({ key: 'feedFormat', value: row.value });
       }
       if (row.key === 'confirmDestructive' && row.value !== undefined) {
         state.confirmDestructive = row.value;
@@ -2334,7 +2342,7 @@ async function exportJSON() {
   // Persist all meaningful config keys — skip transient sync state
   const CONFIG_KEYS = [
     'supabaseUrl', 'supabaseKey',
-    'redditFeedUrl', 'feedProxyUrl', 'feedProxyType',
+    'redditFeedUrl', 'feedProxyUrl', 'feedProxyType', 'feedFormat',
     'enrichReqPerMin', 'enrichRetryReqPerMin', 'enrichRateLimitPause', 'enrichMaxAttempts',
     'confirmDestructive', 'disableZoom', 'autoFeedSync', 'autoFeedSyncInterval',
     'recentSearches',
@@ -5128,11 +5136,39 @@ function renderSettings() {
             <label>Private Feed URL</label>
             <input class="input" id="feed-url" placeholder="https://old.reddit.com/user/USERNAME/saved.rss?feed=YOUR_FEED_TOKEN&amp;user=USERNAME"
               value="${escHtml(state.redditFeedUrl)}" style="font-size:16px">
-            <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → under Private Listings, right-click the RSS button next to 'your saved links' → Copy Link. (A .json URL also works — it's converted to RSS automatically, since Reddit now blocks the JSON feed.)</span>
+            <span style="font-size:11px;color:var(--text-muted)">Get from old.reddit.com/prefs/feeds/ → under Private Listings, right-click the RSS (or JSON) button next to 'your saved links' → Copy Link. Either form works — it's converted to the Feed format selected below.</span>
             <button class="btn btn-secondary btn-sm" onclick="window.location.href='https://old.reddit.com/prefs/feeds/'"
               style="margin-top:8px;width:100%;justify-content:center">
               🔗 Open Reddit Feeds page
             </button>
+          </div>
+          <div class="form-group">
+            <label>Feed format</label>
+            <p style="font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:8px">Reddit currently blocks the JSON feed endpoint, so RSS is recommended. Switch to JSON only if Reddit changes which endpoint it blocks (JSON also includes post scores).</p>
+            <div style="display:flex;gap:8px">
+              <label id="fmt-label-rss" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${state.feedFormat!=='json'?'border-color:var(--accent2);background:rgba(99,102,241,0.08)':''}">
+                <input type="radio" name="feed-format" value="rss" ${state.feedFormat!=='json'?'checked':''}
+                  onchange="
+                    state.feedFormat='rss';
+                    db.config.put({key:'feedFormat',value:'rss'});
+                    document.getElementById('fmt-label-rss').style.borderColor='var(--accent2)';
+                    document.getElementById('fmt-label-rss').style.background='rgba(99,102,241,0.08)';
+                    document.getElementById('fmt-label-json').style.borderColor='var(--border)';
+                    document.getElementById('fmt-label-json').style.background='';">
+                <span>RSS <span style="color:var(--text-muted);font-size:11px">(recommended)</span></span>
+              </label>
+              <label id="fmt-label-json" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${state.feedFormat==='json'?'border-color:var(--accent2);background:rgba(99,102,241,0.08)':''}">
+                <input type="radio" name="feed-format" value="json" ${state.feedFormat==='json'?'checked':''}
+                  onchange="
+                    state.feedFormat='json';
+                    db.config.put({key:'feedFormat',value:'json'});
+                    document.getElementById('fmt-label-json').style.borderColor='var(--accent2)';
+                    document.getElementById('fmt-label-json').style.background='rgba(99,102,241,0.08)';
+                    document.getElementById('fmt-label-rss').style.borderColor='var(--border)';
+                    document.getElementById('fmt-label-rss').style.background='';">
+                <span>JSON</span>
+              </label>
+            </div>
           </div>
           <div class="form-group">
             <label>CORS Proxy</label>
@@ -5969,6 +6005,10 @@ async function saveFeedUrl() {
   await db.config.put({ key: 'feedProxyType', value: proxyType });
   state.feedProxyType = proxyType;
 
+  const feedFormat = document.querySelector('input[name="feed-format"]:checked')?.value || 'rss';
+  await db.config.put({ key: 'feedFormat', value: feedFormat });
+  state.feedFormat = feedFormat;
+
   // Sync to cloud
   await pushImportantPreferences();
 
@@ -6014,6 +6054,22 @@ function _feedToRssUrl(feedUrl) {
   } else if (!/\.rss(\?|$)/i.test(u)) {
     // No extension (e.g. .../saved?feed=...) — insert .rss before the query.
     u = u.replace(/(\/saved)(\?|$)/i, '$1.rss$2');
+  }
+  if (!/[?&]user=/.test(u)) {
+    const m = u.match(/\/user\/([^/]+)\//);
+    if (m) u += (u.includes('?') ? '&' : '?') + 'user=' + encodeURIComponent(m[1]);
+  }
+  return u;
+}
+
+// Counterpart of _feedToRssUrl for the legacy JSON endpoint (kept selectable
+// via the RSS/JSON toggle in case Reddit changes which endpoint it blocks).
+function _feedToJsonUrl(feedUrl) {
+  let u = feedUrl;
+  if (/\.rss(\?|$)/i.test(u)) {
+    u = u.replace(/\.rss(\?|$)/i, '.json$1');
+  } else if (!/\.json(\?|$)/i.test(u)) {
+    u = u.replace(/(\/saved)(\?|$)/i, '$1.json$2');
   }
   if (!/[?&]user=/.test(u)) {
     const m = u.match(/\/user\/([^/]+)\//);
@@ -6155,13 +6211,18 @@ async function syncFromFeed() {
   const existing = new Set(state.items.map(i => i.redditId));
   const permanentlyDeleted = new Set(state.items.filter(i => i.isPermanentlyDeleted).map(i => i.redditId));
 
-  syncLog('feedSync: starting');
+  // Feed format: 'rss' (default) or 'json'. Reddit currently WAF-blocks the
+  // .json endpoint, so RSS is the working default; the toggle lets the user
+  // switch if Reddit's behaviour changes. _feedTo*Url normalises whatever URL
+  // the user saved (.json/.rss/no extension) to the selected endpoint.
+  const format = state.feedFormat === 'json' ? 'json' : 'rss';
+
+  syncLog(`feedSync: starting (${format})`);
   try {
     while (pages < MAX_PAGES) {
-      // Reddit blocks the .json feed endpoint via its WAF; use the .rss
-      // (Atom XML) endpoint, which still works. _feedToRssUrl normalises
-      // whatever URL the user saved (.json / no extension) to the .rss form.
-      let feedUrl = _feedToRssUrl(state.redditFeedUrl);
+      let feedUrl = format === 'json'
+        ? _feedToJsonUrl(state.redditFeedUrl)
+        : _feedToRssUrl(state.redditFeedUrl);
       feedUrl += '&limit=25';
       if (after) feedUrl += `&after=${encodeURIComponent(after)}`;
 
@@ -6183,8 +6244,16 @@ async function syncFromFeed() {
         syncLog(`feedSync: HTTP ${res.status} — ${detail}`, 'error');
         throw new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
       }
-      const xml = await res.text();
-      const children = parseRedditFeedXml(xml);
+      const text = await res.text();
+      let children, jsonAfter = null;
+      if (format === 'json') {
+        let json;
+        try { json = JSON.parse(text); } catch(e) { throw new Error('Could not parse Reddit feed (invalid JSON) — Reddit may be returning its block page. Try the RSS format.'); }
+        children = (json?.data?.children || []).map(c => ({ kind: c.kind, data: c.data }));
+        jsonAfter = json?.data?.after || null;
+      } else {
+        children = parseRedditFeedXml(text);
+      }
       if (children.length === 0) break; // no more items
       pages++;
       syncLog(`feedSync: page ${pages} — ${children.length} items from Reddit, ${existing.size} known locally`);
@@ -6239,11 +6308,13 @@ async function syncFromFeed() {
         state.feedSyncProgress = { page: pages, added, skipped };
       }
 
-      // Pagination — the Atom feed has no explicit "after" cursor, so use the
-      // last entry's fullname (t3_…/t1_…) as the cursor for the next page.
-      // A short page means we've reached the end of the feed.
+      // Pagination — JSON provides an explicit "after" cursor. The Atom feed
+      // does not, so use the last entry's fullname (t3_…/t1_…); a short page
+      // means we've reached the end of the feed.
       const prevAfter = after;
-      after = children.length === 25 ? children[children.length - 1].data.name : null;
+      after = format === 'json'
+        ? jsonAfter
+        : (children.length === 25 ? children[children.length - 1].data.name : null);
       if (!after || after === prevAfter) break;
 
       // If entire page was skipped (all known), stop — we've reached existing saves
