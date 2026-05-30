@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.12.2';
+const APP_VERSION = '0.9.12.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -6368,7 +6368,9 @@ async function drainInbox({ manual = false } = {}) {
 
     if (added > 0) await loadData();
     render();
-    if (manual) showToast(`Imported ${added} new item${added !== 1 ? 's' : ''} from bookmarklet`, 'success');
+    // Toast on manual runs always, and on quiet (startup/foreground) runs only
+    // when something new actually came in — so silent drains stay silent.
+    if (manual || added > 0) showToast(`Imported ${added} new item${added !== 1 ? 's' : ''} from bookmarklet`, 'success');
     return { added, skipped, drained: rows.length };
   } catch (e) {
     syncLog(`drainInbox: failed — ${e.message}`, 'error');
@@ -6707,9 +6709,15 @@ document.addEventListener('visibilitychange', () => {
     }
   }
   if (document.visibilityState === 'visible') {
-    // Wait for any in-flight cloud sync before touching the feed
+    // Wait for any in-flight cloud sync before touching the feed, then drain the
+    // bookmarklet inbox — so items captured while the app was backgrounded (e.g.
+    // ran the bookmarklet in Safari, switched back) get imported on return, not
+    // only on a fresh launch.
     const waitFor = _startupSyncPromise || Promise.resolve();
-    waitFor.catch(() => {}).then(() => autoFeedSyncIfDue());
+    waitFor.catch(() => {})
+      .then(() => autoFeedSyncIfDue())
+      .then(() => { if (state.supabaseUrl && state.supabaseKey) return drainInbox(); })
+      .catch(() => {});
   }
 });
 
