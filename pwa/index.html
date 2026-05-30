@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.10.10';
+const APP_VERSION = '0.9.11.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -5218,6 +5218,40 @@ function renderSettings() {
       </details>
     </div>
 
+    <!-- ── 1b. BOOKMARKLET SYNC (experimental) ─────────────────────────────── -->
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px">🔖 Bookmarklet Sync <span style="font-size:11px;color:var(--text-muted);font-weight:400">· experimental</span></div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
+        Reddit is locking down the unauthenticated feed this app relies on. A bookmarklet runs <em>as</em> reddit.com using your existing login, so it keeps working where the feed can't — especially on mobile, where there's no extension. This section is being built out; the first step is a quick compatibility probe.
+      </p>
+      ${state.supabaseUrl && state.supabaseKey ? (() => {
+        const probe = cspProbeBookmarklet(state.supabaseUrl, state.supabaseKey);
+        return `
+        <div style="background:var(--bg);border-radius:8px;padding:12px;line-height:1.6">
+          <div style="font-weight:600;font-size:13px;margin-bottom:6px">🔬 Compatibility probe</div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
+            This tells us whether your phone/browser can sync automatically or needs an extra tap. Run it once on <strong style="color:var(--text)">old.reddit.com</strong> while logged in, then reply with the two numbers it shows.
+          </p>
+          <ol style="font-size:12px;color:var(--text-muted);margin:0 0 10px 18px;padding:0;line-height:1.7">
+            <li><strong style="color:var(--text)">Desktop:</strong> drag the button below to your bookmarks bar, open old.reddit.com (logged in), then click the bookmark.</li>
+            <li><strong style="color:var(--text)">iOS/mobile:</strong> tap <em>Copy</em>, make any bookmark, then edit it and paste this as the URL. Open old.reddit.com and run the bookmark from the address bar.</li>
+          </ol>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <a href="${escHtml(probe)}" onclick="event.preventDefault();alert('Don\\'t click here — drag this to your bookmarks bar (desktop) or use Copy (mobile), then run it on old.reddit.com.')"
+              style="display:inline-block;padding:8px 14px;background:var(--accent2);color:#fff;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;cursor:grab">
+              🔬 RV CSP Probe
+            </a>
+            <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(cspProbeBookmarklet(state.supabaseUrl,state.supabaseKey)).then(()=>{this.textContent='✓ Copied';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+            <button class="btn btn-secondary btn-sm" onclick="window.location.href='https://old.reddit.com/saved'">Open old.reddit.com/saved</button>
+          </div>
+        </div>`;
+      })() : `
+        <p style="font-size:12px;color:var(--warning);background:rgba(245,158,11,0.08);border-radius:8px;padding:10px">
+          ⚠️ Set up your Supabase connection in <strong>Cloud Database</strong> below first — the probe needs it.
+        </p>
+      `}
+    </div>
+
     <!-- ── 2. CLOUD DATABASE ──────────────────────────────────────────────── -->
     <div class="config-section">
       <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px">☁️ Cloud Database</div>
@@ -6384,6 +6418,29 @@ function escHtml(str) {
 function escAttr(str) {
   if (!str) return '';
   return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+}
+
+// Step-0 CSP probe bookmarklet (see Bookmarklet Sync plan). Runs same-origin on
+// reddit.com: first proves the logged-in saved.json fetch works, then tests
+// whether Reddit's CSP connect-src lets us POST straight to Supabase. The result
+// decides whether iOS gets the automatic direct-POST path or the clipboard
+// fallback. Throwaway diagnostic — generated from the user's own creds so it can
+// hit their Supabase project.
+function cspProbeBookmarklet(supabaseUrl, supabaseKey) {
+  // Bake creds into single-quoted JS string literals — escape backslash/quote.
+  const u = String(supabaseUrl || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const k = String(supabaseKey || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const src =
+    "javascript:(async()=>{" +
+      "if(!/(^|\\.)reddit\\.com$/.test(location.hostname)){alert('Run this on old.reddit.com while logged in.');return;}" +
+      "try{var r=await fetch('/user/me/saved.json?limit=1&raw_json=1',{credentials:'include',headers:{'Accept':'application/json'}});" +
+        "alert('1/2 Reddit saved.json: HTTP '+r.status+(r.ok?' OK (same-origin fetch works)':' — not OK; are you logged in?'));}" +
+      "catch(e){alert('1/2 Reddit saved.json FAILED: '+e.message+' (blocked before the Supabase test could run).');return;}" +
+      "try{var s=await fetch('" + u + "/rest/v1/reddit_saves?limit=1&select=reddit_id',{headers:{apikey:'" + k + "',Authorization:'Bearer " + k + "'}});" +
+        "alert('2/2 Supabase reachable: HTTP '+s.status+' — CSP ALLOWS the direct POST path. Reply with both numbers.');}" +
+      "catch(e){alert('2/2 Supabase BLOCKED by CSP: '+e.message+' — iOS will need the clipboard fallback. Reply with both numbers.');}" +
+    "})()";
+  return src;
 }
 
 function fmtDate(iso) {
