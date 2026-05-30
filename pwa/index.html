@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.12.1';
+const APP_VERSION = '0.9.12.2';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -6375,7 +6375,10 @@ async function drainInbox({ manual = false } = {}) {
     if (manual) { state.bookmarkletResult = { error: e.message }; render(); showToast('Inbox import failed', 'error'); }
     return { added: 0, skipped: 0, drained: 0, error: e.message };
   } finally {
+    // Reset the guard and re-render LAST so the button leaves its "Importing…"
+    // state — the branch renders above all run while inboxDraining is still true.
     state.inboxDraining = false;
+    render();
   }
 }
 
