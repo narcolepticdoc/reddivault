@@ -1,4 +1,4 @@
-const VERSION = '0.9.3.1';
+const VERSION = '0.9.11.0';
 const CACHE = `reddivault-${VERSION}`;
 
 const ASSETS = [
