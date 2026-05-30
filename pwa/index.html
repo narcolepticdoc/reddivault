@@ -5234,7 +5234,7 @@ function renderSettings() {
           </p>
           <ol style="font-size:12px;color:var(--text-muted);margin:0 0 10px 18px;padding:0;line-height:1.7">
             <li><strong style="color:var(--text)">Desktop:</strong> drag the button below to your bookmarks bar, open old.reddit.com (logged in), then click the bookmark.</li>
-            <li><strong style="color:var(--text)">iOS/mobile:</strong> tap <em>Copy</em>, make any bookmark, then edit it and paste this as the URL. Open old.reddit.com and run the bookmark from the address bar.</li>
+            <li><strong style="color:var(--text)">iOS/Safari:</strong> tap <em>Copy</em>. Bookmark any page (Share → Add Bookmark), then open the Bookmarks list (📖 icon) → Edit → tap that bookmark, clear its URL and paste this in. Open old.reddit.com, then launch it from the <strong style="color:var(--text)">Bookmarks list</strong> (📖 icon) — <em>not</em> by typing its name in the address bar, which iOS blocks ("JavaScript is not allowed to be used this way").</li>
           </ol>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <a href="${escHtml(probe)}" onclick="event.preventDefault();alert('Don\\'t click here — drag this to your bookmarks bar (desktop) or use Copy (mobile), then run it on old.reddit.com.')"
