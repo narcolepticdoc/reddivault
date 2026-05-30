@@ -5,6 +5,40 @@ Newest releases at the top.
 
 ---
 
+## [0.9.12.3] – 2026-05-30
+### Added
+- **Bookmarklet Sync** — a durable capture path for mobile / any browser, for
+  when the RSS feed is blocked and there's no Chrome extension. A PWA-generated
+  `javascript:` bookmarklet (`buildInboxBookmarklet`) runs same-origin on
+  reddit.com using your existing login, fetches `saved.json`, and POSTs raw
+  items to a new **`reddit_inbox`** staging table — never to `reddit_saves`
+  directly. The app drains the inbox through its normal, dedup-aware ingest
+  (`drainInbox` → `ingestChildren` → `mapRedditChild` + `pushToSupabase`), then
+  clears it. New Settings block: install (drag / Copy), manual "Import from
+  inbox now", last-import status, a clipboard "Paste captured items" fallback,
+  and a CSP compatibility probe under diagnostics.
+- **`reddit_inbox` table** added to `supabase-schema.sql` (fresh-install +
+  migration). Existing databases must run the migration block once.
+- **Incremental capture** — the bookmarklet does one read-only lookup of recent
+  `reddit_id`s and stops as soon as it reaches saves you already have (mirrors
+  the feed sync), sending only new items; falls back to a full scan if the read
+  fails. Reports "N new saves" / "Already up to date".
+- **Drains on launch *and* foreground** (`visibilitychange`), so items captured
+  while the app was backgrounded import when you return; a toast appears when an
+  automatic drain actually imports something.
+### Fixed
+- Stuck "⏳ Importing…" button — `drainInbox` cleared its guard flag in `finally`
+  but every `render()` ran earlier, so the button never re-rendered to its idle
+  state. Now re-renders after the flag clears.
+### Notes
+- **Run the bookmarklet on `old.reddit.com` only.** New Reddit's CSP blocks the
+  cross-origin write to Supabase ("Load failed"); old Reddit allows it.
+- The bookmarklet carries the Supabase anon key in its text (RLS-protected;
+  acceptable for personal use) and only ever *reads* `reddit_saves` — all writes
+  to the main table go through the app.
+
+---
+
 ## [0.9.10.0] – 2026-03-16
 ### Changed
 - **Affinity sort**: precompute `maxAuthorFreq` once in `loadData()` instead of

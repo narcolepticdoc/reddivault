@@ -175,7 +175,9 @@ The worker lives in **`cloudflare-worker/reddit-feed-proxy.js`** in this repo.
 
 ## PART 4b: Bookmarklet Sync (Mobile / Any Browser)
 
-Reddit is locking down the unauthenticated feed, and there's no Chrome extension on mobile. The **bookmarklet** is the durable alternative: it runs *as* reddit.com using your existing login, grabs your saved items, and drops them into a temporary **inbox** in your database. RedditVault then imports them on its next open. The bookmarklet never writes to your main table — only the app does that.
+Reddit is locking down the unauthenticated feed, and there's no Chrome extension on mobile. The **bookmarklet** is the durable alternative: it runs *as* reddit.com using your existing login, grabs your saved items, and drops them into a temporary **inbox** in your database. RedditVault then imports them automatically the next time you open *or return to* the app. The bookmarklet never writes to your main table — only the app does that, through its normal dedup-aware path.
+
+> ⚠️ **Run it on `old.reddit.com` only.** New Reddit (`www.reddit.com` / `sh.reddit.com`) uses a strict Content-Security-Policy that blocks the bookmarklet from reaching your database — you'll see **"Load failed"** and nothing will be captured. `old.reddit.com` allows it. The "Open old.reddit.com/saved" button in Settings takes you to the right place.
 
 ### Step 4b.1 — Add the inbox table
 
@@ -189,14 +191,16 @@ If you set up Supabase before v0.9.12.0, add the new staging table: open Supabas
 
 ### Step 4b.3 — Capture your saves
 
-1. Go to **old.reddit.com** and make sure you're logged in.
+1. Go to **`old.reddit.com`** (not www/sh — see the warning above) and make sure you're logged in.
 2. Run the bookmarklet:
    - **Desktop:** click it in the bookmarks bar.
    - **iOS:** open the **Bookmarks list** (📖 icon) and tap it there. *Do not* type its name in the address bar — iOS blocks that ("JavaScript is not allowed to be used this way").
 3. A banner shows progress, then **"Captured N new saves"** (or **"Already up to date"** if nothing changed).
-4. Open RedditVault — it imports automatically on launch. Or go to **Settings → 🔖 Bookmarklet Sync → 📨 Import from inbox now**.
+4. Switch back to RedditVault (or launch it) — it drains the inbox automatically on launch **and whenever you return to the app**, and shows a toast if it imported anything new. You can also force it from **Settings → 🔖 Bookmarklet Sync → 📨 Import from inbox now**.
 
 The bookmarklet is incremental: it only scans back as far as the newest saves it hasn't seen yet, so routine re-runs are quick. (The first run, or one after a long gap, scans more.)
+
+Because the feed sync runs on the same triggers and often catches recent saves first, the inbox drain will frequently report **"0 new"** — that's correct dedup, not a failure. The bookmarklet earns its keep for items the feed can't reach (older than the feed window, or when the feed is blocked).
 
 If the banner instead offers a **Copy** button (couldn't reach your inbox), tap it, then in RedditVault use **🔖 Bookmarklet Sync → 📋 Paste captured items** to import.
 
