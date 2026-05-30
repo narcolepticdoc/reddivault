@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.12.0';
+const APP_VERSION = '0.9.12.1';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -6607,23 +6607,32 @@ function buildInboxBookmarklet(supabaseUrl, supabaseKey) {
     "if(!/(^|\\.)reddit\\.com$/.test(location.hostname)){alert('Open old.reddit.com (logged in), then run this from your Bookmarks list.');return;}" +
     "var U='" + u + "',K='" + k + "';" +
     "var o=document.createElement('div');o.style.cssText='position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#1a1a1b;color:#fff;font:14px/1.6 -apple-system,sans-serif;padding:12px 16px;box-shadow:0 2px 10px rgba(0,0,0,.5)';document.body.appendChild(o);" +
-    "var say=function(m){o.textContent=m};say('RedditVault: reading your saves…');" +
-    "var rows=[],kids=[],after=null,page=0,now=new Date().toISOString();" +
+    "var say=function(m){o.textContent=m};say('RedditVault: checking what is new…');" +
+    // Read-only: fetch recent known ids so we can stop as soon as we reach saves
+    // we already have (mirrors the feed sync). Never writes reddit_saves. If this
+    // read fails, known stays empty and we fall back to a full scan.
+    "var known=new Set();" +
+    "try{var kr=await fetch(U+'/rest/v1/reddit_saves?select=reddit_id&order=saved_at.desc&limit=500',{headers:{apikey:K,Authorization:'Bearer '+K}});if(kr.ok){var ka=await kr.json();for(var n=0;n<ka.length;n++)known.add(ka[n].reddit_id);}}catch(e){}" +
+    "var rows=[],kids=[],after=null,page=0,seen=0;" +
     "try{while(page<40){" +
       "var res=await fetch('/user/me/saved.json?limit=100&raw_json=1'+(after?'&after='+after:''),{credentials:'include',headers:{'Accept':'application/json'}});" +
       "if(res.status===401||res.status===403){say('⚠️ Not logged in to Reddit. Log in and run this again.');return;}" +
       "if(res.status===429){say('Rate limited — waiting 5s…');await new Promise(function(r){setTimeout(r,5000)});continue;}" +
       "if(!res.ok){say('⚠️ Reddit error '+res.status+'. Try again shortly.');return;}" +
       "var data=await res.json(),ch=(data&&data.data&&data.data.children)||[];if(!ch.length)break;" +
-      "for(var i=0;i<ch.length;i++){var d=ch[i].data;var slim={kind:ch[i].kind,data:{name:d.name,id:d.id,title:d.title,link_title:d.link_title,author:d.author,subreddit:d.subreddit,url:d.url,permalink:d.permalink,body:d.body,selftext:d.selftext,score:d.score,created_utc:d.created_utc}};kids.push(slim);rows.push({reddit_id:d.name||d.id,payload:slim});}" +
-      "page++;say('Read '+rows.length+' saves…');after=data.data.after;if(!after)break;await new Promise(function(r){setTimeout(r,1000)});" +
+      "var fresh=0;" +
+      "for(var i=0;i<ch.length;i++){var d=ch[i].data,rid=d.name||d.id;seen++;if(known.has(rid))continue;fresh++;var slim={kind:ch[i].kind,data:{name:d.name,id:d.id,title:d.title,link_title:d.link_title,author:d.author,subreddit:d.subreddit,url:d.url,permalink:d.permalink,body:d.body,selftext:d.selftext,score:d.score,created_utc:d.created_utc}};kids.push(slim);rows.push({reddit_id:rid,payload:slim});}" +
+      "page++;say('Scanned '+seen+' saves — '+rows.length+' new…');" +
+      "after=data.data.after;if(!after)break;" +
+      "if(fresh===0)break;" +
+      "await new Promise(function(r){setTimeout(r,1000)});" +
     "}}catch(e){say('⚠️ Could not read saves: '+e.message);return;}" +
-    "if(!rows.length){say('No saved items found.');return;}" +
-    "say('Sending '+rows.length+' saves to your vault inbox…');" +
+    "if(!rows.length){o.innerHTML='✅ Already up to date — no new saves. <button onclick=\"this.parentNode.remove()\" style=\"margin-left:10px;padding:4px 10px;border:0;border-radius:6px;background:#4f46e5;color:#fff;cursor:pointer\">Close</button>';return;}" +
+    "say('Sending '+rows.length+' new saves to your vault inbox…');" +
     "try{for(var j=0;j<rows.length;j+=100){var b=rows.slice(j,j+100);" +
       "var pr=await fetch(U+'/rest/v1/reddit_inbox?on_conflict=reddit_id',{method:'POST',headers:{'Content-Type':'application/json',apikey:K,Authorization:'Bearer '+K,Prefer:'resolution=ignore-duplicates'},body:JSON.stringify(b)});" +
       "if(!pr.ok){throw new Error(pr.status+' '+(await pr.text()).slice(0,140));}say('Sent '+Math.min(j+100,rows.length)+'/'+rows.length+'…');}" +
-      "o.innerHTML='✅ Captured '+rows.length+' saves. Open RedditVault — it imports them automatically. <button onclick=\"this.parentNode.remove()\" style=\"margin-left:10px;padding:4px 10px;border:0;border-radius:6px;background:#4f46e5;color:#fff;cursor:pointer\">Close</button>';" +
+      "o.innerHTML='✅ Captured '+rows.length+' new saves. Open RedditVault — it imports them automatically. <button onclick=\"this.parentNode.remove()\" style=\"margin-left:10px;padding:4px 10px;border:0;border-radius:6px;background:#4f46e5;color:#fff;cursor:pointer\">Close</button>';" +
     "}catch(e){" +
       "var env=JSON.stringify({type:'rv-bookmarklet',v:1,children:kids});" +
       "o.textContent='⚠️ Could not reach your vault inbox ('+e.message+'). Copy your saves and paste them into RedditVault instead:';" +

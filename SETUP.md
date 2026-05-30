@@ -193,8 +193,10 @@ If you set up Supabase before v0.9.12.0, add the new staging table: open Supabas
 2. Run the bookmarklet:
    - **Desktop:** click it in the bookmarks bar.
    - **iOS:** open the **Bookmarks list** (📖 icon) and tap it there. *Do not* type its name in the address bar — iOS blocks that ("JavaScript is not allowed to be used this way").
-3. A banner shows progress, then **"Captured N saves."**
+3. A banner shows progress, then **"Captured N new saves"** (or **"Already up to date"** if nothing changed).
 4. Open RedditVault — it imports automatically on launch. Or go to **Settings → 🔖 Bookmarklet Sync → 📨 Import from inbox now**.
+
+The bookmarklet is incremental: it only scans back as far as the newest saves it hasn't seen yet, so routine re-runs are quick. (The first run, or one after a long gap, scans more.)
 
 If the banner instead offers a **Copy** button (couldn't reach your inbox), tap it, then in RedditVault use **🔖 Bookmarklet Sync → 📋 Paste captured items** to import.
 
