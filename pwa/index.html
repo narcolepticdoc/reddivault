@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.11.0';
+const APP_VERSION = '0.9.12.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -466,6 +466,9 @@ let state = {
   lastPushedAt: null,       // ISO timestamp of last successful push to cloud (delta cursor)
   lastSyncedAt: null,       // ISO timestamp of last confirmed in-sync (push or pull) — display only
   lastFeedSync: null,       // ISO timestamp of last successful feed sync
+  lastBookmarkletSync: null,// ISO timestamp of last bookmarklet inbox import
+  inboxDraining: false,     // guard against concurrent inbox drains
+  bookmarkletResult: null,  // last inbox import result {added,skipped,drained} | {error}
   savedAtClumpy: null,      // null=unchecked, true=clumps found, false=clean
   syncLog: [],              // in-memory diagnostic log, session only
   _lastIndicatorLabel: null,// tracks last rendered indicator to avoid duplicate log entries
@@ -522,8 +525,12 @@ async function init() {
     syncLog('Startup: no Supabase configured — sync disabled');
     _startupSyncPromise = Promise.resolve();
   }
-  // Auto feed sync on startup — waits for cloud sync to fully complete first
-  _startupSyncPromise.catch(() => {}).then(() => autoFeedSyncIfDue());
+  // Auto feed sync on startup — waits for cloud sync to fully complete first,
+  // then drain any items captured by the bookmarklet into the library.
+  _startupSyncPromise.catch(() => {})
+    .then(() => autoFeedSyncIfDue())
+    .then(() => { if (state.supabaseUrl && state.supabaseKey) return drainInbox(); })
+    .catch(() => {});
 }
 
 async function reconcileDirtyState() {
@@ -610,6 +617,8 @@ async function loadConfig() {
     if (lastSyncedAt) state.lastSyncedAt = lastSyncedAt.value;
     const lastFeedSync = await db.config.get('lastFeedSync');
     if (lastFeedSync) state.lastFeedSync = lastFeedSync.value;
+    const lastBookmarkletSync = await db.config.get('lastBookmarkletSync');
+    if (lastBookmarkletSync) state.lastBookmarkletSync = lastBookmarkletSync.value;
   } catch(e) {}
 }
 
@@ -5218,36 +5227,68 @@ function renderSettings() {
       </details>
     </div>
 
-    <!-- ── 1b. BOOKMARKLET SYNC (experimental) ─────────────────────────────── -->
+    <!-- ── 1b. BOOKMARKLET SYNC ────────────────────────────────────────────── -->
     <div class="config-section">
-      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px">🔖 Bookmarklet Sync <span style="font-size:11px;color:var(--text-muted);font-weight:400">· experimental</span></div>
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px">🔖 Bookmarklet Sync</div>
       <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
-        Reddit is locking down the unauthenticated feed this app relies on. A bookmarklet runs <em>as</em> reddit.com using your existing login, so it keeps working where the feed can't — especially on mobile, where there's no extension. This section is being built out; the first step is a quick compatibility probe.
+        Reddit is locking down the unauthenticated feed this app relies on. This bookmarklet runs <em>as</em> reddit.com using your existing login, so it keeps working where the feed can't — especially on mobile, where there's no extension. It captures your saves into a temporary inbox; RedditVault imports them on its next open (or tap <em>Import from inbox</em> below).
       </p>
       ${state.supabaseUrl && state.supabaseKey ? (() => {
-        const probe = cspProbeBookmarklet(state.supabaseUrl, state.supabaseKey);
+        const bm = buildInboxBookmarklet(state.supabaseUrl, state.supabaseKey);
+        const res = state.bookmarkletResult;
         return `
         <div style="background:var(--bg);border-radius:8px;padding:12px;line-height:1.6">
-          <div style="font-weight:600;font-size:13px;margin-bottom:6px">🔬 Compatibility probe</div>
-          <p style="font-size:12px;color:var(--text-muted);margin-bottom:10px">
-            This tells us whether your phone/browser can sync automatically or needs an extra tap. Run it once on <strong style="color:var(--text)">old.reddit.com</strong> while logged in, then reply with the two numbers it shows.
-          </p>
-          <ol style="font-size:12px;color:var(--text-muted);margin:0 0 10px 18px;padding:0;line-height:1.7">
-            <li><strong style="color:var(--text)">Desktop:</strong> drag the button below to your bookmarks bar, open old.reddit.com (logged in), then click the bookmark.</li>
-            <li><strong style="color:var(--text)">iOS/Safari:</strong> tap <em>Copy</em>. Bookmark any page (Share → Add Bookmark), then open the Bookmarks list (📖 icon) → Edit → tap that bookmark, clear its URL and paste this in. Open old.reddit.com, then launch it from the <strong style="color:var(--text)">Bookmarks list</strong> (📖 icon) — <em>not</em> by typing its name in the address bar, which iOS blocks ("JavaScript is not allowed to be used this way").</li>
+          <div style="font-weight:600;font-size:13px;margin-bottom:6px">📥 Capture bookmarklet</div>
+          <ol style="font-size:12px;color:var(--text-muted);margin:0 0 12px 18px;padding:0;line-height:1.7">
+            <li><strong style="color:var(--text)">Desktop:</strong> drag the button below to your bookmarks bar. On <strong style="color:var(--text)">old.reddit.com</strong> (logged in), click it.</li>
+            <li><strong style="color:var(--text)">iOS/Safari:</strong> tap <em>Copy</em>. Bookmark any page (Share → Add Bookmark), then open the Bookmarks list (📖 icon) → Edit → tap that bookmark, clear its URL and paste this in. On <strong style="color:var(--text)">old.reddit.com</strong>, launch it from the <strong style="color:var(--text)">Bookmarks list</strong> (📖 icon) — <em>not</em> by typing its name in the address bar, which iOS blocks.</li>
           </ol>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <a href="${escHtml(probe)}" onclick="event.preventDefault();alert('Don\\'t click here — drag this to your bookmarks bar (desktop) or use Copy (mobile), then run it on old.reddit.com.')"
-              style="display:inline-block;padding:8px 14px;background:var(--accent2);color:#fff;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;cursor:grab">
-              🔬 RV CSP Probe
+            <a href="${escHtml(bm)}" onclick="event.preventDefault();alert('Don\\'t click here — drag this to your bookmarks bar (desktop) or use Copy (mobile), then run it on old.reddit.com.')"
+              style="display:inline-block;padding:8px 14px;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;cursor:grab">
+              📥 Save to RedditVault
             </a>
-            <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(cspProbeBookmarklet(state.supabaseUrl,state.supabaseKey)).then(()=>{this.textContent='✓ Copied';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+            <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(buildInboxBookmarklet(state.supabaseUrl,state.supabaseKey)).then(()=>{this.textContent='✓ Copied';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
             <button class="btn btn-secondary btn-sm" onclick="window.location.href='https://old.reddit.com/saved'">Open old.reddit.com/saved</button>
           </div>
+
+          <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-secondary btn-sm" onclick="drainInbox({manual:true})" ${state.inboxDraining ? 'disabled' : ''}>
+              ${state.inboxDraining ? '⏳ Importing…' : '📨 Import from inbox now'}
+            </button>
+            ${state.lastBookmarkletSync ? `<span style="font-size:11px;color:var(--text-muted)">Last import: ${new Date(state.lastBookmarkletSync).toLocaleString()}</span>` : ''}
+          </div>
+          ${res ? `
+            <div style="margin-top:8px;font-size:12px;background:var(--surface);border-radius:8px;padding:8px 10px">
+              ${res.error
+                ? `<span style="color:var(--danger)">❌ ${escHtml(res.error)}</span>`
+                : `✅ <strong style="color:var(--text)">${res.added}</strong> new &nbsp;·&nbsp; <strong style="color:var(--text)">${res.skipped}</strong> already saved &nbsp;·&nbsp; <strong style="color:var(--text)">${res.drained}</strong> processed`}
+            </div>` : ''}
+
+          <details style="margin-top:12px">
+            <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">📋 Paste captured items (fallback)</summary>
+            <div style="margin-top:10px">
+              <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Only needed if the bookmarklet couldn't reach your inbox and offered a <em>Copy</em> button instead. Paste that text here.</p>
+              <textarea id="bm-paste" placeholder="Paste copied RedditVault data…" style="width:100%;height:70px;font-size:16px;font-family:monospace"></textarea>
+              <button class="btn btn-secondary btn-sm" onclick="importPastedBookmarklet()" style="margin-top:6px">Import pasted items</button>
+            </div>
+          </details>
+
+          <details style="margin-top:8px">
+            <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">🔬 Compatibility probe (diagnostics)</summary>
+            <div style="margin-top:10px">
+              <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Runs two test fetches on reddit.com and alerts their HTTP status — handy if capture isn't working. Install/run it the same way as the bookmarklet above.</p>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <a href="${escHtml(cspProbeBookmarklet(state.supabaseUrl, state.supabaseKey))}" onclick="event.preventDefault();alert('Drag to bookmarks (desktop) or Copy (mobile), then run on old.reddit.com.')"
+                  style="display:inline-block;padding:6px 12px;background:var(--accent2);color:#fff;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none;cursor:grab">🔬 RV CSP Probe</a>
+                <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(cspProbeBookmarklet(state.supabaseUrl,state.supabaseKey)).then(()=>{this.textContent='✓ Copied';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+              </div>
+            </div>
+          </details>
         </div>`;
       })() : `
         <p style="font-size:12px;color:var(--warning);background:rgba(245,158,11,0.08);border-radius:8px;padding:10px">
-          ⚠️ Set up your Supabase connection in <strong>Cloud Database</strong> below first — the probe needs it.
+          ⚠️ Set up your Supabase connection in <strong>Cloud Database</strong> below first — the bookmarklet needs it, and remember to add the <code>reddit_inbox</code> table from <code>supabase-schema.sql</code>.
         </p>
       `}
     </div>
@@ -6228,6 +6269,140 @@ function parseRedditFeedXml(xmlText) {
   });
 }
 
+// Map a raw Reddit listing child (t1 = comment, t3 = post) to a RedditVault
+// item. Single source of truth for both feed sync and the bookmarklet-inbox
+// drain, so the two ingestion paths can never drift apart.
+function mapRedditChild(child, source) {
+  const d = child.data;
+  const kind = child.kind; // t3 = post, t1 = comment
+  const type = kind === 't1' ? 'comment' : 'post';
+  // For comments, prefer link_title (parent post title). If absent, store a
+  // placeholder and mark for enrichment so the Reddit .json enricher can fetch
+  // the real parent post title.
+  const commentTitle = type === 'comment' ? (d.link_title || null) : null;
+  const needsEnrich = type === 'comment' && !commentTitle;
+  return {
+    redditId: d.name,
+    type,
+    title: d.title || commentTitle || (type === 'comment' ? `Comment in r/${d.subreddit}` : ''),
+    body: type === 'comment' ? (d.body || '') : (d.selftext || ''),
+    author: d.author || '',
+    subreddit: d.subreddit || '',
+    url: d.url || `https://reddit.com${d.permalink}`,
+    permalink: d.permalink ? `https://reddit.com${d.permalink}` : '',
+    score: d.score || 0,
+    savedAt: new Date().toISOString(),
+    postCreatedAt: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,
+    enriched: !needsEnrich,
+    enrichStatus: needsEnrich ? 'pending' : 'enriched',
+    source,
+  };
+}
+
+// Shared app-side ingest for raw Reddit children (used by the bookmarklet inbox
+// drain and the manual paste fallback). Dedups against ALL known ids including
+// permanently-deleted ones, so a bookmarklet capture can never resurrect
+// something you deleted. New items go to IndexedDB and are pushed to the cloud
+// via the app's own normal pushToSupabase — the bookmarklet never writes to
+// reddit_saves itself.
+async function ingestChildren(children, source) {
+  const existing = new Set(state.items.map(i => i.redditId));
+  const newItems = [];
+  let skipped = 0;
+  for (const child of children) {
+    const rid = child && child.data && child.data.name;
+    if (!rid) continue;
+    if (existing.has(rid)) { skipped++; continue; }
+    newItems.push(mapRedditChild(child, source));
+    existing.add(rid);
+  }
+  if (newItems.length) {
+    await db.items.bulkAdd(newItems);
+    if (state.supabaseUrl && state.supabaseKey) await pushToSupabase(newItems);
+  }
+  return { added: newItems.length, skipped };
+}
+
+// Drain the reddit_inbox staging table into the library, then clear it. Called
+// on startup (quiet) and from the Settings "Import from inbox" button (manual).
+async function drainInbox({ manual = false } = {}) {
+  if (!state.supabaseUrl || !state.supabaseKey) {
+    if (manual) showToast('Connect Supabase first', 'error');
+    return { added: 0, skipped: 0, drained: 0 };
+  }
+  if (state.inboxDraining) return { added: 0, skipped: 0, drained: 0 };
+  state.inboxDraining = true;
+  if (manual) { state.bookmarkletResult = null; render(); }
+  try {
+    // Page through the inbox — Supabase hard-caps at 1000 rows per request.
+    const rows = [];
+    const PAGE = 1000;
+    let from = 0;
+    while (true) {
+      const page = await supabaseFetchRange('/reddit_inbox?select=id,payload&order=id.asc', from, from + PAGE - 1);
+      rows.push(...page);
+      if (page.length < PAGE) break;
+      from += PAGE;
+    }
+    if (rows.length === 0) {
+      syncLog('drainInbox: inbox empty');
+      if (manual) { state.bookmarkletResult = { added: 0, skipped: 0, drained: 0 }; render(); showToast('Inbox empty — nothing to import', 'info'); }
+      return { added: 0, skipped: 0, drained: 0 };
+    }
+    syncLog(`drainInbox: ${rows.length} item(s) in inbox`);
+    const children = rows.map(r => r.payload).filter(Boolean);
+    const { added, skipped } = await ingestChildren(children, 'bookmarklet');
+
+    // Clear everything we pulled (new + already-known) so the inbox stays empty.
+    const ids = rows.map(r => r.id);
+    for (let i = 0; i < ids.length; i += 200) {
+      const chunk = ids.slice(i, i + 200);
+      await supabaseFetch(`/reddit_inbox?id=in.(${chunk.join(',')})`, 'DELETE');
+    }
+
+    const ts = new Date().toISOString();
+    await db.config.put({ key: 'lastBookmarkletSync', value: ts });
+    state.lastBookmarkletSync = ts;
+    state.bookmarkletResult = { added, skipped, drained: rows.length };
+    syncLog(`drainInbox: imported ${added} new, ${skipped} already saved, cleared ${rows.length}`, 'ok');
+
+    if (added > 0) await loadData();
+    render();
+    if (manual) showToast(`Imported ${added} new item${added !== 1 ? 's' : ''} from bookmarklet`, 'success');
+    return { added, skipped, drained: rows.length };
+  } catch (e) {
+    syncLog(`drainInbox: failed — ${e.message}`, 'error');
+    if (manual) { state.bookmarkletResult = { error: e.message }; render(); showToast('Inbox import failed', 'error'); }
+    return { added: 0, skipped: 0, drained: 0, error: e.message };
+  } finally {
+    state.inboxDraining = false;
+  }
+}
+
+// Manual fallback: import items the bookmarklet copied to the clipboard (used
+// only when the direct inbox POST failed). Goes through the same ingestChildren
+// path, so the main table is still only written by the app.
+async function importPastedBookmarklet() {
+  const ta = document.getElementById('bm-paste');
+  let raw = ta && ta.value ? ta.value.trim() : '';
+  if (!raw) {
+    try { raw = (await navigator.clipboard.readText()).trim(); } catch (e) {}
+  }
+  if (!raw) { showToast('Paste the copied data into the box first', 'error'); return; }
+  let env;
+  try { env = JSON.parse(raw); } catch (e) { showToast('Could not read pasted data — is it the copied text?', 'error'); return; }
+  const children = (env && Array.isArray(env.children)) ? env.children : (Array.isArray(env) ? env : null);
+  if (!children || !children.length) { showToast('No items found in pasted data', 'error'); return; }
+  const { added, skipped } = await ingestChildren(children, 'bookmarklet');
+  const ts = new Date().toISOString();
+  await db.config.put({ key: 'lastBookmarkletSync', value: ts });
+  state.lastBookmarkletSync = ts;
+  state.bookmarkletResult = { added, skipped, drained: children.length };
+  if (added > 0) await loadData();
+  render();
+  showToast(`Imported ${added} new item${added !== 1 ? 's' : ''}`, 'success');
+}
+
 async function syncFromFeed() {
   if (!state.redditFeedUrl) { showToast('No feed URL configured', 'error'); return; }
   if (state.feedSyncing) return;
@@ -6295,40 +6470,14 @@ async function syncFromFeed() {
 
       const newItems = [];
       for (const child of children) {
-        const d = child.data;
-        const kind = child.kind; // t3 = post, t1 = comment
-        const redditId = d.name; // already prefixed e.g. t3_abc123
+        const redditId = child.data.name; // already prefixed e.g. t3_abc123
 
         if (existing.has(redditId)) {
           skipped++;
           continue;
         }
 
-        const type = kind === 't1' ? 'comment' : 'post';
-
-        // For comments, prefer link_title (parent post title from feed).
-        // If absent, store a placeholder and mark for enrichment so the
-        // Reddit .json enricher can fetch the real parent post title.
-        const commentTitle = type === 'comment' ? (d.link_title || null) : null;
-        const needsEnrich = type === 'comment' && !commentTitle;
-        const item = {
-          redditId,
-          type,
-          title: d.title || commentTitle || (type === 'comment' ? `Comment in r/${d.subreddit}` : ''),
-          body: type === 'comment' ? (d.body || '') : (d.selftext || ''),
-          author: d.author || '',
-          subreddit: d.subreddit || '',
-          url: d.url || `https://reddit.com${d.permalink}`,
-          permalink: d.permalink ? `https://reddit.com${d.permalink}` : '',
-          score: d.score || 0,
-          savedAt: new Date().toISOString(),
-          postCreatedAt: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,
-          enriched: !needsEnrich,
-          enrichStatus: needsEnrich ? 'pending' : 'enriched',
-          source: 'feed',
-        };
-
-        newItems.push(item);
+        newItems.push(mapRedditChild(child, 'feed'));
         existing.add(redditId);
       }
 
@@ -6441,6 +6590,48 @@ function cspProbeBookmarklet(supabaseUrl, supabaseKey) {
       "catch(e){alert('2/2 Supabase BLOCKED by CSP: '+e.message+' — iOS will need the clipboard fallback. Reply with both numbers.');}" +
     "})()";
   return src;
+}
+
+// Capture bookmarklet. Runs same-origin on reddit.com using the user's session
+// cookie, fetches their saved listing, and POSTs the raw items to the
+// reddit_inbox staging table — never to reddit_saves directly. The app drains
+// the inbox through its normal ingest. On any POST failure it falls back to
+// copying the items to the clipboard for manual "Paste captured items" import,
+// so a network/RLS hiccup never loses the fetched data.
+function buildInboxBookmarklet(supabaseUrl, supabaseKey) {
+  const u = String(supabaseUrl || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const k = String(supabaseKey || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  // Built as a string; uses only single/double quotes (no backticks). The href
+  // is escHtml-escaped at render time, so double quotes survive as &quot;.
+  return "javascript:(async()=>{" +
+    "if(!/(^|\\.)reddit\\.com$/.test(location.hostname)){alert('Open old.reddit.com (logged in), then run this from your Bookmarks list.');return;}" +
+    "var U='" + u + "',K='" + k + "';" +
+    "var o=document.createElement('div');o.style.cssText='position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#1a1a1b;color:#fff;font:14px/1.6 -apple-system,sans-serif;padding:12px 16px;box-shadow:0 2px 10px rgba(0,0,0,.5)';document.body.appendChild(o);" +
+    "var say=function(m){o.textContent=m};say('RedditVault: reading your saves…');" +
+    "var rows=[],kids=[],after=null,page=0,now=new Date().toISOString();" +
+    "try{while(page<40){" +
+      "var res=await fetch('/user/me/saved.json?limit=100&raw_json=1'+(after?'&after='+after:''),{credentials:'include',headers:{'Accept':'application/json'}});" +
+      "if(res.status===401||res.status===403){say('⚠️ Not logged in to Reddit. Log in and run this again.');return;}" +
+      "if(res.status===429){say('Rate limited — waiting 5s…');await new Promise(function(r){setTimeout(r,5000)});continue;}" +
+      "if(!res.ok){say('⚠️ Reddit error '+res.status+'. Try again shortly.');return;}" +
+      "var data=await res.json(),ch=(data&&data.data&&data.data.children)||[];if(!ch.length)break;" +
+      "for(var i=0;i<ch.length;i++){var d=ch[i].data;var slim={kind:ch[i].kind,data:{name:d.name,id:d.id,title:d.title,link_title:d.link_title,author:d.author,subreddit:d.subreddit,url:d.url,permalink:d.permalink,body:d.body,selftext:d.selftext,score:d.score,created_utc:d.created_utc}};kids.push(slim);rows.push({reddit_id:d.name||d.id,payload:slim});}" +
+      "page++;say('Read '+rows.length+' saves…');after=data.data.after;if(!after)break;await new Promise(function(r){setTimeout(r,1000)});" +
+    "}}catch(e){say('⚠️ Could not read saves: '+e.message);return;}" +
+    "if(!rows.length){say('No saved items found.');return;}" +
+    "say('Sending '+rows.length+' saves to your vault inbox…');" +
+    "try{for(var j=0;j<rows.length;j+=100){var b=rows.slice(j,j+100);" +
+      "var pr=await fetch(U+'/rest/v1/reddit_inbox?on_conflict=reddit_id',{method:'POST',headers:{'Content-Type':'application/json',apikey:K,Authorization:'Bearer '+K,Prefer:'resolution=ignore-duplicates'},body:JSON.stringify(b)});" +
+      "if(!pr.ok){throw new Error(pr.status+' '+(await pr.text()).slice(0,140));}say('Sent '+Math.min(j+100,rows.length)+'/'+rows.length+'…');}" +
+      "o.innerHTML='✅ Captured '+rows.length+' saves. Open RedditVault — it imports them automatically. <button onclick=\"this.parentNode.remove()\" style=\"margin-left:10px;padding:4px 10px;border:0;border-radius:6px;background:#4f46e5;color:#fff;cursor:pointer\">Close</button>';" +
+    "}catch(e){" +
+      "var env=JSON.stringify({type:'rv-bookmarklet',v:1,children:kids});" +
+      "o.textContent='⚠️ Could not reach your vault inbox ('+e.message+'). Copy your saves and paste them into RedditVault instead:';" +
+      "var btn=document.createElement('button');btn.textContent='Copy '+rows.length+' items';btn.style.cssText='margin-left:8px;padding:6px 12px;border:0;border-radius:6px;background:#4f46e5;color:#fff;cursor:pointer';" +
+      "btn.onclick=function(){navigator.clipboard.writeText(env).then(function(){btn.textContent='✓ Copied — paste in RedditVault'}).catch(function(){var t=document.createElement('textarea');t.value=env;t.style.cssText='display:block;width:100%;height:80px;margin-top:8px';o.appendChild(t);t.focus();t.select()})};" +
+      "o.appendChild(btn);" +
+    "}" +
+  "})()";
 }
 
 function fmtDate(iso) {

@@ -19,7 +19,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 - **`vercel.json`** — Vercel deployment config (auto-deploys from GitHub)
 
 **Live URL:** https://reddivault.vercel.app
-**Current version:** v0.9.8.15
+**Current version:** v0.9.12.0
 
 ---
 
@@ -28,6 +28,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 ### Data flow
 ```
 Reddit (session cookies) → Chrome Extension → Supabase → PWA (IndexedDB cache)
+Reddit (session cookies) → Bookmarklet → Supabase reddit_inbox → PWA drains into library
 Reddit (RSS feed)        → Cloudflare Worker → PWA feed sync
 Reddit public JSON API   → PWA enrichment (no auth needed)
 ```
@@ -48,14 +49,17 @@ Reddit public JSON API   → PWA enrichment (no auth needed)
 
 **No folder column** — early versions had a `folder` text column. This was renamed to `deleted_at timestamptz` in a Supabase migration. There are no folders in the current schema — organisation is via Lists.
 
+**Bookmarklet capture (v0.9.12.0+)** — for mobile / non-Chrome where there's no extension. A PWA-generated `javascript:` bookmarklet (`buildInboxBookmarklet`) runs same-origin on reddit.com using the user's session cookie, fetches `saved.json`, and POSTs raw items to a dedicated **`reddit_inbox` staging table** — deliberately **not** to `reddit_saves`. The app drains the inbox on startup and via a Settings button (`drainInbox`), running items through the shared app-side ingest (`ingestChildren` → `mapRedditChild` + `pushToSupabase`), then deletes the drained rows. This keeps the bookmarklet away from the main table and routes all real writes through the app's trusted, dedup-aware path. A CSP probe (`cspProbeBookmarklet`) confirmed Reddit's CSP allows the same-origin fetch on iOS. If the inbox POST fails, the bookmarklet falls back to copying a `{type:'rv-bookmarklet',children}` envelope to the clipboard for manual "Paste captured items" import (`importPastedBookmarklet`). The anon key is embedded in the bookmarklet text (RLS-protected; acceptable for personal use).
+
 ---
 
 ## Supabase Schema (current)
 
-Four tables:
+Five tables:
 
 ```sql
 reddit_saves       -- items (posts + comments)
+reddit_inbox       -- bookmarklet capture staging (drained into reddit_saves, then cleared)
 reddit_lists       -- user lists (static and smart)
 reddit_item_lists  -- many-to-many: item ↔ list membership
 user_preferences   -- key-value settings sync across devices
@@ -81,6 +85,12 @@ user_preferences   -- key-value settings sync across devices
 
 ### `user_preferences` columns
 `key, value, updated_at` — stores: `redditFeedUrl`, `feedProxyUrl`, `feedProxyType`, `confirmDestructive`, `last_modified`
+
+### `reddit_inbox` columns
+`id, reddit_id, payload, created_at` — transient bookmarklet staging.
+- `reddit_id`: Reddit fullname, `UNIQUE` (bookmarklet upserts with `on_conflict=reddit_id`, `resolution=ignore-duplicates`, so re-runs don't pile up)
+- `payload`: `jsonb` — the raw `{kind, data:{…}}` Reddit child the app feeds to `mapRedditChild`
+- Drained and **emptied** by `drainInbox` on each import; never a long-lived store.
 
 ---
 
@@ -196,6 +206,11 @@ Helper: `_parseWildcard(raw)` — parses a single term string into `{ value, exa
 - `'corsfix'` — uses the public `proxy.corsfix.com` service, no setup required. URL format: `https://proxy.corsfix.com/?{feedUrl}` (no encoding, no key).
 
 `_buildProxyUrl(feedUrl)` — helper that constructs the correct proxy URL based on `state.feedProxyType`. Always use this instead of constructing the URL manually.
+
+`mapRedditChild(child, source)` — pure mapper from a raw Reddit listing child (`t1`/`t3`) to a RedditVault item. **Single source of truth** for both feed sync and the bookmarklet drain; `syncFromFeed` and `ingestChildren` both call it so the two ingestion paths can't drift.
+
+### Bookmarklet inbox (mobile / non-Chrome capture)
+`buildInboxBookmarklet(url, key)` — generates the `javascript:` capture bookmarklet (fetch `saved.json` same-origin → POST raw items to `reddit_inbox`). `drainInbox({manual})` — pages the inbox via `supabaseFetchRange`, runs rows through `ingestChildren(children,'bookmarklet')`, then `DELETE`s the drained ids (chunked). Called on startup (quiet) and from the Settings button (manual). `ingestChildren` dedups against all known ids **including permanently-deleted** ones, so capture can't resurrect deletions, and writes via the app's own `pushToSupabase`. `importPastedBookmarklet()` is the clipboard fallback receiver. `cspProbeBookmarklet(url,key)` is a diagnostics-only probe.
 
 ### Cloud push
 `supabasePush(items)` — upserts items to `reddit_saves` using `on_conflict=reddit_id`.

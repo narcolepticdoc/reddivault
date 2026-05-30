@@ -173,6 +173,33 @@ The worker lives in **`cloudflare-worker/reddit-feed-proxy.js`** in this repo.
 
 ---
 
+## PART 4b: Bookmarklet Sync (Mobile / Any Browser)
+
+Reddit is locking down the unauthenticated feed, and there's no Chrome extension on mobile. The **bookmarklet** is the durable alternative: it runs *as* reddit.com using your existing login, grabs your saved items, and drops them into a temporary **inbox** in your database. RedditVault then imports them on its next open. The bookmarklet never writes to your main table — only the app does that.
+
+### Step 4b.1 — Add the inbox table
+
+If you set up Supabase before v0.9.12.0, add the new staging table: open Supabase → SQL Editor → New Query, paste the `reddit_inbox` block from the **MIGRATION** section of `supabase-schema.sql`, and Run. (Fresh installs from the current schema already include it.)
+
+### Step 4b.2 — Install the bookmarklet
+
+1. Open RedditVault → Settings → **🔖 Bookmarklet Sync**.
+2. **Desktop:** drag the **📥 Save to RedditVault** button to your bookmarks bar.
+3. **iOS / Safari:** tap **Copy**. Bookmark any page (Share → Add Bookmark), then open the Bookmarks list (📖 icon) → **Edit** → tap that bookmark → clear its URL → **paste** → Done.
+
+### Step 4b.3 — Capture your saves
+
+1. Go to **old.reddit.com** and make sure you're logged in.
+2. Run the bookmarklet:
+   - **Desktop:** click it in the bookmarks bar.
+   - **iOS:** open the **Bookmarks list** (📖 icon) and tap it there. *Do not* type its name in the address bar — iOS blocks that ("JavaScript is not allowed to be used this way").
+3. A banner shows progress, then **"Captured N saves."**
+4. Open RedditVault — it imports automatically on launch. Or go to **Settings → 🔖 Bookmarklet Sync → 📨 Import from inbox now**.
+
+If the banner instead offers a **Copy** button (couldn't reach your inbox), tap it, then in RedditVault use **🔖 Bookmarklet Sync → 📋 Paste captured items** to import.
+
+---
+
 ## PART 5: Import Your Full Reddit History (CSV)
 
 Reddit only exposes your most recent ~1,000 saved items via its feed. To import your complete history, request a data export from Reddit.
