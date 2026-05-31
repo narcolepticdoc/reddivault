@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.14.0';
+const APP_VERSION = '0.9.15.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -434,6 +434,7 @@ let state = {
   sortDir: 'desc',
   redditFeedUrl: '',
   redditUsername: '',  // expected Reddit username — bookmarklet checks the logged-in account against it
+  scoreRefreshLimit: 500,  // how many most-recent active saves the bookmarklet's "Refresh scores" checks (0 = all)
   feedProxyUrl: '',
   feedProxyType: 'cloudflare', // 'cloudflare' | 'corsfix'
   feedFormat: 'rss', // 'rss' | 'json' — Reddit currently WAF-blocks .json
@@ -597,6 +598,8 @@ async function loadConfig() {
     if (feedUrl) state.redditFeedUrl = feedUrl.value;
     const redditUsername = await db.config.get('redditUsername');
     if (redditUsername) state.redditUsername = redditUsername.value;
+    const scoreRefreshLimit = await db.config.get('scoreRefreshLimit');
+    if (scoreRefreshLimit && scoreRefreshLimit.value != null) state.scoreRefreshLimit = scoreRefreshLimit.value;
     const proxyUrl = await db.config.get('feedProxyUrl');
     if (proxyUrl) state.feedProxyUrl = proxyUrl.value;
     const proxyType = await db.config.get('feedProxyType');
@@ -1411,6 +1414,7 @@ async function pushImportantPreferences() {
     await supabaseFetch('/user_preferences?on_conflict=key', 'POST', [
       { key: 'redditFeedUrl',      value: state.redditFeedUrl,      updated_at: new Date().toISOString() },
       { key: 'redditUsername',     value: state.redditUsername,     updated_at: new Date().toISOString() },
+      { key: 'scoreRefreshLimit',  value: state.scoreRefreshLimit,  updated_at: new Date().toISOString() },
       { key: 'feedProxyUrl',       value: state.feedProxyUrl,       updated_at: new Date().toISOString() },
       { key: 'feedProxyType',      value: state.feedProxyType,      updated_at: new Date().toISOString() },
       { key: 'feedFormat',         value: state.feedFormat,         updated_at: new Date().toISOString() },
@@ -1440,6 +1444,10 @@ async function pullPreferences() {
       if (row.key === 'redditUsername' && row.value) {
         state.redditUsername = row.value;
         await db.config.put({ key: 'redditUsername', value: row.value });
+      }
+      if (row.key === 'scoreRefreshLimit' && row.value != null) {
+        state.scoreRefreshLimit = row.value;
+        await db.config.put({ key: 'scoreRefreshLimit', value: row.value });
       }
       if (row.key === 'feedProxyUrl' && row.value) {
         state.feedProxyUrl = row.value;
@@ -2359,7 +2367,7 @@ async function exportJSON() {
   // Persist all meaningful config keys — skip transient sync state
   const CONFIG_KEYS = [
     'supabaseUrl', 'supabaseKey',
-    'redditFeedUrl', 'redditUsername', 'feedProxyUrl', 'feedProxyType', 'feedFormat',
+    'redditFeedUrl', 'redditUsername', 'scoreRefreshLimit', 'feedProxyUrl', 'feedProxyType', 'feedFormat',
     'enrichReqPerMin', 'enrichRetryReqPerMin', 'enrichRateLimitPause', 'enrichMaxAttempts',
     'confirmDestructive', 'disableZoom', 'autoFeedSync', 'autoFeedSyncInterval',
     'recentSearches',
@@ -5271,6 +5279,14 @@ function renderSettings() {
             <p style="font-size:11px;color:var(--text-muted);margin:4px 0 0 0">If set, the bookmarklet checks the logged-in Reddit account against this name and warns before running on a different account. Leave blank to skip the check.</p>
           </div>
 
+          <div style="margin-top:12px">
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Refresh scores: how many recent saves to check</label>
+            <select id="bm-score-limit" onchange="saveScoreRefreshLimit(this.value)" style="font-size:16px;padding:4px 8px">
+              ${[['100','100'],['250','250'],['500','500'],['1000','1000'],['2500','2500'],['0','All']].map(([v,l]) => `<option value="${v}" ${String(state.scoreRefreshLimit) === v ? 'selected' : ''}>${l}</option>`).join('')}
+            </select>
+            <p style="font-size:11px;color:var(--text-muted);margin:4px 0 0 0">Reddit scores settle after a while, so checking only your most recent saves avoids hammering Reddit. Pick <strong>All</strong> for an occasional full refresh. Takes effect immediately — no need to re-copy the bookmarklet.</p>
+          </div>
+
           <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <button class="btn btn-secondary btn-sm" onclick="drainInbox({manual:true})" ${state.inboxDraining ? 'disabled' : ''}>
               ${state.inboxDraining ? '⏳ Importing…' : '📨 Import from inbox now'}
@@ -6091,6 +6107,16 @@ async function saveRedditUsername() {
   showToast(raw ? `Reddit username set to u/${raw}` : 'Reddit username cleared', 'success');
 }
 
+// How many most-recent active saves "Refresh scores" checks (0 = all). Stored in
+// user_preferences so the bookmarklet reads it at runtime — no re-copy needed.
+async function saveScoreRefreshLimit(val) {
+  const n = parseInt(val, 10) || 0;
+  await db.config.put({ key: 'scoreRefreshLimit', value: n });
+  state.scoreRefreshLimit = n;
+  if (state.supabaseUrl && state.supabaseKey) pushPreference('scoreRefreshLimit', n);
+  showToast(n > 0 ? `Refresh scores will check your latest ${n} saves` : 'Refresh scores will check all saves', 'success');
+}
+
 async function saveFeedUrl() {
   const raw = document.getElementById('feed-url')?.value?.trim();
   if (!raw) { showToast('Please paste your Reddit feed URL', 'error'); return; }
@@ -6739,14 +6765,20 @@ function buildInboxBookmarklet(supabaseUrl, supabaseKey, expectUser) {
     // batches through Reddit /api/info (100 ids/call) and flushes score rows to
     // the inbox per batch — so an interrupted run still stages its progress.
     "async function refresh(){" +
-      "say('RedditVault: loading your saved item list…');" +
+      // How many recent saves to check is an app setting, read live from
+      // user_preferences (0 = all). Defaults to 500 if unset/unreadable.
+      "var LIM=500;" +
+      "try{var lr=await fetch(U+'/rest/v1/user_preferences?key=eq.scoreRefreshLimit&select=value',{headers:{apikey:K,Authorization:'Bearer '+K}});if(lr.ok){var la=await lr.json();if(la.length){var lv=la[0].value;var pv=(typeof lv==='number')?lv:parseInt(lv,10);if(!isNaN(pv)&&pv>=0)LIM=pv;}}}catch(e){}" +
+      "var scope=LIM>0?('most recent '+LIM):'entire';" +
+      "say('RedditVault: loading your '+scope+' saved items…');" +
       "var ids=[],from=0,PG=1000;" +
       "try{while(true){" +
-        "var rr=await fetch(U+'/rest/v1/reddit_saves?select=reddit_id&deleted_at=is.null&order=saved_at.desc',{headers:{apikey:K,Authorization:'Bearer '+K,Range:from+'-'+(from+PG-1),'Range-Unit':'items'}});" +
+        "var want=(LIM>0)?Math.min(PG,LIM-ids.length):PG;if(want<=0)break;" +
+        "var rr=await fetch(U+'/rest/v1/reddit_saves?select=reddit_id&deleted_at=is.null&order=saved_at.desc',{headers:{apikey:K,Authorization:'Bearer '+K,Range:from+'-'+(from+want-1),'Range-Unit':'items'}});" +
         "if(rr.status!==200&&rr.status!==206){done('⚠️ Could not read your vault list ('+rr.status+').');return;}" +
         "var ja=await rr.json();for(var i=0;i<ja.length;i++)ids.push(ja[i].reddit_id);" +
         "say('Loading your item list… '+ids.length);" +
-        "if(ja.length<PG)break;from+=PG;" +
+        "if(ja.length<want)break;from+=want;if(LIM>0&&ids.length>=LIM)break;" +
       "}}catch(e){done('⚠️ Could not reach your vault ('+e.message+').');return;}" +
       "if(!ids.length){done('Nothing to refresh.');return;}" +
       "var sent=0,checked=0;" +
