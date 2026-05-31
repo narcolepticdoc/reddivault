@@ -326,7 +326,7 @@
 
 <script>
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-const APP_VERSION = '0.9.13.0';
+const APP_VERSION = '0.9.14.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 const db = new Dexie('RedditVault');
@@ -433,6 +433,7 @@ let state = {
   sortBy: 'postCreatedAt',
   sortDir: 'desc',
   redditFeedUrl: '',
+  redditUsername: '',  // expected Reddit username — bookmarklet checks the logged-in account against it
   feedProxyUrl: '',
   feedProxyType: 'cloudflare', // 'cloudflare' | 'corsfix'
   feedFormat: 'rss', // 'rss' | 'json' — Reddit currently WAF-blocks .json
@@ -594,6 +595,8 @@ async function loadConfig() {
     if (recentlyViewed && Array.isArray(recentlyViewed.value)) state.recentlyViewed = recentlyViewed.value;
     const feedUrl = await db.config.get('redditFeedUrl');
     if (feedUrl) state.redditFeedUrl = feedUrl.value;
+    const redditUsername = await db.config.get('redditUsername');
+    if (redditUsername) state.redditUsername = redditUsername.value;
     const proxyUrl = await db.config.get('feedProxyUrl');
     if (proxyUrl) state.feedProxyUrl = proxyUrl.value;
     const proxyType = await db.config.get('feedProxyType');
@@ -1407,6 +1410,7 @@ async function pushImportantPreferences() {
   try {
     await supabaseFetch('/user_preferences?on_conflict=key', 'POST', [
       { key: 'redditFeedUrl',      value: state.redditFeedUrl,      updated_at: new Date().toISOString() },
+      { key: 'redditUsername',     value: state.redditUsername,     updated_at: new Date().toISOString() },
       { key: 'feedProxyUrl',       value: state.feedProxyUrl,       updated_at: new Date().toISOString() },
       { key: 'feedProxyType',      value: state.feedProxyType,      updated_at: new Date().toISOString() },
       { key: 'feedFormat',         value: state.feedFormat,         updated_at: new Date().toISOString() },
@@ -1432,6 +1436,10 @@ async function pullPreferences() {
       if (row.key === 'redditFeedUrl' && row.value) {
         state.redditFeedUrl = row.value;
         await db.config.put({ key: 'redditFeedUrl', value: row.value });
+      }
+      if (row.key === 'redditUsername' && row.value) {
+        state.redditUsername = row.value;
+        await db.config.put({ key: 'redditUsername', value: row.value });
       }
       if (row.key === 'feedProxyUrl' && row.value) {
         state.feedProxyUrl = row.value;
@@ -2351,7 +2359,7 @@ async function exportJSON() {
   // Persist all meaningful config keys — skip transient sync state
   const CONFIG_KEYS = [
     'supabaseUrl', 'supabaseKey',
-    'redditFeedUrl', 'feedProxyUrl', 'feedProxyType', 'feedFormat',
+    'redditFeedUrl', 'redditUsername', 'feedProxyUrl', 'feedProxyType', 'feedFormat',
     'enrichReqPerMin', 'enrichRetryReqPerMin', 'enrichRateLimitPause', 'enrichMaxAttempts',
     'confirmDestructive', 'disableZoom', 'autoFeedSync', 'autoFeedSyncInterval',
     'recentSearches',
@@ -5234,12 +5242,12 @@ function renderSettings() {
         Reddit is locking down the unauthenticated feed this app relies on. This bookmarklet runs <em>as</em> reddit.com using your existing login, so it keeps working where the feed can't — especially on mobile, where there's no extension. It captures your saves into a temporary inbox; RedditVault imports them on its next open (or tap <em>Import from inbox</em> below).
       </p>
       ${state.supabaseUrl && state.supabaseKey ? (() => {
-        const bm = buildInboxBookmarklet(state.supabaseUrl, state.supabaseKey);
+        const bm = buildInboxBookmarklet(state.supabaseUrl, state.supabaseKey, state.redditUsername);
         const res = state.bookmarkletResult;
         return `
         <div style="background:var(--bg);border-radius:8px;padding:12px;line-height:1.6">
           <div style="font-weight:600;font-size:13px;margin-bottom:6px">🔖 RedditVault bookmarklet (menu)</div>
-          <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px 0;line-height:1.6">Tapping it opens a menu: <strong style="color:var(--text)">① Capture new saves</strong> or <strong style="color:var(--text)">② Refresh scores</strong> (re-checks the up/down vote counts on items you already saved — the most recent ~1000).</p>
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px 0;line-height:1.6">Tapping it opens a menu: <strong style="color:var(--text)">① Capture new saves</strong> or <strong style="color:var(--text)">② Refresh scores</strong> (re-checks the up/down vote counts across your <em>entire</em> active library; large libraries take longer and stage progress as they go).</p>
           <ol style="font-size:12px;color:var(--text-muted);margin:0 0 12px 18px;padding:0;line-height:1.7">
             <li><strong style="color:var(--text)">Desktop:</strong> drag the button below to your bookmarks bar. On <strong style="color:var(--text)">old.reddit.com</strong> (logged in), click it.</li>
             <li><strong style="color:var(--text)">iOS/Safari:</strong> tap <em>Copy</em>. Bookmark any page (Share → Add Bookmark), then open the Bookmarks list (📖 icon) → Edit → tap that bookmark, clear its URL and paste this in. On <strong style="color:var(--text)">old.reddit.com</strong>, launch it from the <strong style="color:var(--text)">Bookmarks list</strong> (📖 icon) — <em>not</em> by typing its name in the address bar, which iOS blocks.</li>
@@ -5249,8 +5257,18 @@ function renderSettings() {
               style="display:inline-block;padding:8px 14px;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;cursor:grab">
               📥 Save to RedditVault
             </a>
-            <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(buildInboxBookmarklet(state.supabaseUrl,state.supabaseKey)).then(()=>{this.textContent='✓ Copied';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+            <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(buildInboxBookmarklet(state.supabaseUrl,state.supabaseKey,state.redditUsername)).then(()=>{this.textContent='✓ Copied';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
             <button class="btn btn-secondary btn-sm" onclick="window.location.href='https://old.reddit.com/saved'">Open old.reddit.com/saved</button>
+          </div>
+
+          <div style="margin-top:12px">
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Your Reddit username <span style="opacity:.7">(optional — guards against capturing from the wrong account)</span></label>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <span style="font-size:14px;color:var(--text-muted)">u/</span>
+              <input id="bm-username" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="username" value="${escHtml(state.redditUsername || '')}" style="flex:1;min-width:140px;font-size:16px">
+              <button class="btn btn-secondary btn-sm" onclick="saveRedditUsername()">Save</button>
+            </div>
+            <p style="font-size:11px;color:var(--text-muted);margin:4px 0 0 0">If set, the bookmarklet checks the logged-in Reddit account against this name and warns before running on a different account. Leave blank to skip the check.</p>
           </div>
 
           <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -6062,6 +6080,17 @@ async function saveSupabaseConfig() {
   await syncFromSupabase();
 }
 
+// Persist the expected Reddit username (baked into the bookmarklet for the
+// logged-in-account check). Strips a leading "u/" or "/u/" if pasted.
+async function saveRedditUsername() {
+  const raw = (document.getElementById('bm-username')?.value || '').trim().replace(/^\/?u\//i, '');
+  await db.config.put({ key: 'redditUsername', value: raw });
+  state.redditUsername = raw;
+  if (state.supabaseUrl && state.supabaseKey) pushPreference('redditUsername', raw);
+  render();
+  showToast(raw ? `Reddit username set to u/${raw}` : 'Reddit username cleared', 'success');
+}
+
 async function saveFeedUrl() {
   const raw = document.getElementById('feed-url')?.value?.trim();
   if (!raw) { showToast('Please paste your Reddit feed URL', 'error'); return; }
@@ -6648,17 +6677,20 @@ function cspProbeBookmarklet(supabaseUrl, supabaseKey) {
 // the inbox through its normal ingest. On any POST failure it falls back to
 // copying the items to the clipboard for manual "Paste captured items" import,
 // so a network/RLS hiccup never loses the fetched data.
-function buildInboxBookmarklet(supabaseUrl, supabaseKey) {
+function buildInboxBookmarklet(supabaseUrl, supabaseKey, expectUser) {
   const u = String(supabaseUrl || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const k = String(supabaseKey || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const x = String(expectUser || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   // Built as a string; uses only single quotes (no double quotes, no backticks),
   // so nothing needs escaping when the href is escHtml-escaped at render time.
   // Banners use the done() helper (textContent + a real Close button) instead of
   // innerHTML with inline onclick — keeps the bookmarklet quote-free and robust.
   // Tapping it shows a menu: ① Capture new saves, ② Refresh scores. Each op
   // starts on a fresh button gesture (so window.open for login isn't blocked).
+  // EX = expected Reddit username (optional); the bookmarklet checks the logged-in
+  // account against it via /api/me.json before showing the menu.
   return "javascript:(async()=>{" +
-    "var U='" + u + "',K='" + k + "';" +
+    "var U='" + u + "',K='" + k + "',EX='" + x + "';" +
     "var o=document.createElement('div');o.style.cssText='position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#1a1a1b;color:#fff;font:14px/1.6 -apple-system,sans-serif;padding:12px 16px;box-shadow:0 2px 10px rgba(0,0,0,.5)';document.body.appendChild(o);" +
     "var say=function(m){o.textContent=m};" +
     "var clo=function(){o.remove()};" +
@@ -6702,37 +6734,45 @@ function buildInboxBookmarklet(supabaseUrl, supabaseKey) {
         "o.appendChild(cb);" +
       "}" +
     "}" +
-    // ── Op 2: refresh scores for items already in the vault ──
+    // ── Op 2: refresh scores for EVERY active item in the vault ──
+    // Pages the whole active list via Supabase Range headers (1000/page), then
+    // batches through Reddit /api/info (100 ids/call) and flushes score rows to
+    // the inbox per batch — so an interrupted run still stages its progress.
     "async function refresh(){" +
       "say('RedditVault: loading your saved item list…');" +
-      "var ids=[];" +
-      "try{var rr=await fetch(U+'/rest/v1/reddit_saves?select=reddit_id&deleted_at=is.null&order=saved_at.desc&limit=1000',{headers:{apikey:K,Authorization:'Bearer '+K}});" +
-        "if(!rr.ok){done('⚠️ Could not read your vault list ('+rr.status+').');return;}" +
-        "var ja=await rr.json();for(var i=0;i<ja.length;i++)ids.push(ja[i].reddit_id);}catch(e){done('⚠️ Could not reach your vault ('+e.message+').');return;}" +
+      "var ids=[],from=0,PG=1000;" +
+      "try{while(true){" +
+        "var rr=await fetch(U+'/rest/v1/reddit_saves?select=reddit_id&deleted_at=is.null&order=saved_at.desc',{headers:{apikey:K,Authorization:'Bearer '+K,Range:from+'-'+(from+PG-1),'Range-Unit':'items'}});" +
+        "if(rr.status!==200&&rr.status!==206){done('⚠️ Could not read your vault list ('+rr.status+').');return;}" +
+        "var ja=await rr.json();for(var i=0;i<ja.length;i++)ids.push(ja[i].reddit_id);" +
+        "say('Loading your item list… '+ids.length);" +
+        "if(ja.length<PG)break;from+=PG;" +
+      "}}catch(e){done('⚠️ Could not reach your vault ('+e.message+').');return;}" +
       "if(!ids.length){done('Nothing to refresh.');return;}" +
-      "var rows=[],checked=0;" +
+      "var sent=0,checked=0;" +
       "try{for(var j=0;j<ids.length;j+=100){" +
         "var batch=ids.slice(j,j+100);" +
         "var res=await fetch('/api/info.json?id='+batch.join(',')+'&raw_json=1',{credentials:'include',headers:{'Accept':'application/json'}});" +
         "if(res.status===401||res.status===403){needLogin();return;}" +
         "if(res.status===429){say('Rate limited — waiting 5s…');await new Promise(function(r){setTimeout(r,5000)});j-=100;continue;}" +
-        "if(!res.ok){say('⚠️ Reddit error '+res.status+'. Try again shortly.');return;}" +
-        "var data=await res.json(),ch=(data&&data.data&&data.data.children)||[];" +
+        "if(!res.ok){say('⚠️ Reddit error '+res.status+'. '+sent+' sent so far. Try again shortly.');return;}" +
+        "var data=await res.json(),ch=(data&&data.data&&data.data.children)||[],rows=[];" +
         "for(var m=0;m<ch.length;m++){var d=ch[m].data;if(d&&d.name&&typeof d.score==='number'){rows.push({reddit_id:'score:'+d.name,payload:{op:'score',reddit_id:d.name,score:d.score}});}}" +
-        "checked=Math.min(j+100,ids.length);say('Checked '+checked+'/'+ids.length+' items — '+rows.length+' scores…');" +
+        "if(rows.length){var pr=await fetch(U+'/rest/v1/reddit_inbox?on_conflict=reddit_id',{method:'POST',headers:{'Content-Type':'application/json',apikey:K,Authorization:'Bearer '+K,Prefer:'resolution=ignore-duplicates'},body:JSON.stringify(rows)});if(!pr.ok){done('⚠️ Could not reach your vault inbox ('+pr.status+'). '+sent+' sent so far; re-run on old.reddit.com to finish.');return;}sent+=rows.length;}" +
+        "checked=Math.min(j+100,ids.length);say('Checked '+checked+'/'+ids.length+' items — '+sent+' scores sent…');" +
         "if(j+100<ids.length)await new Promise(function(r){setTimeout(r,1000)});" +
-      "}}catch(e){say('⚠️ Could not refresh scores: '+e.message);return;}" +
-      "if(!rows.length){done('No scores returned.');return;}" +
-      "say('Sending '+rows.length+' score updates to your vault inbox…');" +
-      "try{for(var p=0;p<rows.length;p+=100){var b2=rows.slice(p,p+100);" +
-        "var pr=await fetch(U+'/rest/v1/reddit_inbox?on_conflict=reddit_id',{method:'POST',headers:{'Content-Type':'application/json',apikey:K,Authorization:'Bearer '+K,Prefer:'resolution=ignore-duplicates'},body:JSON.stringify(b2)});" +
-        "if(!pr.ok){throw new Error(pr.status+' '+(await pr.text()).slice(0,140));}say('Sent '+Math.min(p+100,rows.length)+'/'+rows.length+'…');}" +
-        "done('✅ Queued '+rows.length+' score updates. Open RedditVault — it applies them automatically.');" +
-      "}catch(e){done('⚠️ Could not reach your vault inbox ('+e.message+'). Make sure you are on old.reddit.com and try again.');}" +
+      "}}catch(e){done('⚠️ Could not refresh scores: '+e.message+' ('+sent+' sent so far).');return;}" +
+      "if(!sent){done('No score changes to send.');return;}" +
+      "done('✅ Queued '+sent+' score updates. Open RedditVault — it applies them automatically.');" +
     "}" +
+    // ── Account check (verify the right Reddit user is logged in) ──
+    "var me=null;" +
+    "try{var mr=await fetch('/api/me.json',{credentials:'include',headers:{'Accept':'application/json'}});if(mr.status===401||mr.status===403){needLogin();return;}if(mr.ok){var mj=await mr.json();me=(mj&&mj.data&&mj.data.name)||(mj&&mj.name)||null;}}catch(e){}" +
+    "if(!me){needLogin();return;}" +
+    "var who='Logged in as u/'+me;" +
     // ── Menu ──
-    "var menu=function(){say('RedditVault — choose an action:');btn('① Capture new saves').onclick=function(){capture()};btn('② Refresh scores').onclick=function(){refresh()};btn('Close','#555').onclick=clo};" +
-    "menu();" +
+    "var menu=function(){say('RedditVault — '+who+'. Choose an action:');btn('① Capture new saves').onclick=function(){capture()};btn('② Refresh scores').onclick=function(){refresh()};btn('Close','#555').onclick=clo};" +
+    "if(EX&&me.toLowerCase()!==EX.toLowerCase()){say('⚠️ '+who+', but this vault belongs to u/'+EX+'. Switch Reddit accounts and tap the bookmark again, or continue anyway.');btn('Use anyway','#b45309').onclick=function(){menu()};btn('Close','#555').onclick=clo;}else{menu();}" +
   "})()";
 }
 
