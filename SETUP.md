@@ -189,20 +189,24 @@ If you set up Supabase before v0.9.12.0, add the new staging table: open Supabas
 2. **Desktop:** drag the **📥 Save to RedditVault** button to your bookmarks bar.
 3. **iOS / Safari:** tap **Copy**. Bookmark any page (Share → Add Bookmark), then open the Bookmarks list (📖 icon) → **Edit** → tap that bookmark → clear its URL → **paste** → Done.
 
-### Step 4b.3 — Capture your saves
+### Step 4b.3 — Run the bookmarklet (menu)
 
 1. Go to **`old.reddit.com`** (not www/sh — see the warning above) and make sure you're logged in.
 2. Run the bookmarklet:
    - **Desktop:** click it in the bookmarks bar.
    - **iOS:** open the **Bookmarks list** (📖 icon) and tap it there. *Do not* type its name in the address bar — iOS blocks that ("JavaScript is not allowed to be used this way").
-3. A banner shows progress, then **"Captured N new saves"** (or **"Already up to date"** if nothing changed).
-4. Switch back to RedditVault (or launch it) — it drains the inbox automatically on launch **and whenever you return to the app**, and shows a toast if it imported anything new. You can also force it from **Settings → 🔖 Bookmarklet Sync → 📨 Import from inbox now**.
+3. A small menu appears at the top of the page with two actions:
+   - **① Capture new saves** — grabs your latest saved items into the inbox. A banner shows progress, then **"Captured N new saves"** (or **"Already up to date"** if nothing changed).
+   - **② Refresh scores** — re-checks the current up/down vote count on items you've already saved (the most recent ~1000) and queues the updates. The banner shows **"Queued N score updates."**
+4. Switch back to RedditVault (or launch it) — it drains the inbox automatically on launch **and whenever you return to the app**, and shows a toast for anything it imported or any scores it updated. You can also force it from **Settings → 🔖 Bookmarklet Sync → 📨 Import from inbox now**.
 
-The bookmarklet is incremental: it only scans back as far as the newest saves it hasn't seen yet, so routine re-runs are quick. (The first run, or one after a long gap, scans more.)
+**Helpful prompts:** if you run it on the wrong page or while logged out, the menu offers a button to jump to **old.reddit.com** or the **login** page. A bookmarklet can't keep running across a page change, so after it sends you there, **tap the bookmark again** on the page it landed you on.
+
+Capture is incremental: it only scans back as far as the newest saves it hasn't seen yet, so routine re-runs are quick. (The first run, or one after a long gap, scans more.) Refresh scores is bounded to your most recent ~1000 active items per run to stay friendly to Reddit's rate limits.
 
 Because the feed sync runs on the same triggers and often catches recent saves first, the inbox drain will frequently report **"0 new"** — that's correct dedup, not a failure. The bookmarklet earns its keep for items the feed can't reach (older than the feed window, or when the feed is blocked).
 
-If the banner instead offers a **Copy** button (couldn't reach your inbox), tap it, then in RedditVault use **🔖 Bookmarklet Sync → 📋 Paste captured items** to import.
+If the capture banner instead offers a **Copy** button (couldn't reach your inbox), tap it, then in RedditVault use **🔖 Bookmarklet Sync → 📋 Paste captured items** to import. (Refresh scores has no clipboard fallback — just re-run it on old.reddit.com.)
 
 ---
 
