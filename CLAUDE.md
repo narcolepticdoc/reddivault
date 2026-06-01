@@ -53,7 +53,15 @@ Reddit public JSON API   → PWA enrichment (no auth needed)
 | `dataio.js` | CSV import, JSON backup/restore, data repairs, single-item delete |
 | `search.js` | `parseSearchQuery`, `itemMatchesTokens`, `_parseWildcard`, `affinityScore`, `sortItems`, `filteredItems`, tag/list-options helpers |
 | `items.js` | Item/list mutation actions (favourite, rate, trash, delete, list CRUD), `showPage`, search/filter actions |
-| `render.js` | All view rendering (`render`, browse/home/recent/lists/settings/trash/card/preview/modals), `attachEventListeners`, search/filter input handlers |
+| `render.js` | **Barrel** — `export *` over the `render/` submodules (so other modules + the window bridge keep importing rendering from `./render.js`) |
+| `render/shell.js` | `render` dispatcher, `renderHeaderActions`, `_renderErrorFallback`, `attachEventListeners`, `renderSortControl`, `showModal`/`closeModal` |
+| `render/home.js` | `renderHome`, `renderRecent` |
+| `render/browse.js` | `renderBrowse`, item list, search/filter input handlers + their module-local state (`_searchLookup`, debounce timers, `_listCountMap`) |
+| `render/card.js` | `renderItemCard` |
+| `render/preview.js` | `showPreview`, `closePreview`, `showLinkPicker` |
+| `render/trash.js` | `renderTrashView` |
+| `render/lists.js` | `renderLists` + list menus (`showNewListMenu`, `showCreateList`, `editList`, `showListMenu`, `filterListMenu`) |
+| `render/settings.js` | `renderSettings` (the whole settings page) |
 | `app.js` | Entry point: imports all modules, re-exposes their exports on `window`, runs the bootstrap (SW registration, visibilitychange, `init()`) |
 
 **The `window` bridge** — rendered HTML still uses inline `onclick="fn(…)"` handlers (~148 of them), which resolve against the global scope. `app.js` does `Object.assign(window, ...modules)` so those handlers keep working with **zero template changes**. A future pass can migrate to a `data-action` delegated dispatcher to drop the bridge. When adding a new inline-handler function, just `export` it from its module — the bridge picks it up automatically.
@@ -373,7 +381,16 @@ These can be read with standard file tools if you need to investigate why a spec
 │   │   ├── dataio.js                  ← CSV import, backup/restore, repairs
 │   │   ├── search.js                  ← search engine, affinity, sort, filters
 │   │   ├── items.js                   ← item/list actions, navigation
-│   │   └── render.js                  ← all view rendering + handlers
+│   │   ├── render.js                  ← barrel: re-exports render/ submodules
+│   │   └── render/                    ← view rendering, split by surface
+│   │       ├── shell.js               ← dispatcher, header, modals, listeners
+│   │       ├── home.js                ← home + recent
+│   │       ├── browse.js              ← browse + search/filter UI
+│   │       ├── card.js                ← item card
+│   │       ├── preview.js             ← preview sheet + link picker
+│   │       ├── trash.js               ← trash/deleted view
+│   │       ├── lists.js               ← lists view + list menus
+│   │       └── settings.js            ← settings page
 │   ├── sw.js                          ← service worker
 │   ├── manifest.json                  ← PWA manifest
 │   ├── icon-192.png
