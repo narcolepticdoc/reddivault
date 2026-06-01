@@ -9,7 +9,9 @@ Read it at the start of every session. Update it when significant decisions are 
 
 RedditVault is a personal Reddit saved items manager built to work around Reddit's ~1,000 item API limit. It consists of:
 
-- **`pwa/index.html`** — single-file PWA (the entire app: ~4,500 lines of vanilla JS + HTML + CSS)
+- **`pwa/index.html`** — PWA shell (HTML markup + CDN `<script>` tags + `<link>` to styles.css + module entry `<script type="module" src="js/app.js">`)
+- **`pwa/styles.css`** — all app CSS (extracted from the former inline `<style>` block)
+- **`pwa/js/*.js`** — the app, split into native ES modules (see "Module Structure" below)
 - **`pwa/sw.js`** — service worker for offline caching
 - **`pwa/manifest.json`** — PWA manifest
 - **`extension/`** — Chrome extension for desktop sync via Reddit session cookies
@@ -19,7 +21,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 - **`vercel.json`** — Vercel deployment config (auto-deploys from GitHub)
 
 **Live URL:** https://reddivault.vercel.app
-**Current version:** v0.9.8.15
+**Current version:** v0.9.11.0
 
 ---
 
@@ -34,7 +36,27 @@ Reddit public JSON API   → PWA enrichment (no auth needed)
 
 ### Key design decisions
 
-**Single-file PWA** — everything in `index.html`. No build step, no bundler. Deployed directly via Vercel. Simplicity is a hard constraint.
+**Modular, no build step** — the app is split into native ES modules in `pwa/js/`, loaded directly by the browser (`<script type="module">` + `import`/`export`). **No bundler, no package.json, no transpiler.** Third-party libs (Dexie, PapaParse) load from CDN `<script>` tags. Deployed directly via Vercel as static files; the user just loads the URL. Keeping the *zero-build, static-deploy* model is the hard constraint (it replaced the older "everything in one file" constraint).
+
+**Module structure** (`pwa/js/`):
+
+| Module | Responsibility |
+|--------|----------------|
+| `state.js` | `APP_VERSION`, the Dexie `db` instance + version/upgrade chain, the shared `state` object, `syncLog` |
+| `util.js` | `escHtml`, `escAttr`, `fmtDate`, `showToast`, `sleep(WithCountdown)`, `renderMarkdown`, `openLink`, `fullUrl`, `applyZoomSetting` |
+| `core.js` | `init`, `loadConfig`, `loadData`, `rebuildTagCache`, `rebuildFilterLists`, `reconcileDirtyState`, `markDirty`, `clearAllData` |
+| `enrich.js` | Arctic Shift + Reddit enrichment, rate-limit logic, enrich settings |
+| `cloud.js` | Supabase REST (`supabaseFetch`), push/pull/delta sync, retry/dirty machinery |
+| `feed.js` | RSS/JSON feed sync, proxy URL building, Supabase/feed config save |
+| `dataio.js` | CSV import, JSON backup/restore, data repairs, single-item delete |
+| `search.js` | `parseSearchQuery`, `itemMatchesTokens`, `_parseWildcard`, `affinityScore`, `sortItems`, `filteredItems`, tag/list-options helpers |
+| `items.js` | Item/list mutation actions (favourite, rate, trash, delete, list CRUD), `showPage`, search/filter actions |
+| `render.js` | All view rendering (`render`, browse/home/recent/lists/settings/trash/card/preview/modals), `attachEventListeners`, search/filter input handlers |
+| `app.js` | Entry point: imports all modules, re-exposes their exports on `window`, runs the bootstrap (SW registration, visibilitychange, `init()`) |
+
+**The `window` bridge** — rendered HTML still uses inline `onclick="fn(…)"` handlers (~148 of them), which resolve against the global scope. `app.js` does `Object.assign(window, ...modules)` so those handlers keep working with **zero template changes**. A future pass can migrate to a `data-action` delegated dispatcher to drop the bridge. When adding a new inline-handler function, just `export` it from its module — the bridge picks it up automatically.
+
+**Service worker asset list** — `sw.js` precaches a hand-maintained `ASSETS` array keyed off `VERSION`; bumping `VERSION` invalidates the whole `reddivault-${VERSION}` cache. **When adding a new `js/*.js` module, add it to `ASSETS` and bump `VERSION`** (and `APP_VERSION` in `state.js`).
 
 **Session-based sync, not OAuth** — the Chrome extension uses `fetch()` against Reddit's internal API endpoints with the user's existing browser cookies. Avoids Reddit's developer application approval process entirely. Personal use only.
 
@@ -316,7 +338,20 @@ These can be read with standard file tools if you need to investigate why a spec
 ├── supabase-schema.sql                ← current DB schema
 ├── vercel.json                        ← Vercel config
 ├── pwa/
-│   ├── index.html                     ← entire PWA (~4,500 lines)
+│   ├── index.html                     ← PWA shell (markup + CDN libs + module entry)
+│   ├── styles.css                     ← all app CSS
+│   ├── js/                            ← app, split into native ES modules
+│   │   ├── app.js                     ← entry: imports all, window bridge, bootstrap
+│   │   ├── state.js                   ← APP_VERSION, db, state, syncLog
+│   │   ├── util.js                    ← formatters, escapers, markdown, toast
+│   │   ├── core.js                    ← init, load/reconcile, tag cache
+│   │   ├── enrich.js                  ← Arctic Shift + Reddit enrichment
+│   │   ├── cloud.js                   ← Supabase push/pull/delta sync
+│   │   ├── feed.js                    ← RSS/JSON feed sync + proxy
+│   │   ├── dataio.js                  ← CSV import, backup/restore, repairs
+│   │   ├── search.js                  ← search engine, affinity, sort, filters
+│   │   ├── items.js                   ← item/list actions, navigation
+│   │   └── render.js                  ← all view rendering + handlers
 │   ├── sw.js                          ← service worker
 │   ├── manifest.json                  ← PWA manifest
 │   ├── icon-192.png
