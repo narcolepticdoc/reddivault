@@ -21,7 +21,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 - **`vercel.json`** — Vercel deployment config (auto-deploys from GitHub)
 
 **Live URL:** https://reddivault.vercel.app
-**Current version:** v0.9.11.0
+**Current version:** v0.9.16.0
 
 ---
 
@@ -30,6 +30,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 ### Data flow
 ```
 Reddit (session cookies) → Chrome Extension → Supabase → PWA (IndexedDB cache)
+Reddit (session cookies) → Bookmarklet → Supabase reddit_inbox → PWA drains into library
 Reddit (RSS feed)        → Cloudflare Worker → PWA feed sync
 Reddit public JSON API   → PWA enrichment (no auth needed)
 ```
@@ -48,6 +49,7 @@ Reddit public JSON API   → PWA enrichment (no auth needed)
 | `enrich.js` | Arctic Shift + Reddit enrichment, rate-limit logic, enrich settings |
 | `cloud.js` | Supabase REST (`supabaseFetch`), push/pull/delta sync, retry/dirty machinery |
 | `feed.js` | RSS/JSON feed sync, proxy URL building, Supabase/feed config save |
+| `bookmarklet.js` | Bookmarklet capture / `reddit_inbox` drain / score refresh (`buildInboxBookmarklet`, `drainInbox`, `ingestChildren`, `mapRedditChild`, `applyScoreUpdates`, `importPastedBookmarklet`, `cspProbeBookmarklet`) |
 | `dataio.js` | CSV import, JSON backup/restore, data repairs, single-item delete |
 | `search.js` | `parseSearchQuery`, `itemMatchesTokens`, `_parseWildcard`, `affinityScore`, `sortItems`, `filteredItems`, tag/list-options helpers |
 | `items.js` | Item/list mutation actions (favourite, rate, trash, delete, list CRUD), `showPage`, search/filter actions |
@@ -70,14 +72,21 @@ Reddit public JSON API   → PWA enrichment (no auth needed)
 
 **No folder column** — early versions had a `folder` text column. This was renamed to `deleted_at timestamptz` in a Supabase migration. There are no folders in the current schema — organisation is via Lists.
 
+**Bookmarklet capture (v0.9.12.0+)** — for mobile / non-Chrome where there's no extension. A PWA-generated `javascript:` bookmarklet (`buildInboxBookmarklet`) runs same-origin on reddit.com using the user's session cookie, fetches `saved.json`, and POSTs raw items to a dedicated **`reddit_inbox` staging table** — deliberately **not** to `reddit_saves`. **Incremental like feed sync (v0.9.12.1+):** before paginating it does one *read-only* GET of recent `reddit_id`s (`order=saved_at.desc&limit=500`) and stops as soon as it reaches a page of saves it already has, sending only genuinely-new items to the inbox; if that read fails (offline / first run) it falls back to a full scan. It still **never writes** to `reddit_saves`. The app drains the inbox on startup and via a Settings button (`drainInbox`), running items through the shared app-side ingest (`ingestChildren` → `mapRedditChild` + `pushToSupabase`), then deletes the drained rows. This keeps the bookmarklet away from the main table and routes all real writes through the app's trusted, dedup-aware path. A CSP probe (`cspProbeBookmarklet`) confirmed Reddit's CSP allows the same-origin fetch on iOS. **Must run on `old.reddit.com`:** new Reddit (`www`/`sh.reddit.com`) has a strict CSP `connect-src` that blocks the cross-origin write to Supabase (`fetch` throws "Load failed"), so the inbox POST silently fails there while the same-origin `saved.json` read still works (manifesting as "found N items but couldn't reach the inbox"). old.reddit.com allows the write. If the inbox POST fails, the bookmarklet falls back to copying a `{type:'rv-bookmarklet',children}` envelope to the clipboard for manual "Paste captured items" import (`importPastedBookmarklet`). The anon key is embedded in the bookmarklet text (RLS-protected; acceptable for personal use).
+
+**Multi-function menu + typed staging (v0.9.13.0+)** — the bookmarklet is now menu-driven: tapping it shows **① Capture new saves** (the flow above) and **② Refresh scores**. Refresh pages the most-recent active saves from Supabase (`deleted_at=is.null&order=saved_at.desc`, via `Range`/`Range-Unit` headers), batches them through Reddit's same-origin `/api/info.json?id=…` (100 ids/call, 1s pacing), and **flushes `{op:'score',reddit_id,score}` rows to the inbox per batch** so an interrupted run still stages its progress (`sent` counter reported in banners; 429 retries the same batch). **Configurable scope (v0.9.15.0+):** how many recent saves to check is the `scoreRefreshLimit` setting (Settings → Bookmarklet block; `0` = all, default 500). The bookmarklet reads it **live from `user_preferences` at run time** (not baked in), so changing it takes effect without re-copying the bookmarklet — scores settle quickly, so a small cap avoids hammering Reddit while "All" stays a one-click occasional option.
+
+**Account check (v0.9.14.0+)** — an optional expected Reddit username (`state.redditUsername`, set in Settings → Bookmarklet block, synced via `user_preferences`) is baked into the bookmarklet (`EX`). On run, before the menu, it fetches same-origin `/api/me.json` to resolve the logged-in account: 401/403 → "Log in"; the menu header shows **"Logged in as u/…"**; if `EX` is set and mismatches, it blocks behind a warning overlay ("…but this vault belongs to u/X") with a **Use anyway** escape. Empty username = display only, no enforcement. **Typed staging:** inbox rows are dispatched by `payload.op` — legacy/capture rows have **no `op`** (bare `{kind,data}`, treated as captures, so old rows still drain), score rows carry `op:'score'`. Score rows use a **`score:`-prefixed `reddit_id` UNIQUE key** (`'score:'+fullname`) so a capture and a score for the same item occupy disjoint key spaces and can't collide under `ignore-duplicates`. `drainInbox` splits rows by op: capture rows → `ingestChildren` (unchanged), score rows → `applyScoreUpdates` (updates `item.score` for items **already present locally** only — never creates rows, so no resurrection — then pushes changed items via `pushToSupabase`). **Graceful context/login UX:** off-reddit → "Go to old.reddit.com"; new reddit (`www`/`sh`) → "Switch to old.reddit.com" (preserving pathname); 401/403 → "Log in to Reddit". Since a bookmarklet can't survive a navigation, these overlays tell the user to **tap the bookmark again** once the right page loads. Each menu button starts its op on a fresh user gesture so the login `window.open` isn't popup-blocked.
+
 ---
 
 ## Supabase Schema (current)
 
-Four tables:
+Five tables:
 
 ```sql
 reddit_saves       -- items (posts + comments)
+reddit_inbox       -- bookmarklet capture staging (drained into reddit_saves, then cleared)
 reddit_lists       -- user lists (static and smart)
 reddit_item_lists  -- many-to-many: item ↔ list membership
 user_preferences   -- key-value settings sync across devices
@@ -102,7 +111,14 @@ user_preferences   -- key-value settings sync across devices
 `id, reddit_id, list_name` — unique constraint on `(reddit_id, list_name)`
 
 ### `user_preferences` columns
-`key, value, updated_at` — stores: `redditFeedUrl`, `feedProxyUrl`, `feedProxyType`, `confirmDestructive`, `last_modified`
+`key, value, updated_at` — stores: `redditFeedUrl`, `redditUsername`, `scoreRefreshLimit`, `feedProxyUrl`, `feedProxyType`, `confirmDestructive`, `last_modified`
+
+### `reddit_inbox` columns
+`id, reddit_id, payload, created_at` — transient bookmarklet staging.
+- `reddit_id`: `UNIQUE` upsert key (bookmarklet upserts with `on_conflict=reddit_id`, `resolution=ignore-duplicates`, so re-runs don't pile up). Capture rows use the Reddit fullname (`t3_…`/`t1_…`); score-refresh rows use `score:`+fullname so the two op types never collide.
+- `payload`: typed by `payload.op` — **no `op`** = legacy/capture (bare `{kind,data}` child for `mapRedditChild`); `op:'score'` = `{op:'score',reddit_id,score}` applied by `applyScoreUpdates`.
+- `payload`: `jsonb` — the raw `{kind, data:{…}}` Reddit child the app feeds to `mapRedditChild`
+- Drained and **emptied** by `drainInbox` on each import; never a long-lived store.
 
 ---
 
@@ -218,6 +234,11 @@ Helper: `_parseWildcard(raw)` — parses a single term string into `{ value, exa
 - `'corsfix'` — uses the public `proxy.corsfix.com` service, no setup required. URL format: `https://proxy.corsfix.com/?{feedUrl}` (no encoding, no key).
 
 `_buildProxyUrl(feedUrl)` — helper that constructs the correct proxy URL based on `state.feedProxyType`. Always use this instead of constructing the URL manually.
+
+`mapRedditChild(child, source)` — pure mapper from a raw Reddit listing child (`t1`/`t3`) to a RedditVault item. **Single source of truth** for both feed sync and the bookmarklet drain; `syncFromFeed` and `ingestChildren` both call it so the two ingestion paths can't drift.
+
+### Bookmarklet inbox (mobile / non-Chrome capture)
+`buildInboxBookmarklet(url, key, expectUser)` — generates the menu-driven `javascript:` bookmarklet (single source for both ops). Before the menu it resolves the logged-in account via same-origin `/api/me.json` and (if `expectUser` is set) warns on a mismatch — see the Account check note above. **① Capture:** read-only GET of recent `reddit_id`s for an incremental early-stop → fetch `saved.json` same-origin newest-first, stopping at the first fully-known page → POST only new raw items to `reddit_inbox`. **② Refresh scores:** reads the `scoreRefreshLimit` preference live (0=all, default 500) → page that many active ids from `reddit_saves` via `Range` headers → batch `/api/info.json?id=…` (100/call) → POST `{op:'score',…}` rows (keyed `score:`+fullname) **per batch** (incremental flush; partial progress survives interruption). `saveRedditUsername()` / `saveScoreRefreshLimit()` persist those settings (config + `pushPreference`). Banners use a `done()` helper (textContent + real Close button) so the whole string stays quote-free (no inline `onclick`, no double quotes, no backticks). `drainInbox({manual})` — pages the inbox via `supabaseFetchRange`, **dispatches rows by `payload.op`**: capture/legacy rows → `ingestChildren(children,'bookmarklet')`, `op:'score'` rows → `applyScoreUpdates([{redditId,score}])`; then `DELETE`s all drained ids (chunked). Result is `{added,skipped,scoresUpdated,drained}`. Called on startup **and on foreground (`visibilitychange`)** so captures made while backgrounded import on return, plus from the Settings button (manual). Quiet runs toast only when `added>0 || scoresUpdated>0`; manual runs always toast. `ingestChildren` dedups against all known ids **including permanently-deleted** ones, so capture can't resurrect deletions; `applyScoreUpdates` only touches items already in `state.items` (so it can't resurrect either), updates IndexedDB only when the score changed, and pushes via the app's own `pushToSupabase`. `importPastedBookmarklet()` is the clipboard fallback receiver (capture only). `cspProbeBookmarklet(url,key)` is a diagnostics-only probe.
 
 ### Cloud push
 `supabasePush(items)` — upserts items to `reddit_saves` using `on_conflict=reddit_id`.
@@ -348,6 +369,7 @@ These can be read with standard file tools if you need to investigate why a spec
 │   │   ├── enrich.js                  ← Arctic Shift + Reddit enrichment
 │   │   ├── cloud.js                   ← Supabase push/pull/delta sync
 │   │   ├── feed.js                    ← RSS/JSON feed sync + proxy
+│   │   ├── bookmarklet.js             ← bookmarklet capture / inbox drain / score refresh
 │   │   ├── dataio.js                  ← CSV import, backup/restore, repairs
 │   │   ├── search.js                  ← search engine, affinity, sort, filters
 │   │   ├── items.js                   ← item/list actions, navigation

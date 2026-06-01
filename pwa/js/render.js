@@ -1,4 +1,5 @@
 // render.js — part of RedditVault (auto-split from the original single-file PWA).
+import { buildInboxBookmarklet, cspProbeBookmarklet, drainInbox, importPastedBookmarklet, saveRedditUsername, saveScoreRefreshLimit } from './bookmarklet.js';
 import { pushAllToSupabase, pushImportantPreferences, syncFromSupabase } from './cloud.js';
 import { clearAllData } from './core.js';
 import { exportJSON, handleFileImport, repairCSVDuplicates, repairCommentTitles, repairItemTypes, repairSavedAtDates } from './dataio.js';
@@ -1688,6 +1689,91 @@ export function renderSettings() {
           <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center">Save Feed Settings</button>
         </div>
       </details>
+    </div>
+
+    <!-- ── 1b. BOOKMARKLET SYNC ────────────────────────────────────────────── -->
+    <div class="config-section">
+      <div style="font-family:'Syne',sans-serif;font-weight:600;margin-bottom:8px">🔖 Bookmarklet Sync</div>
+      <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;line-height:1.6">
+        Reddit is locking down the unauthenticated feed this app relies on. This bookmarklet runs <em>as</em> reddit.com using your existing login, so it keeps working where the feed can't — especially on mobile, where there's no extension. It captures your saves into a temporary inbox; RedditVault imports them on its next open (or tap <em>Import from inbox</em> below).
+      </p>
+      ${state.supabaseUrl && state.supabaseKey ? (() => {
+        const bm = buildInboxBookmarklet(state.supabaseUrl, state.supabaseKey, state.redditUsername);
+        const res = state.bookmarkletResult;
+        return `
+        <div style="background:var(--bg);border-radius:8px;padding:12px;line-height:1.6">
+          <div style="font-weight:600;font-size:13px;margin-bottom:6px">🔖 RedditVault bookmarklet (menu)</div>
+          <p style="font-size:12px;color:var(--text-muted);margin:0 0 8px 0;line-height:1.6">Tapping it opens a menu: <strong style="color:var(--text)">① Capture new saves</strong> or <strong style="color:var(--text)">② Refresh scores</strong> (re-checks the up/down vote counts across your <em>entire</em> active library; large libraries take longer and stage progress as they go).</p>
+          <ol style="font-size:12px;color:var(--text-muted);margin:0 0 12px 18px;padding:0;line-height:1.7">
+            <li><strong style="color:var(--text)">Desktop:</strong> drag the button below to your bookmarks bar. On <strong style="color:var(--text)">old.reddit.com</strong> (logged in), click it.</li>
+            <li><strong style="color:var(--text)">iOS/Safari:</strong> tap <em>Copy</em>. Bookmark any page (Share → Add Bookmark), then open the Bookmarks list (📖 icon) → Edit → tap that bookmark, clear its URL and paste this in. On <strong style="color:var(--text)">old.reddit.com</strong>, launch it from the <strong style="color:var(--text)">Bookmarks list</strong> (📖 icon) — <em>not</em> by typing its name in the address bar, which iOS blocks.</li>
+          </ol>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <a href="${escHtml(bm)}" onclick="event.preventDefault();alert('Don\\'t click here — drag this to your bookmarks bar (desktop) or use Copy (mobile), then run it on old.reddit.com.')"
+              style="display:inline-block;padding:8px 14px;background:var(--accent);color:#fff;border-radius:8px;font-size:13px;font-weight:600;text-decoration:none;cursor:grab">
+              📥 Save to RedditVault
+            </a>
+            <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(buildInboxBookmarklet(state.supabaseUrl,state.supabaseKey,state.redditUsername)).then(()=>{this.textContent='✓ Copied';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+            <button class="btn btn-secondary btn-sm" onclick="window.location.href='https://old.reddit.com/saved'">Open old.reddit.com/saved</button>
+          </div>
+
+          <div style="margin-top:12px">
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Your Reddit username <span style="opacity:.7">(optional — guards against capturing from the wrong account)</span></label>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <span style="font-size:14px;color:var(--text-muted)">u/</span>
+              <input id="bm-username" type="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="username" value="${escHtml(state.redditUsername || '')}" style="flex:1;min-width:140px;font-size:16px">
+              <button class="btn btn-secondary btn-sm" onclick="saveRedditUsername()">Save</button>
+            </div>
+            <p style="font-size:11px;color:var(--text-muted);margin:4px 0 0 0">If set, the bookmarklet checks the logged-in Reddit account against this name and warns before running on a different account. Leave blank to skip the check.</p>
+          </div>
+
+          <div style="margin-top:12px">
+            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Refresh scores: how many recent saves to check</label>
+            <select id="bm-score-limit" onchange="saveScoreRefreshLimit(this.value)" style="font-size:16px;padding:4px 8px">
+              ${[['100','100'],['250','250'],['500','500'],['1000','1000'],['2500','2500'],['0','All']].map(([v,l]) => `<option value="${v}" ${String(state.scoreRefreshLimit) === v ? 'selected' : ''}>${l}</option>`).join('')}
+            </select>
+            <p style="font-size:11px;color:var(--text-muted);margin:4px 0 0 0">Reddit scores settle after a while, so checking only your most recent saves avoids hammering Reddit. Pick <strong>All</strong> for an occasional full refresh. Takes effect immediately — no need to re-copy the bookmarklet.</p>
+          </div>
+
+          <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-secondary btn-sm" onclick="drainInbox({manual:true})" ${state.inboxDraining ? 'disabled' : ''}>
+              ${state.inboxDraining ? '⏳ Importing…' : '📨 Import from inbox now'}
+            </button>
+            ${state.lastBookmarkletSync ? `<span style="font-size:11px;color:var(--text-muted)">Last import: ${new Date(state.lastBookmarkletSync).toLocaleString()}</span>` : ''}
+          </div>
+          ${res ? `
+            <div style="margin-top:8px;font-size:12px;background:var(--surface);border-radius:8px;padding:8px 10px">
+              ${res.error
+                ? `<span style="color:var(--danger)">❌ ${escHtml(res.error)}</span>`
+                : `✅ <strong style="color:var(--text)">${res.added}</strong> new &nbsp;·&nbsp; <strong style="color:var(--text)">${res.skipped}</strong> already saved &nbsp;·&nbsp; <strong style="color:var(--text)">${res.scoresUpdated || 0}</strong> scores updated &nbsp;·&nbsp; <strong style="color:var(--text)">${res.drained}</strong> processed`}
+            </div>` : ''}
+
+          <details style="margin-top:12px">
+            <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">📋 Paste captured items (fallback)</summary>
+            <div style="margin-top:10px">
+              <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Only needed if the bookmarklet couldn't reach your inbox and offered a <em>Copy</em> button instead. Paste that text here.</p>
+              <textarea id="bm-paste" placeholder="Paste copied RedditVault data…" style="width:100%;height:70px;font-size:16px;font-family:monospace"></textarea>
+              <button class="btn btn-secondary btn-sm" onclick="importPastedBookmarklet()" style="margin-top:6px">Import pasted items</button>
+            </div>
+          </details>
+
+          <details style="margin-top:8px">
+            <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;padding:2px 0">🔬 Compatibility probe (diagnostics)</summary>
+            <div style="margin-top:10px">
+              <p style="font-size:11px;color:var(--text-muted);margin-bottom:6px">Runs two test fetches on reddit.com and alerts their HTTP status — handy if capture isn't working. Install/run it the same way as the bookmarklet above.</p>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <a href="${escHtml(cspProbeBookmarklet(state.supabaseUrl, state.supabaseKey))}" onclick="event.preventDefault();alert('Drag to bookmarks (desktop) or Copy (mobile), then run on old.reddit.com.')"
+                  style="display:inline-block;padding:6px 12px;background:var(--accent2);color:#fff;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none;cursor:grab">🔬 RV CSP Probe</a>
+                <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText(cspProbeBookmarklet(state.supabaseUrl,state.supabaseKey)).then(()=>{this.textContent='✓ Copied';setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+              </div>
+            </div>
+          </details>
+        </div>`;
+      })() : `
+        <p style="font-size:12px;color:var(--warning);background:rgba(245,158,11,0.08);border-radius:8px;padding:10px">
+          ⚠️ Set up your Supabase connection in <strong>Cloud Database</strong> below first — the bookmarklet needs it, and remember to add the <code>reddit_inbox</code> table from <code>supabase-schema.sql</code>.
+        </p>
+      `}
     </div>
 
     <!-- ── 2. CLOUD DATABASE ──────────────────────────────────────────────── -->

@@ -1,4 +1,4 @@
-const VERSION = '0.9.11.0';
+const VERSION = '0.9.16.0';
 const CACHE = `reddivault-${VERSION}`;
 
 const ASSETS = [
@@ -13,6 +13,7 @@ const ASSETS = [
   '/js/enrich.js',
   '/js/cloud.js',
   '/js/feed.js',
+  '/js/bookmarklet.js',
   '/js/dataio.js',
   '/js/search.js',
   '/js/items.js',

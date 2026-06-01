@@ -146,6 +146,8 @@ export async function pushImportantPreferences() {
   try {
     await supabaseFetch('/user_preferences?on_conflict=key', 'POST', [
       { key: 'redditFeedUrl',      value: state.redditFeedUrl,      updated_at: new Date().toISOString() },
+      { key: 'redditUsername',     value: state.redditUsername,     updated_at: new Date().toISOString() },
+      { key: 'scoreRefreshLimit',  value: state.scoreRefreshLimit,  updated_at: new Date().toISOString() },
       { key: 'feedProxyUrl',       value: state.feedProxyUrl,       updated_at: new Date().toISOString() },
       { key: 'feedProxyType',      value: state.feedProxyType,      updated_at: new Date().toISOString() },
       { key: 'feedFormat',         value: state.feedFormat,         updated_at: new Date().toISOString() },
@@ -171,6 +173,14 @@ export async function pullPreferences() {
       if (row.key === 'redditFeedUrl' && row.value) {
         state.redditFeedUrl = row.value;
         await db.config.put({ key: 'redditFeedUrl', value: row.value });
+      }
+      if (row.key === 'redditUsername' && row.value) {
+        state.redditUsername = row.value;
+        await db.config.put({ key: 'redditUsername', value: row.value });
+      }
+      if (row.key === 'scoreRefreshLimit' && row.value != null) {
+        state.scoreRefreshLimit = row.value;
+        await db.config.put({ key: 'scoreRefreshLimit', value: row.value });
       }
       if (row.key === 'feedProxyUrl' && row.value) {
         state.feedProxyUrl = row.value;

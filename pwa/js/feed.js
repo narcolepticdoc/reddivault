@@ -1,4 +1,5 @@
 // feed.js — part of RedditVault (auto-split from the original single-file PWA).
+import { mapRedditChild } from './bookmarklet.js';
 import { pushImportantPreferences, pushToSupabase, syncFromSupabase } from './cloud.js';
 import { loadData } from './core.js';
 import { render } from './render.js';
@@ -18,6 +19,8 @@ export async function saveSupabaseConfig() {
   await syncFromSupabase();
 }
 
+// Persist the expected Reddit username (baked into the bookmarklet for the
+// logged-in-account check). Strips a leading "u/" or "/u/" if pasted.
 export async function saveFeedUrl() {
   const raw = document.getElementById('feed-url')?.value?.trim();
   if (!raw) { showToast('Please paste your Reddit feed URL', 'error'); return; }
@@ -226,6 +229,9 @@ export function parseRedditFeedXml(xmlText) {
   });
 }
 
+// Map a raw Reddit listing child (t1 = comment, t3 = post) to a RedditVault
+// item. Single source of truth for both feed sync and the bookmarklet-inbox
+// drain, so the two ingestion paths can never drift apart.
 export async function syncFromFeed() {
   if (!state.redditFeedUrl) { showToast('No feed URL configured', 'error'); return; }
   if (state.feedSyncing) return;
@@ -293,40 +299,14 @@ export async function syncFromFeed() {
 
       const newItems = [];
       for (const child of children) {
-        const d = child.data;
-        const kind = child.kind; // t3 = post, t1 = comment
-        const redditId = d.name; // already prefixed e.g. t3_abc123
+        const redditId = child.data.name; // already prefixed e.g. t3_abc123
 
         if (existing.has(redditId)) {
           skipped++;
           continue;
         }
 
-        const type = kind === 't1' ? 'comment' : 'post';
-
-        // For comments, prefer link_title (parent post title from feed).
-        // If absent, store a placeholder and mark for enrichment so the
-        // Reddit .json enricher can fetch the real parent post title.
-        const commentTitle = type === 'comment' ? (d.link_title || null) : null;
-        const needsEnrich = type === 'comment' && !commentTitle;
-        const item = {
-          redditId,
-          type,
-          title: d.title || commentTitle || (type === 'comment' ? `Comment in r/${d.subreddit}` : ''),
-          body: type === 'comment' ? (d.body || '') : (d.selftext || ''),
-          author: d.author || '',
-          subreddit: d.subreddit || '',
-          url: d.url || `https://reddit.com${d.permalink}`,
-          permalink: d.permalink ? `https://reddit.com${d.permalink}` : '',
-          score: d.score || 0,
-          savedAt: new Date().toISOString(),
-          postCreatedAt: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,
-          enriched: !needsEnrich,
-          enrichStatus: needsEnrich ? 'pending' : 'enriched',
-          source: 'feed',
-        };
-
-        newItems.push(item);
+        newItems.push(mapRedditChild(child, 'feed'));
         existing.add(redditId);
       }
 

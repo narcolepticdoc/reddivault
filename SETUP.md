@@ -173,6 +173,47 @@ The worker lives in **`cloudflare-worker/reddit-feed-proxy.js`** in this repo.
 
 ---
 
+## PART 4b: Bookmarklet Sync (Mobile / Any Browser)
+
+Reddit is locking down the unauthenticated feed, and there's no Chrome extension on mobile. The **bookmarklet** is the durable alternative: it runs *as* reddit.com using your existing login, grabs your saved items, and drops them into a temporary **inbox** in your database. RedditVault then imports them automatically the next time you open *or return to* the app. The bookmarklet never writes to your main table — only the app does that, through its normal dedup-aware path.
+
+> ⚠️ **Run it on `old.reddit.com` only.** New Reddit (`www.reddit.com` / `sh.reddit.com`) uses a strict Content-Security-Policy that blocks the bookmarklet from reaching your database — you'll see **"Load failed"** and nothing will be captured. `old.reddit.com` allows it. The "Open old.reddit.com/saved" button in Settings takes you to the right place.
+
+### Step 4b.1 — Add the inbox table
+
+If you set up Supabase before v0.9.12.0, add the new staging table: open Supabase → SQL Editor → New Query, paste the `reddit_inbox` block from the **MIGRATION** section of `supabase-schema.sql`, and Run. (Fresh installs from the current schema already include it.)
+
+### Step 4b.2 — Install the bookmarklet
+
+1. Open RedditVault → Settings → **🔖 Bookmarklet Sync**.
+2. *(Recommended)* Enter **Your Reddit username** and tap **Save**. The bookmarklet will then check that you're logged into the right Reddit account before it captures anything — handy if you have more than one account. Leave it blank to skip the check.
+   - While you're here, set **Refresh scores: how many recent saves to check** (default **500**). Reddit scores settle quickly, so a smaller number keeps "Refresh scores" fast and gentle on Reddit; choose **All** when you occasionally want a full sweep. This takes effect immediately — no need to re-copy the bookmarklet when you change it.
+3. **Desktop:** drag the **📥 Save to RedditVault** button to your bookmarks bar.
+4. **iOS / Safari:** tap **Copy**. Bookmark any page (Share → Add Bookmark), then open the Bookmarks list (📖 icon) → **Edit** → tap that bookmark → clear its URL → **paste** → Done.
+
+> If you change your username later, re-install/re-copy the bookmarklet so the new value is baked in.
+
+### Step 4b.3 — Run the bookmarklet (menu)
+
+1. Go to **`old.reddit.com`** (not www/sh — see the warning above) and make sure you're logged in.
+2. Run the bookmarklet:
+   - **Desktop:** click it in the bookmarks bar.
+   - **iOS:** open the **Bookmarks list** (📖 icon) and tap it there. *Do not* type its name in the address bar — iOS blocks that ("JavaScript is not allowed to be used this way").
+3. A small menu appears at the top of the page (with **"Logged in as u/…"** so you can confirm the account) and two actions:
+   - **① Capture new saves** — grabs your latest saved items into the inbox. A banner shows progress, then **"Captured N new saves"** (or **"Already up to date"** if nothing changed).
+   - **② Refresh scores** — re-checks the current up/down vote count on your most recent saves (how many is the **Refresh scores** setting above; default 500, or **All**) and queues the updates, showing **"Queued N score updates."** It stages progress as it goes, so even a long run that gets interrupted keeps what it already processed — just run it again to finish.
+4. Switch back to RedditVault (or launch it) — it drains the inbox automatically on launch **and whenever you return to the app**, and shows a toast for anything it imported or any scores it updated. You can also force it from **Settings → 🔖 Bookmarklet Sync → 📨 Import from inbox now**.
+
+**Helpful prompts:** if you run it on the wrong page or while logged out, the menu offers a button to jump to **old.reddit.com** or the **login** page. A bookmarklet can't keep running across a page change, so after it sends you there, **tap the bookmark again** on the page it landed you on.
+
+Capture is incremental: it only scans back as far as the newest saves it hasn't seen yet, so routine re-runs are quick. (The first run, or one after a long gap, scans more.) Refresh scores checks however many recent saves you chose in the setting and paces itself (1s between batches, with automatic back-off if Reddit rate-limits), so an **All** sweep on a large library simply takes a bit longer.
+
+Because the feed sync runs on the same triggers and often catches recent saves first, the inbox drain will frequently report **"0 new"** — that's correct dedup, not a failure. The bookmarklet earns its keep for items the feed can't reach (older than the feed window, or when the feed is blocked).
+
+If the capture banner instead offers a **Copy** button (couldn't reach your inbox), tap it, then in RedditVault use **🔖 Bookmarklet Sync → 📋 Paste captured items** to import. (Refresh scores has no clipboard fallback — just re-run it on old.reddit.com.)
+
+---
+
 ## PART 5: Import Your Full Reddit History (CSV)
 
 Reddit only exposes your most recent ~1,000 saved items via its feed. To import your complete history, request a data export from Reddit.

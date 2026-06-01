@@ -3,7 +3,7 @@ import { autoFeedSyncIfDue } from './feed.js';
 import { escHtml } from './util.js';
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-export const APP_VERSION = '0.9.11.0';
+export const APP_VERSION = '0.9.16.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 export const db = new Dexie('RedditVault');
@@ -110,6 +110,8 @@ export let state = {
   sortBy: 'postCreatedAt',
   sortDir: 'desc',
   redditFeedUrl: '',
+  redditUsername: '',  // expected Reddit username — bookmarklet checks the logged-in account against it
+  scoreRefreshLimit: 500,  // how many most-recent active saves the bookmarklet's "Refresh scores" checks (0 = all)
   feedProxyUrl: '',
   feedProxyType: 'cloudflare', // 'cloudflare' | 'corsfix'
   feedFormat: 'rss', // 'rss' | 'json' — Reddit currently WAF-blocks .json
@@ -143,6 +145,9 @@ export let state = {
   lastPushedAt: null,       // ISO timestamp of last successful push to cloud (delta cursor)
   lastSyncedAt: null,       // ISO timestamp of last confirmed in-sync (push or pull) — display only
   lastFeedSync: null,       // ISO timestamp of last successful feed sync
+  lastBookmarkletSync: null,// ISO timestamp of last bookmarklet inbox import
+  inboxDraining: false,     // guard against concurrent inbox drains
+  bookmarkletResult: null,  // last inbox import result {added,skipped,scoresUpdated,drained} | {error}
   savedAtClumpy: null,      // null=unchecked, true=clumps found, false=clean
   syncLog: [],              // in-memory diagnostic log, session only
   _lastIndicatorLabel: null,// tracks last rendered indicator to avoid duplicate log entries

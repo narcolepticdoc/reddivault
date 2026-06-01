@@ -7,12 +7,13 @@ import * as Mcore from './core.js';
 import * as Menrich from './enrich.js';
 import * as Mcloud from './cloud.js';
 import * as Mfeed from './feed.js';
+import * as Mbookmarklet from './bookmarklet.js';
 import * as Mdataio from './dataio.js';
 import * as Msearch from './search.js';
 import * as Mitems from './items.js';
 import * as Mrender from './render.js';
 
-Object.assign(window, Mstate, Mutil, Mcore, Menrich, Mcloud, Mfeed, Mdataio, Msearch, Mitems, Mrender);
+Object.assign(window, Mstate, Mutil, Mcore, Menrich, Mcloud, Mfeed, Mbookmarklet, Mdataio, Msearch, Mitems, Mrender);
 
 // ─── SERVICE WORKER ───────────────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
@@ -38,9 +39,15 @@ document.addEventListener('visibilitychange', () => {
     }
   }
   if (document.visibilityState === 'visible') {
-    // Wait for any in-flight cloud sync before touching the feed
+    // Wait for any in-flight cloud sync before touching the feed, then drain the
+    // bookmarklet inbox — so items captured while the app was backgrounded (e.g.
+    // ran the bookmarklet in Safari, switched back) get imported on return, not
+    // only on a fresh launch.
     const waitFor = Mcore._startupSyncPromise || Promise.resolve();
-    waitFor.catch(() => {}).then(() => Mfeed.autoFeedSyncIfDue());
+    waitFor.catch(() => {})
+      .then(() => Mfeed.autoFeedSyncIfDue())
+      .then(() => { if (Mstate.state.supabaseUrl && Mstate.state.supabaseKey) return Mbookmarklet.drainInbox(); })
+      .catch(() => {});
   }
 });
 

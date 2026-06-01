@@ -1,4 +1,5 @@
 // core.js — part of RedditVault (auto-split from the original single-file PWA).
+import { drainInbox } from './bookmarklet.js';
 import { checkCloudAhead, markClean, pullPreferences, pushListsToSupabase, scheduleRetry, supabaseFetch, syncFromSupabase } from './cloud.js';
 import { autoFeedSyncIfDue } from './feed.js';
 import { render, renderHeaderActions } from './render.js';
@@ -28,8 +29,12 @@ export async function init() {
     syncLog('Startup: no Supabase configured — sync disabled');
     _startupSyncPromise = Promise.resolve();
   }
-  // Auto feed sync on startup — waits for cloud sync to fully complete first
-  _startupSyncPromise.catch(() => {}).then(() => autoFeedSyncIfDue());
+  // Auto feed sync on startup — waits for cloud sync to fully complete first,
+  // then drain any items captured by the bookmarklet into the library.
+  _startupSyncPromise.catch(() => {})
+    .then(() => autoFeedSyncIfDue())
+    .then(() => { if (state.supabaseUrl && state.supabaseKey) return drainInbox(); })
+    .catch(() => {});
 }
 
 export async function reconcileDirtyState() {
@@ -93,6 +98,10 @@ export async function loadConfig() {
     if (recentlyViewed && Array.isArray(recentlyViewed.value)) state.recentlyViewed = recentlyViewed.value;
     const feedUrl = await db.config.get('redditFeedUrl');
     if (feedUrl) state.redditFeedUrl = feedUrl.value;
+    const redditUsername = await db.config.get('redditUsername');
+    if (redditUsername) state.redditUsername = redditUsername.value;
+    const scoreRefreshLimit = await db.config.get('scoreRefreshLimit');
+    if (scoreRefreshLimit && scoreRefreshLimit.value != null) state.scoreRefreshLimit = scoreRefreshLimit.value;
     const proxyUrl = await db.config.get('feedProxyUrl');
     if (proxyUrl) state.feedProxyUrl = proxyUrl.value;
     const proxyType = await db.config.get('feedProxyType');
@@ -116,6 +125,8 @@ export async function loadConfig() {
     if (lastSyncedAt) state.lastSyncedAt = lastSyncedAt.value;
     const lastFeedSync = await db.config.get('lastFeedSync');
     if (lastFeedSync) state.lastFeedSync = lastFeedSync.value;
+    const lastBookmarkletSync = await db.config.get('lastBookmarkletSync');
+    if (lastBookmarkletSync) state.lastBookmarkletSync = lastBookmarkletSync.value;
   } catch(e) {}
 }
 

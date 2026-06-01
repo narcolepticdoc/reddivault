@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   updated_at  timestamptz DEFAULT now()
 );
 
+-- Bookmarklet capture staging area. The mobile/desktop bookmarklet writes raw
+-- Reddit items here; the app drains it into reddit_saves through its normal
+-- ingest (dedup + permanent-delete protection), then clears it. This keeps the
+-- bookmarklet away from your main reddit_saves table entirely.
+CREATE TABLE IF NOT EXISTS reddit_inbox (
+  id          bigserial PRIMARY KEY,
+  reddit_id   text UNIQUE NOT NULL,        -- Reddit fullname e.g. "t3_abc123"
+  payload     jsonb NOT NULL,             -- raw {kind, data:{...}} reddit child
+  created_at  timestamptz DEFAULT now()
+);
+
 -- ─── ROW LEVEL SECURITY ───────────────────────────────────────────────────────
 -- Allows the app to read/write using the anon key without complex auth.
 -- Your data is still private -- only someone with your Supabase URL + anon key can access it.
@@ -66,11 +77,13 @@ ALTER TABLE reddit_saves      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reddit_lists      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reddit_item_lists ENABLE ROW LEVEL SECURITY;
 ALTER TABLE user_preferences  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reddit_inbox      ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow all" ON reddit_saves      FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON reddit_lists      FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON reddit_item_lists FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON user_preferences  FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all" ON reddit_inbox      FOR ALL USING (true) WITH CHECK (true);
 
 -- ─── INDEXES ──────────────────────────────────────────────────────────────────
 
@@ -142,3 +155,13 @@ CREATE OR REPLACE TRIGGER set_updated_at_lists
 -- -- If you had an old "folder" column instead of deleted_at, rename it:
 -- -- ALTER TABLE reddit_saves RENAME COLUMN folder TO deleted_at;
 -- -- ALTER TABLE reddit_saves ALTER COLUMN deleted_at TYPE timestamptz USING NULL;
+--
+-- -- Bookmarklet capture inbox (v0.9.12.0+):
+-- CREATE TABLE IF NOT EXISTS reddit_inbox (
+--   id         bigserial PRIMARY KEY,
+--   reddit_id  text UNIQUE NOT NULL,
+--   payload    jsonb NOT NULL,
+--   created_at timestamptz DEFAULT now()
+-- );
+-- ALTER TABLE reddit_inbox ENABLE ROW LEVEL SECURITY;
+-- CREATE POLICY "Allow all" ON reddit_inbox FOR ALL USING (true) WITH CHECK (true);

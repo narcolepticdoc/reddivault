@@ -172,6 +172,12 @@ export function escAttr(str) {
   return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
 }
 
+// Step-0 CSP probe bookmarklet (see Bookmarklet Sync plan). Runs same-origin on
+// reddit.com: first proves the logged-in saved.json fetch works, then tests
+// whether Reddit's CSP connect-src lets us POST straight to Supabase. The result
+// decides whether iOS gets the automatic direct-POST path or the clipboard
+// fallback. Throwaway diagnostic — generated from the user's own creds so it can
+// hit their Supabase project.
 export function fmtDate(iso) {
   if (!iso) return '';
   try {

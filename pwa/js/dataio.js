@@ -435,7 +435,7 @@ export async function exportJSON() {
   // Persist all meaningful config keys — skip transient sync state
   const CONFIG_KEYS = [
     'supabaseUrl', 'supabaseKey',
-    'redditFeedUrl', 'feedProxyUrl', 'feedProxyType', 'feedFormat',
+    'redditFeedUrl', 'redditUsername', 'scoreRefreshLimit', 'feedProxyUrl', 'feedProxyType', 'feedFormat',
     'enrichReqPerMin', 'enrichRetryReqPerMin', 'enrichRateLimitPause', 'enrichMaxAttempts',
     'confirmDestructive', 'disableZoom', 'autoFeedSync', 'autoFeedSyncInterval',
     'recentSearches',
