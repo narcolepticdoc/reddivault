@@ -1,10 +1,23 @@
-const VERSION = '0.9.15.0';
+const VERSION = '0.9.16.0';
 const CACHE = `reddivault-${VERSION}`;
 
 const ASSETS = [
   '/',
   '/index.html',
   '/manifest.json',
+  '/styles.css',
+  '/js/app.js',
+  '/js/state.js',
+  '/js/util.js',
+  '/js/core.js',
+  '/js/enrich.js',
+  '/js/cloud.js',
+  '/js/feed.js',
+  '/js/bookmarklet.js',
+  '/js/dataio.js',
+  '/js/search.js',
+  '/js/items.js',
+  '/js/render.js',
   'https://cdnjs.cloudflare.com/ajax/libs/dexie/3.2.4/dexie.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js',
 ];
