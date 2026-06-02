@@ -21,7 +21,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 - **`vercel.json`** — Vercel deployment config (auto-deploys from GitHub)
 
 **Live URL:** https://reddivault.vercel.app
-**Current version:** v0.9.16.0
+**Current version:** v0.9.17.0
 
 ---
 
@@ -64,7 +64,7 @@ Reddit public JSON API   → PWA enrichment (no auth needed)
 | `render/settings.js` | `renderSettings` (the whole settings page) |
 | `app.js` | Entry point: imports all modules, re-exposes their exports on `window`, runs the bootstrap (SW registration, visibilitychange, `init()`) |
 
-**The `window` bridge** — rendered HTML still uses inline `onclick="fn(…)"` handlers (~148 of them), which resolve against the global scope. `app.js` does `Object.assign(window, ...modules)` so those handlers keep working with **zero template changes**. A future pass can migrate to a `data-action` delegated dispatcher to drop the bridge. When adding a new inline-handler function, just `export` it from its module — the bridge picks it up automatically.
+**The `window` bridge** — rendered HTML still uses inline `onclick="fn(…)"` handlers (~170 of them), which resolve against the global scope. `app.js` does `Object.assign(window, ...modules)` so those handlers keep working with **zero template changes**. A future pass can migrate to a `data-action` delegated dispatcher to drop the bridge. When adding a new inline-handler function, just `export` it from its module — the bridge picks it up automatically.
 
 **Service worker asset list** — `sw.js` precaches a hand-maintained `ASSETS` array keyed off `VERSION`; bumping `VERSION` invalidates the whole `reddivault-${VERSION}` cache. **When adding a new `js/*.js` module, add it to `ASSETS` and bump `VERSION`** (and `APP_VERSION` in `state.js`).
 
@@ -341,7 +341,7 @@ Dark mode via `@media (prefers-color-scheme: dark)`.
 
 ## Conventions
 
-- **Versioning**: `APP_VERSION` const at top of `index.html`. Format: `major.minor.patch.hotfix` (e.g. `0.9.6.4`). Bump for every deployed change.
+- **Versioning**: `APP_VERSION` const at the top of `pwa/js/state.js` (also bump `VERSION` in `pwa/sw.js`). Format: `major.minor.patch.hotfix` (e.g. `0.9.6.4`). Bump for every deployed change.
 - **Sync log**: `syncLog(message, level)` — appends to in-memory log shown in Diagnostics. Levels: `'info'` (default), `'ok'`, `'warn'`, `'error'`.
 - **Error boundary**: `window.onerror` + `unhandledrejection` catch and display a recovery UI with version info.
 - **iOS**: `font-size: 16px` on all inputs (prevents iOS zoom on focus). Viewport has `maximum-scale=1.0, user-scalable=no` (controllable via Behaviour setting).

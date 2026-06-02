@@ -5,6 +5,36 @@ Newest releases at the top.
 
 ---
 
+## [0.9.17.0] – 2026-06-02
+### Changed
+- **Split `render.js` into per-surface submodules.** The ~2,300-line render
+  module is now a thin barrel (`pwa/js/render.js`) that `export *`s over
+  `pwa/js/render/{shell,home,browse,card,preview,trash,lists,settings}.js`.
+  Other modules and the `app.js` window bridge still import rendering from
+  `./render.js` unchanged. No behaviour change — function bodies moved verbatim.
+- `sw.js` precaches the new `render/*.js` files.
+
+---
+
+## [0.9.16.0] – 2026-06-02
+### Changed
+- **Modularized the PWA.** The former single-file `pwa/index.html` (~6,500-line
+  inline `<script>` + `<style>`) is split into `pwa/styles.css` and native ES
+  modules under `pwa/js/` (`state, util, core, enrich, cloud, feed, bookmarklet,
+  dataio, search, items, render`), loaded via `<script type="module">`.
+  **No build step** — modules load directly in the browser; CDN libs stay as
+  `<script>` tags; deploy is still "push → Vercel serves static files".
+- `index.html` is now a thin shell. `app.js` re-exposes module exports on
+  `window` so the existing inline `on*` handlers keep working unchanged.
+- No behaviour change: all functions were relocated verbatim (only `import`/
+  `export` added).
+### Notes
+- The "single-file" constraint is replaced by a "zero-build, static-deploy" one.
+- Supersedes the older `index.html`-only structure; `APP_VERSION` now lives in
+  `pwa/js/state.js`.
+
+---
+
 ## [0.9.12.3] – 2026-05-30
 ### Added
 - **Bookmarklet Sync** — a durable capture path for mobile / any browser, for
