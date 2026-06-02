@@ -35,6 +35,57 @@ Newest releases at the top.
 
 ---
 
+## [0.9.15.0] – 2026-05-31
+### Added
+- **Configurable score-refresh scope** — new `scoreRefreshLimit` setting
+  (Settings → Bookmarklet block; `0` = all, default 500) controls how many of
+  the most-recent active saves the bookmarklet's "Refresh scores" checks. The
+  bookmarklet reads it **live from `user_preferences` at run time** (not baked
+  in), so changing it takes effect without re-copying the bookmarklet.
+### Notes
+- A small cap keeps "Refresh scores" from hammering Reddit while "All" stays a
+  one-click occasional option.
+
+---
+
+## [0.9.14.0] – 2026-05-31
+### Added
+- **Account check** — an optional expected Reddit username (Settings →
+  Bookmarklet block, synced via `user_preferences`) is baked into the
+  bookmarklet. On run it resolves the logged-in account via same-origin
+  `/api/me.json`: the menu header shows "Logged in as u/…", and if the expected
+  username mismatches it blocks behind a warning overlay with a **Use anyway**
+  escape. Empty username = display only, no enforcement.
+- **Graceful context / login guidance** — off-Reddit → "Go to old.reddit.com";
+  new Reddit (`www`/`sh`) → "Switch to old.reddit.com" (preserving the path);
+  401/403 → "Log in to Reddit". Each menu action starts on a fresh user gesture
+  so the login `window.open` isn't popup-blocked.
+### Changed
+- **Score refresh can cover the whole library** (paged from Supabase), not just
+  the most recent items.
+
+---
+
+## [0.9.13.0] – 2026-05-31
+### Added
+- **Multi-function bookmarklet menu** — tapping the bookmarklet now shows
+  ① Capture new saves and ② Refresh scores.
+- **Refresh scores** — pages the most-recent active saves from Supabase (via
+  `Range` headers), batches them through Reddit's same-origin `/api/info.json`
+  (100 ids/call, 1s pacing), and flushes `{op:'score',…}` rows to the inbox
+  **per batch**, so an interrupted run still stages its progress (a 429 retries
+  the same batch).
+### Changed
+- **Typed inbox staging** — `reddit_inbox` rows are dispatched by `payload.op`:
+  capture rows (no `op`) → `ingestChildren`; `op:'score'` rows →
+  `applyScoreUpdates`, which updates `item.score` only for items already present
+  locally (never creates rows, so it can't resurrect deletions) and pushes
+  changed items via the app's own path. Score rows use a `score:`-prefixed
+  `reddit_id` key so a capture and a score for the same item can't collide under
+  `ignore-duplicates`.
+
+---
+
 ## [0.9.12.3] – 2026-05-30
 ### Added
 - **Bookmarklet Sync** — a durable capture path for mobile / any browser, for
