@@ -218,6 +218,14 @@ export async function syncFromSupabase() {
   const isDelta = !!cursor;
   const deltaFilter = isDelta ? `&updated_at=gt.${encodeURIComponent(cursor)}` : '';
 
+  // Guard against clobbering edits the user makes *while this pull is in flight*.
+  // The remote rows below are a snapshot taken at pull-start; the per-item write
+  // loop can land much later. If the user rates/favourites/trashes an item in
+  // between, its localEditAt (client clock) will be newer than pullStartedAt
+  // (same client clock — no server-skew issues), so we skip overwriting it and
+  // let its own pushItemUpdate carry the change to the cloud.
+  const pullStartTime = new Date(pullStartedAt).getTime();
+
   syncLog(`syncFromSupabase: starting ${isDelta ? 'delta' : 'full'} pull${isDelta ? ` (since ${cursor})` : ''}`);
   state.syncStatus = 'syncing';
   renderHeaderActions();
@@ -274,6 +282,15 @@ export async function syncFromSupabase() {
         });
         added++;
       } else {
+        // Skip items the user edited after this pull began — our snapshot is
+        // stale for them and their edit is being pushed separately. Next pull
+        // (started later than the edit) will reconcile them normally.
+        const localEditTime = exists.localEditAt ? new Date(exists.localEditAt).getTime() : 0;
+        if (localEditTime > pullStartTime) {
+          syncLog(`syncFromSupabase: skipping ${item.reddit_id} — edited during pull`);
+          updated++;
+          continue;
+        }
         await db.items.update(exists.id, {
           type:                 item.type,
           subreddit:            item.subreddit || '',
@@ -439,6 +456,7 @@ export async function deltaPullBeforePush() {
   if (!state.supabaseUrl || !state.supabaseKey || !state.lastPushedAt) return;
   syncLog('deltaPullBeforePush: checking for remote changes since last push');
   try {
+    const pullStartTime = Date.now();
     const cursor = state.lastPushedAt;
     const deltaFilter = `&updated_at=gt.${encodeURIComponent(cursor)}`;
 
@@ -459,6 +477,9 @@ export async function deltaPullBeforePush() {
             isDisliked: r.is_disliked || false,
             syncedAt: new Date().toISOString(),
           });
+        } else if ((existing.localEditAt ? new Date(existing.localEditAt).getTime() : 0) > pullStartTime) {
+          // User edited this item after the pull began — don't clobber the edit.
+          syncLog(`deltaPullBeforePush: skipping ${r.reddit_id} — edited during pull`);
         } else {
           // Only overwrite if remote is genuinely newer than our local copy
           const remoteTs = new Date(r.updated_at || 0).getTime();

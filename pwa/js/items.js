@@ -41,7 +41,7 @@ export async function toggleFavourite(id) {
   const item = await db.items.get(id);
   if (!item) return;
   const val = !item.isFavourite;
-  await db.items.update(id, { isFavourite: val });
+  await db.items.update(id, { isFavourite: val, localEditAt: new Date().toISOString() });
   syncLog(`toggleFavourite: ${item.redditId} → ${val}`);
   await loadData();
   renderBrowseList();
@@ -53,7 +53,7 @@ export async function setRating(id, rating) {
   const item = await db.items.get(id);
   if (!item) return;
   const val = item.rating === rating ? null : rating;
-  await db.items.update(id, { rating: val });
+  await db.items.update(id, { rating: val, localEditAt: new Date().toISOString() });
   syncLog(`setRating: ${item.redditId} → ${val}`);
   await loadData();
   renderBrowseList();
@@ -64,7 +64,7 @@ export async function setRating(id, rating) {
 export async function dislikeItem(id) {
   const item = await db.items.get(id);
   if (!item) return;
-  await db.items.update(id, { isDisliked: true, isFavourite: false, rating: null });
+  await db.items.update(id, { isDisliked: true, isFavourite: false, rating: null, localEditAt: new Date().toISOString() });
   syncLog(`dislikeItem (trash): ${item.redditId}`);
   await loadData();
   renderBrowseList();
@@ -75,7 +75,7 @@ export async function dislikeItem(id) {
 export async function restoreItem(id) {
   const item = await db.items.get(id);
   if (!item) return;
-  await db.items.update(id, { isDisliked: false });
+  await db.items.update(id, { isDisliked: false, localEditAt: new Date().toISOString() });
   syncLog(`restoreItem: ${item.redditId}`);
   await loadData();
   renderBrowseList();
@@ -87,7 +87,7 @@ export async function deleteItemPermanently(id) {
   const item = await db.items.get(id);
   if (!item) return;
   const deletedAt = new Date().toISOString();
-  await db.items.update(id, { isPermanentlyDeleted: true, deletedAt });
+  await db.items.update(id, { isPermanentlyDeleted: true, deletedAt, localEditAt: deletedAt });
   syncLog(`deleteItemPermanently: ${item.redditId}`);
   await loadData();
   renderBrowseList();
@@ -98,7 +98,7 @@ export async function deleteItemPermanently(id) {
 export async function restoreDeletedItem(id) {
   const item = await db.items.get(id);
   if (!item) return;
-  await db.items.update(id, { isPermanentlyDeleted: false, deletedAt: null, isDisliked: false });
+  await db.items.update(id, { isPermanentlyDeleted: false, deletedAt: null, isDisliked: false, localEditAt: new Date().toISOString() });
   syncLog(`restoreDeletedItem: ${item.redditId}`);
   await loadData();
   render();
@@ -155,7 +155,7 @@ export async function deleteAllTrashed() {
   _setSyncing(true);
   const deletedAt = new Date().toISOString();
   for (const item of trashed) {
-    await db.items.update(item.id, { isPermanentlyDeleted: true, deletedAt });
+    await db.items.update(item.id, { isPermanentlyDeleted: true, deletedAt, localEditAt: deletedAt });
     if (state.supabaseUrl && item.redditId) {
       try {
         await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', { deleted_at: deletedAt, is_disliked: true });
@@ -180,7 +180,7 @@ export async function trashAllDead() {
   syncLog(`trashAllDead: moving ${dead.length} items to trash`);
   _setSyncing(true);
   for (const item of dead) {
-    await db.items.update(item.id, { isDisliked: true });
+    await db.items.update(item.id, { isDisliked: true, localEditAt: new Date().toISOString() });
     if (state.supabaseUrl && item.redditId) {
       try {
         await supabaseFetch(`/reddit_saves?reddit_id=eq.${item.redditId}`, 'PATCH', { is_disliked: true });
