@@ -21,7 +21,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 - **`vercel.json`** — Vercel deployment config (auto-deploys from GitHub)
 
 **Live URL:** https://reddivault.vercel.app
-**Current version:** v0.9.16.0
+**Current version:** v0.9.17.1
 
 ---
 
@@ -254,6 +254,8 @@ Helper: `_parseWildcard(raw)` — parses a single term string into `{ value, exa
 
 ### Cloud pull
 `syncFromSupabase()` — delta sync using `updated_at=gt.{lastSync}` filter when `state.lastSync` exists. Falls back to full table scan on first run (no `lastSync`). `lastSync` is recorded at the *start* of the pull (not end) so rows modified during a slow pull aren't missed next time. Lists use the same delta filter. Static list memberships are reconciled per-list (add missing, remove stale) only for lists whose `updated_at` changed — push always touches the parent list's `updated_at` when memberships change so the trigger fires. Smart list membership is never stored — computed at render time. Toast shows "Already up to date" when delta returns zero changes.
+
+**In-flight edit guard (v0.9.17.1+):** a pull fetches a *snapshot* of remote rows at pull-start, then its per-item write loop can land much later. If the user rates/favourites/trashes an item *while that pull is in flight*, the stale snapshot would clobber the just-made edit (symptom: stars appear, then vanish, then "synced"). To prevent this, every per-item local mutation (`setRating`, `toggleFavourite`, `dislikeItem`, `restoreItem`, `deleteItemPermanently`, `restoreDeletedItem`, bulk trash/delete) stamps `item.localEditAt = now` (client clock, unindexed Dexie field). Both `syncFromSupabase` and `deltaPullBeforePush` **skip overwriting any item whose `localEditAt` is newer than the pull's own start time** — both timestamps are on the same client clock, so there's no server-clock-skew problem. The edit's own `pushItemUpdate` carries it to the cloud; a *later* pull (start time > the edit) reconciles normally, so `localEditAt` never lingers harmfully.
 
 ---
 
