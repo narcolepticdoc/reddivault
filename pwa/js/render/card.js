@@ -42,7 +42,7 @@ export function renderItemCard(item, showActions, removeFromListId = null) {
     : ratingDisplay(item);
 
   return `
-    <div class="card ${needsEnrich ? 'needs-enrichment' : ''}" style="${item.isFavourite?'border-color:rgba(245,158,11,0.35)':''}">
+    <div class="card ${needsEnrich ? 'needs-enrichment' : ''}" style="${item.isFavourite?'border-color:rgba(236,72,153,0.35)':''}">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
         <span class="badge ${badgeClass}">${badgeLabel}</span>
         ${subredditDisplay}
@@ -76,9 +76,9 @@ export function renderItemCard(item, showActions, removeFromListId = null) {
           <!-- Left group: non-destructive curation actions -->
           <div style="display:flex;align-items:center;gap:4px">
             ${ratingHtml}
-            <button style="background:none;border:none;cursor:pointer;font-size:16px;padding:2px;line-height:1;color:${item.isFavourite?'#f59e0b':'var(--text-muted)'}"
+            <button style="background:none;border:none;cursor:pointer;font-size:16px;padding:2px;line-height:1;color:${item.isFavourite?'#ec4899':'var(--text-muted)'}"
               onclick="toggleFavourite(${item.id})" title="${item.isFavourite?'Remove from favourites':'Add to favourites'}">
-              ${item.isFavourite ? '⭐' : '☆'}
+              ${item.isFavourite ? '♥' : '♡'}
             </button>
             <button class="btn btn-ghost btn-sm" onclick="showListMenu(${item.id})" title="Add to list"
               style="${inListCount>0?'color:var(--accent2)':''}">

@@ -54,7 +54,7 @@ export function optionsSummaryParts(optionsJson) {
   if (opts.filterType && opts.filterType !== 'all')
     parts.push(opts.filterType === 'post' ? '📝 Posts only' : '💬 Comments only');
   if (opts.filterRating)      parts.push(`★${opts.filterRating}+`);
-  if (opts.filterFavourite)   parts.push('⭐ Faves');
+  if (opts.filterFavourite)   parts.push('♥ Faves');
   if (opts.filterHasLinks)    parts.push('🔗 Has links');
   if (opts.searchBody)        parts.push('📄 Body search');
   if (opts.filterSubreddit)   parts.push(`r/${opts.filterSubreddit}`);

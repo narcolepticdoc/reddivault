@@ -229,7 +229,7 @@ export function renderBrowse() {
         <div style="display:flex;gap:12px;flex-wrap:wrap">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
             <input type="checkbox" ${state.filterFavourite?'checked':''} onchange="state.filterFavourite=this.checked;render()">
-            ⭐ Favourites only
+            ♥ Favourites only
           </label>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
             <input type="checkbox" ${state.filterHasLinks?'checked':''} onchange="state.filterHasLinks=this.checked;render()">

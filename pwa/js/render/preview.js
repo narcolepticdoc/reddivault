@@ -16,7 +16,7 @@ function buildPreviewMeta(item) {
         style="${rd ? '' : 'color:var(--text-muted)'}">${rd || '☆ Rate'}</button>
       <button class="btn btn-ghost btn-sm" onclick="toggleFavourite(${item.id})"
         title="${item.isFavourite?'Remove from favourites':'Add to favourites'}"
-        style="color:${item.isFavourite?'#f59e0b':'var(--text-muted)'}">${item.isFavourite ? '⭐' : '☆'}</button>
+        style="color:${item.isFavourite?'#ec4899':'var(--text-muted)'}">${item.isFavourite ? '♥' : '♡'}</button>
     </div>
     <div style="display:flex;gap:12px;font-size:12px;color:var(--text-muted);flex-wrap:wrap">
       ${item.author ? `<span>u/${escHtml(item.author)}</span>` : ''}
