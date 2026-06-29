@@ -1,7 +1,7 @@
 // render/card.js — view rendering (split out of the former render.js).
-import { applySearch, dislikeItem, setRating, toggleFavourite, toggleItemList, trackRecentlyViewed } from '../items.js';
+import { applySearch, dislikeItem, toggleFavourite, toggleItemList, trackRecentlyViewed } from '../items.js';
 import { state } from '../state.js';
-import { escHtml, fmtDate, fullUrl } from '../util.js';
+import { escHtml, fmtDate, fullUrl, ratingDisplay } from '../util.js';
 import { _listCountMap } from './browse.js';
 import { showListMenu } from './lists.js';
 import { showLinkPicker, showPreview } from './preview.js';
@@ -34,17 +34,15 @@ export function renderItemCard(item, showActions, removeFromListId = null) {
   const openUrl = fullUrl((item.type === 'comment' ? item.permalink : item.url) || item.permalink || item.url || '');
   const permalinkUrl = fullUrl(item.permalink || item.url || '');
 
-  // Star rating display (1-5)
-  const ratingHtml = showActions ? `
-    <div style="display:flex;align-items:center;gap:2px">
-      ${[1,2,3,4,5].map(n => `
-        <button style="background:none;border:none;cursor:pointer;font-size:14px;padding:1px;line-height:1;color:${(item.rating||0)>=n?'#f59e0b':'var(--border)'}"
-          onclick="setRating(${item.id},${n})" title="${n} star${n!==1?'s':''}">★</button>
-      `).join('')}
-    </div>` : (item.rating ? `<span style="font-size:12px;color:#f59e0b">${'★'.repeat(item.rating)}${'☆'.repeat(5-item.rating)}</span>` : '');
+  // Rating: a single compact chip that opens the rating picker (big tap targets).
+  // unrated → muted "☆ Rate", 0 → 👎, 1–5 → stars. Read-only contexts just show state.
+  const ratingHtml = showActions
+    ? `<button class="btn btn-ghost btn-sm" onclick="showRatingMenu(${item.id})" title="Rate"
+         style="${item.rating!=null ? '' : 'color:var(--text-muted)'}">${ratingDisplay(item) || '☆ Rate'}</button>`
+    : ratingDisplay(item);
 
   return `
-    <div class="card ${needsEnrich ? 'needs-enrichment' : ''}" style="${item.isFavourite?'border-color:rgba(245,158,11,0.35)':''}">
+    <div class="card ${needsEnrich ? 'needs-enrichment' : ''}" style="${item.isFavourite?'border-color:rgba(236,72,153,0.35)':''}">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
         <span class="badge ${badgeClass}">${badgeLabel}</span>
         ${subredditDisplay}
@@ -78,9 +76,9 @@ export function renderItemCard(item, showActions, removeFromListId = null) {
           <!-- Left group: non-destructive curation actions -->
           <div style="display:flex;align-items:center;gap:4px">
             ${ratingHtml}
-            <button style="background:none;border:none;cursor:pointer;font-size:16px;padding:2px;line-height:1;color:${item.isFavourite?'#f59e0b':'var(--text-muted)'}"
+            <button style="background:none;border:none;cursor:pointer;font-size:16px;padding:2px;line-height:1;color:${item.isFavourite?'#ec4899':'var(--text-muted)'}"
               onclick="toggleFavourite(${item.id})" title="${item.isFavourite?'Remove from favourites':'Add to favourites'}">
-              ${item.isFavourite ? '⭐' : '☆'}
+              ${item.isFavourite ? '♥' : '♡'}
             </button>
             <button class="btn btn-ghost btn-sm" onclick="showListMenu(${item.id})" title="Add to list"
               style="${inListCount>0?'color:var(--accent2)':''}">

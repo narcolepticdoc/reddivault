@@ -1,7 +1,7 @@
 // items.js — part of RedditVault (auto-split from the original single-file PWA).
 import { _setSyncing, deleteListFromSupabase, markClean, pushItemUpdate, pushListsToSupabase, pushPreference, supabaseFetch } from './cloud.js';
 import { loadData, markDirty, rebuildTagCache } from './core.js';
-import { _searchLookup, closeModal, render, renderBrowseList, renderSortControl, showModal } from './render.js';
+import { _searchLookup, closeModal, refreshOpenPreviewMeta, render, renderBrowseList, renderSortControl, showModal } from './render.js';
 import { applyListOptions, extractTagTokens, hasNonDefaultOptions, serialiseListOptions, serialiseQueryWithTags, validateTagName } from './search.js';
 import { db, state, syncLog } from './state.js';
 import { escHtml, showToast } from './util.js';
@@ -45,18 +45,23 @@ export async function toggleFavourite(id) {
   syncLog(`toggleFavourite: ${item.redditId} → ${val}`);
   await loadData();
   renderBrowseList();
+  refreshOpenPreviewMeta();
   _setSyncing(true);
   pushItemUpdate(id, { is_favourite: val }).then(() => _setSyncing(false));
 }
 
+// rating may be null (unrated), 0 (thumbs-down), or 1–5 (stars). The picker
+// (showRatingMenu) supplies the exact value, including an explicit "Clear" → null,
+// so there's no re-tap toggle here.
 export async function setRating(id, rating) {
   const item = await db.items.get(id);
   if (!item) return;
-  const val = item.rating === rating ? null : rating;
+  const val = rating == null ? null : rating;
   await db.items.update(id, { rating: val, localEditAt: new Date().toISOString() });
   syncLog(`setRating: ${item.redditId} → ${val}`);
   await loadData();
   renderBrowseList();
+  refreshOpenPreviewMeta();
   _setSyncing(true);
   pushItemUpdate(id, { rating: val }).then(() => _setSyncing(false));
 }

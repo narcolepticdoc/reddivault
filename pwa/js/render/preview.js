@@ -1,7 +1,39 @@
 // render/preview.js — view rendering (split out of the former render.js).
 import { applySearch, trackRecentlyViewed } from '../items.js';
-import { db } from '../state.js';
-import { escHtml, fmtDate, fullUrl, renderMarkdown, stripUrlPunct } from '../util.js';
+import { db, state } from '../state.js';
+import { escHtml, fmtDate, fullUrl, ratingDisplay, renderMarkdown, stripUrlPunct } from '../util.js';
+
+// Builds the preview header meta (badges, author/date/score, rating). Factored out so
+// refreshOpenPreviewMeta() can re-render just this block in place after a rating/favourite
+// change without rebuilding (and flickering) the whole sheet.
+function buildPreviewMeta(item) {
+  const rd = ratingDisplay(item);
+  return `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <span class="badge ${item.type==='comment'?'badge-comment':'badge-post'}">${item.type==='comment'?'💬 Comment':'📝 Post'}</span>
+      ${item.subreddit ? `<span class="subreddit-tag" style="cursor:pointer" onclick="closePreview();applySearch('r/${escHtml(item.subreddit)}')">r/${escHtml(item.subreddit)}</span>` : ''}
+      <button class="btn btn-ghost btn-sm" onclick="showRatingMenu(${item.id})" title="Rate"
+        style="${rd ? '' : 'color:var(--text-muted)'}">${rd || '☆ Rate'}</button>
+      <button class="btn btn-ghost btn-sm" onclick="toggleFavourite(${item.id})"
+        title="${item.isFavourite?'Remove from favourites':'Add to favourites'}"
+        style="color:${item.isFavourite?'#ec4899':'var(--text-muted)'}">${item.isFavourite ? '♥' : '♡'}</button>
+    </div>
+    <div style="display:flex;gap:12px;font-size:12px;color:var(--text-muted);flex-wrap:wrap">
+      ${item.author ? `<span>u/${escHtml(item.author)}</span>` : ''}
+      ${item.postCreatedAt ? `<span>📅 ${fmtDate(item.postCreatedAt)}</span>` : ''}
+      ${item.score != null ? `<span>⬆ ${item.score.toLocaleString()}</span>` : ''}
+    </div>`;
+}
+
+// Re-render the open preview's meta block (if a preview is showing) so rating/favourite
+// edits made via the picker reflect immediately. Reads the fresh item from state.items.
+export function refreshOpenPreviewMeta() {
+  const metaEl = document.getElementById('preview-meta');
+  if (!metaEl) return;
+  const id = Number(metaEl.dataset.itemId);
+  const item = state.items.find(i => i.id === id);
+  if (item) metaEl.innerHTML = buildPreviewMeta(item);
+}
 
 export async function showPreview(itemId) {
   const item = await db.items.get(itemId);
@@ -44,19 +76,6 @@ export async function showPreview(itemId) {
     }
   }
 
-  const metaHtml = `
-    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
-      <span class="badge ${item.type==='comment'?'badge-comment':'badge-post'}">${item.type==='comment'?'💬 Comment':'📝 Post'}</span>
-      ${item.subreddit ? `<span class="subreddit-tag" style="cursor:pointer" onclick="closePreview();applySearch('r/${escHtml(item.subreddit)}')">r/${escHtml(item.subreddit)}</span>` : ''}
-      ${item.isFavourite ? '<span style="color:#f59e0b">⭐</span>' : ''}
-    </div>
-    <div style="display:flex;gap:12px;font-size:12px;color:var(--text-muted);flex-wrap:wrap">
-      ${item.author ? `<span>u/${escHtml(item.author)}</span>` : ''}
-      ${item.postCreatedAt ? `<span>📅 ${fmtDate(item.postCreatedAt)}</span>` : ''}
-      ${item.score != null ? `<span>⬆ ${item.score.toLocaleString()}</span>` : ''}
-      ${item.rating ? `<span style="color:#f59e0b">${'★'.repeat(item.rating)}${'☆'.repeat(5-item.rating)}</span>` : ''}
-    </div>`;
-
   const bodyHtml = hasBody
     ? renderMarkdown(item.body)
     : externalLinks.length
@@ -83,8 +102,8 @@ export async function showPreview(itemId) {
     <div class="preview-sheet" id="preview-sheet">
       <div class="preview-drag-handle"></div>
       <div class="preview-header">
-        <div style="flex:1;min-width:0">
-          ${metaHtml}
+        <div style="flex:1;min-width:0" id="preview-meta" data-item-id="${item.id}">
+          ${buildPreviewMeta(item)}
         </div>
         <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:22px;padding:0;line-height:1;flex-shrink:0;align-self:flex-start"
           onclick="closePreview()">✕</button>

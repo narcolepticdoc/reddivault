@@ -146,6 +146,34 @@ export function closeModal() {
   document.getElementById('modal-overlay')?.remove();
 }
 
+// Rating picker — big, well-spaced tap targets (replaces the cramped inline 5-star
+// row). Three-state model: 👎 = 0 (kept, marked bad), ★1–5 = stars, "No rating" = null.
+// Buttons resolve setRating/closeModal via the window bridge (app.js).
+export function showRatingMenu(itemId) {
+  const item = state.items.find(i => i.id === itemId);
+  if (!item) return;
+  const current = item.rating;
+  const starBtn = n => `
+    <button class="rating-pick-btn" onclick="setRating(${itemId},${n});closeModal()"
+      title="${n} star${n !== 1 ? 's' : ''}"
+      style="color:${(current != null && current >= n) ? '#f59e0b' : 'var(--border)'}">★</button>`;
+  showModal(`
+    <div class="modal-title">Rate</div>
+    <div class="rating-pick-row">
+      <button class="rating-pick-btn ${current === 0 ? 'rating-pick-active' : ''}"
+        onclick="setRating(${itemId},0);closeModal()" title="Thumbs down (kept, marked bad)"
+        style="font-size:24px">👎</button>
+      <span class="rating-pick-divider"></span>
+      ${[1, 2, 3, 4, 5].map(starBtn).join('')}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button class="btn btn-ghost" onclick="closeModal()" style="flex:1;justify-content:center">Close</button>
+      ${current != null ? `<button class="btn btn-ghost" onclick="setRating(${itemId},null);closeModal()"
+        style="flex:1;justify-content:center;color:var(--text-muted)">Clear rating</button>` : ''}
+    </div>
+  `);
+}
+
 // ─── LIST MANAGEMENT ─────────────────────────────────────────────────────────
 
 export function attachEventListeners() {

@@ -21,7 +21,7 @@ RedditVault is a personal Reddit saved items manager built to work around Reddit
 - **`vercel.json`** — Vercel deployment config (auto-deploys from GitHub)
 
 **Live URL:** https://reddivault.vercel.app
-**Current version:** v0.9.17.1
+**Current version:** v0.9.18.1
 
 ---
 
@@ -269,7 +269,11 @@ Helper: `_parseWildcard(raw)` — parses a single term string into `{ value, exa
 
 **Tag cache** — `state.tagCache` is a `Map<itemId, listId[]>` precomputed by `rebuildTagCache()`. Called after `loadData()` and after any list mutation. Makes tag chip rendering O(1) per item.
 
-**Affinity sort** — scores items on: rating (0–50 pts), favourite (+30 pts flat), author frequency (0–15 pts log-scaled), tag membership (0–20 pts). `rebuildAuthorFreq()` precomputes author counts. Called in `loadData()`.
+**Affinity sort** — scores items on: rating (0–50 pts), favourite (+30 pts flat), author frequency (0–15 pts log-scaled), tag membership (0–20 pts). `rebuildAuthorFreq()` precomputes author counts. Called in `loadData()`. Unrated (`rating == null`) uses a neutral 10-pt baseline; an explicit thumbs-down (`rating === 0`) scores 0, ranking it below unrated.
+
+**Rating model (v0.9.18.0+)** — three distinct states: **unrated (`null`)**, **thumbs-down (`0`)**, **stars (`1`–`5`)**. `0` is a real persisted value (Supabase `rating` is a nullable int) — push/pull use `?? null` (never `|| null`, which would coerce `0` → unrated). The fiddly inline 5-star row was replaced by a single compact **rating chip** on each card (`render/card.js`, shows current state: muted "☆ Rate" / 👎 / ★n) that opens `showRatingMenu(itemId)` (`render/shell.js`) — a `showModal` picker with large (~48px) 👎 + ★1–5 + "Clear rating" buttons. The same picker is reachable from the preview sheet (`render/preview.js`), which re-renders just its meta block in place via `refreshOpenPreviewMeta()` after an edit. `setRating(id, value)` sets the value directly (no re-tap toggle; value may be `null`/`0`/`1`–`5`). Read-only rating display everywhere uses the shared `ratingDisplay(item)` helper (`util.js`): `null` → nothing, `0` → 👎, `1`–`5` → stars.
+
+**Favourite vs rating (v0.9.18.1+)** — to avoid confusion with the amber rating stars (`#f59e0b`), the **favourite** control (`isFavourite`, still a separate field from `rating`) renders as a **pink heart** (`#ec4899`): filled `♥` when favourited, hollow muted `♡` when not — in `render/card.js`, `render/preview.js`, and the home recent row. The favourited card border tint is pink (`rgba(236,72,153,0.35)`), and the home stat label reads **"Favourited"**. Pink (not red) keeps it distinct from the `var(--danger)` red trash button. Display-only — `toggleFavourite`/Supabase `is_favourite` are unchanged.
 
 ---
 

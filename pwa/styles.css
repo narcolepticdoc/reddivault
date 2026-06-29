@@ -150,6 +150,17 @@ body {
   border-radius: 2px; margin: 0 auto 20px; }
 .modal-title { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 18px; margin-bottom: 16px; }
 
+/* Rating picker — large tap targets (≥44px) for easy thumb selection */
+.rating-pick-row { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.rating-pick-btn {
+  background: none; border: none; cursor: pointer; line-height: 1;
+  font-size: 32px; padding: 6px; min-width: 48px; min-height: 48px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 12px; transition: background 0.12s;
+}
+.rating-pick-btn:active, .rating-pick-active { background: rgba(245, 158, 11, 0.15); }
+.rating-pick-divider { width: 1px; align-self: stretch; background: var(--border); margin: 4px 6px; }
+
 /* Preview modal — full height sheet */
 .preview-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.85);
