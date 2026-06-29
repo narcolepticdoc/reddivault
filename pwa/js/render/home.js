@@ -1,14 +1,14 @@
 // render/home.js — view rendering (split out of the former render.js).
 import { clearRecentlyViewed, newSearch, showPage } from '../items.js';
 import { db, state } from '../state.js';
-import { escHtml } from '../util.js';
+import { escHtml, ratingDisplay } from '../util.js';
 import { showPreview } from './preview.js';
 
 export function renderHome() {
   const active = state.items.filter(i => !i.isDisliked && !i.isPermanentlyDeleted);
   const total = active.length;
   const starred = active.filter(i => i.isFavourite).length;
-  const rated = active.filter(i => i.rating).length;
+  const rated = active.filter(i => i.rating != null).length;
   const needsEnrich = active.filter(i => i.enrichStatus === 'pending').length;
 
   // Items saved in last 7 days, grouped by day
@@ -167,7 +167,7 @@ export function renderHome() {
                     <div style="font-size:11px;color:var(--text-muted);margin-top:4px;display:flex;gap:8px;flex-wrap:wrap">
                       ${item.subreddit ? `<span>r/${escHtml(item.subreddit)}</span>` : ''}
                       ${item.isFavourite ? '<span>⭐</span>' : ''}
-                      ${item.rating ? `<span style="color:#f59e0b">${'★'.repeat(item.rating)}</span>` : ''}
+                      ${ratingDisplay(item)}
                     </div>
                   </div>
                 </div>`).join('')}

@@ -273,7 +273,7 @@ export async function syncFromSupabase() {
           enriched: !!(item.title && item.subreddit),
           enrichStatus: item.enrich_status || ((item.title && item.subreddit) ? 'enriched' : 'pending'),
           isFavourite:  item.is_favourite || false,
-          rating:       item.rating || null,
+          rating:       item.rating ?? null,
           isDisliked:   item.is_disliked || false,
           isPermanentlyDeleted: false,
           deletedAt: null,
@@ -305,7 +305,7 @@ export async function syncFromSupabase() {
           enriched:             !!(item.title && item.subreddit),
           enrichStatus:         item.enrich_status || ((item.title && item.subreddit) ? 'enriched' : 'pending'),
           isFavourite:          item.is_favourite || false,
-          rating:               item.rating || null,
+          rating:               item.rating ?? null,
           isDisliked:           item.is_disliked || false,
           isPermanentlyDeleted,
           deletedAt,
@@ -473,7 +473,7 @@ export async function deltaPullBeforePush() {
             body: r.body, author: r.author, score: r.score,
             savedAt: r.saved_at, postCreatedAt: r.post_created_at,
             enrichStatus: r.enrich_status || 'pending',
-            isFavourite: r.is_favourite || false, rating: r.rating || null,
+            isFavourite: r.is_favourite || false, rating: r.rating ?? null,
             isDisliked: r.is_disliked || false,
             syncedAt: new Date().toISOString(),
           });
@@ -487,7 +487,7 @@ export async function deltaPullBeforePush() {
           if (remoteTs > localTs) {
             await db.items.update(existing.id, {
               isFavourite: r.is_favourite || false,
-              rating: r.rating || null,
+              rating: r.rating ?? null,
               isDisliked: r.is_disliked || false,
               enrichStatus: r.enrich_status || existing.enrichStatus,
               syncedAt: new Date().toISOString(),
@@ -583,7 +583,7 @@ export async function pushToSupabase(items, skipClean = false) {
     post_created_at: i.postCreatedAt || null,
     enrich_status: i.enrichStatus || 'pending',
     is_favourite: i.isFavourite || false,
-    rating: i.rating || null,
+    rating: i.rating ?? null,
     is_disliked: i.isDisliked || false,
   }));
   try {

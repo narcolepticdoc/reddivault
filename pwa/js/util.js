@@ -2,6 +2,17 @@
 import { showPreview } from './render.js';
 import { state } from './state.js';
 
+// Read-only rating display. Three distinct states:
+//   null/undefined → unrated (shows nothing)
+//   0              → thumbs-down (kept, marked bad)
+//   1–5            → filled/empty stars
+export function ratingDisplay(item) {
+  const r = item.rating;
+  if (r == null) return '';
+  if (r === 0) return `<span style="font-size:13px;color:var(--text-muted)" title="Thumbs down">👎</span>`;
+  return `<span style="font-size:12px;color:#f59e0b">${'★'.repeat(r)}${'☆'.repeat(5 - r)}</span>`;
+}
+
 export function stripUrlPunct(url) {
   // Remove truncated HTML entities at the end first
   url = url.replace(/&(?:[a-z]+|#\d+)?$/, '');

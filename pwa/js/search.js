@@ -426,11 +426,12 @@ export function itemMatchesTokens(item, tokens, _visited) {
 
 // ─── AFFINITY SCORE ──────────────────────────────────────────────────────────
 // Scores items on personal curation signals:
-//   rating    → 0–50 pts (unrated = 10 neutral baseline so unrated items stay discoverable)
+//   rating    → 0–50 pts (unrated = 10 neutral baseline so unrated items stay
+//               discoverable; an explicit thumbs-down (0) scores 0, below unrated)
 //   favourite → 30 pts flat bonus
 //   author    → 0–15 pts, log-scaled from authorFreq so no single author dominates
 export function affinityScore(item) {
-  const ratingPts = item.rating ? (item.rating / 5) * 50 : 10;
+  const ratingPts = item.rating == null ? 10 : (item.rating / 5) * 50;
   const favPts = item.isFavourite ? 30 : 0;
   const freq = item.author ? (state.authorFreq[item.author] || 0) : 0;
   const maxFreq = state.maxAuthorFreq || 1;
@@ -465,7 +466,8 @@ export function sortItems(items, applyAuthorBoost = false) {
       case 'title':
         return dir * (a.title||'').localeCompare(b.title||'');
       case 'rating':
-        return dir * ((a.rating||0) - (b.rating||0));
+        // unrated (null) sorts lowest, below an explicit thumbs-down (0)
+        return dir * ((a.rating ?? -1) - (b.rating ?? -1));
       default: // savedAt fallback
         return dir * ((new Date(a.savedAt||0)) - (new Date(b.savedAt||0)));
     }
