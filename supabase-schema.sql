@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS reddit_lists (
   query       text DEFAULT '',                    -- search query for smart lists
   is_tag      boolean DEFAULT false,              -- true if this list is also a tag chip
   tag_name    text DEFAULT '',                    -- display name for the tag chip
+  options_json text,                              -- JSON string of saved filters/sort for smart lists
   created_at  timestamptz DEFAULT now(),
   updated_at  timestamptz DEFAULT now()
 );
@@ -123,6 +124,10 @@ CREATE OR REPLACE TRIGGER set_updated_at_lists
 -- ALTER TABLE reddit_lists ADD COLUMN IF NOT EXISTS is_tag           boolean DEFAULT false;
 -- ALTER TABLE reddit_lists ADD COLUMN IF NOT EXISTS tag_name         text DEFAULT '';
 -- ALTER TABLE reddit_lists ADD COLUMN IF NOT EXISTS updated_at       timestamptz DEFAULT now();
+-- -- Saved filters/sort for smart lists. Must be text, not jsonb: the app stores a
+-- -- JSON *string* and JSON.parses it on read, so jsonb would round-trip as an object
+-- -- and the options would be silently dropped.
+-- ALTER TABLE reddit_lists ADD COLUMN IF NOT EXISTS options_json     text;
 --
 -- CREATE EXTENSION IF NOT EXISTS moddatetime;
 --

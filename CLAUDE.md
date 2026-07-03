@@ -145,8 +145,10 @@ deleted_at, created_at, updated_at`
 - `updated_at`: maintained by moddatetime trigger — delta pulls key off it
 
 **`reddit_lists`:** `id, name, type ('static'|'smart'), query, is_tag, tag_name,
-created_at, updated_at` — plus `options_json` (persisted smart-list filter/sort), which
-the app pushes/pulls but which is **missing from `supabase-schema.sql`** (see Known Issues).
+options_json, created_at, updated_at`
+- `options_json` is `text`, **not jsonb** — the app stores a JSON *string*
+  (`serialiseListOptions`) and `JSON.parse`s it on read (`applyListOptions`); jsonb would
+  round-trip as an object and the options would be silently dropped.
 
 **`reddit_inbox`:** `id, reddit_id, payload jsonb, created_at` — transient staging.
 - `reddit_id` is the `UNIQUE` upsert key (`on_conflict=reddit_id`,
@@ -377,12 +379,9 @@ per-item fallback (configurable delay, default 7.5s) for whatever phase 1 missed
 
 ## Known Issues / Pending Work
 
-1. **`options_json` missing from `supabase-schema.sql`** — cloud.js pushes/pulls
-   `reddit_lists.options_json` but the schema file never creates it. New installs need
-   an `ALTER TABLE reddit_lists ADD COLUMN options_json jsonb` migration added to the file.
-2. **Cloudflare Worker `ALLOWED_ORIGIN`** — hardcoded to `https://reddivault.vercel.app`;
+1. **Cloudflare Worker `ALLOWED_ORIGIN`** — hardcoded to `https://reddivault.vercel.app`;
    new installs must change it before deploying the worker.
-3. **Reddit CSV `saved_posts.csv`** — the saved-date field is usually empty, so `savedAt`
+2. **Reddit CSV `saved_posts.csv`** — the saved-date field is usually empty, so `savedAt`
    is typically the import timestamp, not the real save date.
-4. **Window-bridge migration** — a future pass can replace inline `onclick` handlers with
+3. **Window-bridge migration** — a future pass can replace inline `onclick` handlers with
    a `data-action` delegated dispatcher and drop the bridge.
