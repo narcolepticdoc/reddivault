@@ -1,366 +1,49 @@
 # RedditVault — Claude Code Context
 
-This file is the persistent memory for Claude Code sessions on this project.
-Read it at the start of every session. Update it when significant decisions are made or features added.
+Persistent project memory for Claude Code sessions. Read at session start; update when
+significant decisions are made or features added. Keep it **current-state** — decision
+history lives in `docs/transcripts/` (see `journal.txt` for the index), not here.
+
+RedditVault is a personal Reddit saved-items manager built to work around Reddit's
+~1,000-item API limit. A static PWA (IndexedDB-first) syncs with Supabase; saves are
+captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
+
+**Live URL:** https://reddivault.vercel.app · **Current version:** v0.9.18.1
 
 ---
 
-## Project Overview
-
-RedditVault is a personal Reddit saved items manager built to work around Reddit's ~1,000 item API limit. It consists of:
-
-- **`pwa/index.html`** — PWA shell (HTML markup + CDN `<script>` tags + `<link>` to styles.css + module entry `<script type="module" src="js/app.js">`)
-- **`pwa/styles.css`** — all app CSS (extracted from the former inline `<style>` block)
-- **`pwa/js/*.js`** — the app, split into native ES modules (see "Module Structure" below)
-- **`pwa/sw.js`** — service worker for offline caching
-- **`pwa/manifest.json`** — PWA manifest
-- **`extension/`** — Chrome extension for desktop sync via Reddit session cookies
-- **`cloudflare-worker/reddit-feed-proxy.js`** — CORS proxy for RSS feed auto-sync
-- **`supabase-schema.sql`** — current DB schema (fresh install + migration sections)
-- **`SETUP.md`** — end-user setup guide
-- **`vercel.json`** — Vercel deployment config (auto-deploys from GitHub)
-
-**Live URL:** https://reddivault.vercel.app
-**Current version:** v0.9.18.1
-
----
-
-## Architecture
-
-### Data flow
-```
-Reddit (session cookies) → Chrome Extension → Supabase → PWA (IndexedDB cache)
-Reddit (session cookies) → Bookmarklet → Supabase reddit_inbox → PWA drains into library
-Reddit (RSS feed)        → Cloudflare Worker → PWA feed sync
-Reddit public JSON API   → PWA enrichment (no auth needed)
-```
-
-### Key design decisions
-
-**Modular, no build step** — the app is split into native ES modules in `pwa/js/`, loaded directly by the browser (`<script type="module">` + `import`/`export`). **No bundler, no package.json, no transpiler.** Third-party libs (Dexie, PapaParse) load from CDN `<script>` tags. Deployed directly via Vercel as static files; the user just loads the URL. Keeping the *zero-build, static-deploy* model is the hard constraint (it replaced the older "everything in one file" constraint).
-
-**Module structure** (`pwa/js/`):
-
-| Module | Responsibility |
-|--------|----------------|
-| `state.js` | `APP_VERSION`, the Dexie `db` instance + version/upgrade chain, the shared `state` object, `syncLog` |
-| `util.js` | `escHtml`, `escAttr`, `fmtDate`, `showToast`, `sleep(WithCountdown)`, `renderMarkdown`, `openLink`, `fullUrl`, `applyZoomSetting` |
-| `core.js` | `init`, `loadConfig`, `loadData`, `rebuildTagCache`, `rebuildFilterLists`, `reconcileDirtyState`, `markDirty`, `clearAllData` |
-| `enrich.js` | Arctic Shift + Reddit enrichment, rate-limit logic, enrich settings |
-| `cloud.js` | Supabase REST (`supabaseFetch`), push/pull/delta sync, retry/dirty machinery |
-| `feed.js` | RSS/JSON feed sync, proxy URL building, Supabase/feed config save |
-| `bookmarklet.js` | Bookmarklet capture / `reddit_inbox` drain / score refresh (`buildInboxBookmarklet`, `drainInbox`, `ingestChildren`, `mapRedditChild`, `applyScoreUpdates`, `importPastedBookmarklet`, `cspProbeBookmarklet`) |
-| `dataio.js` | CSV import, JSON backup/restore, data repairs, single-item delete |
-| `search.js` | `parseSearchQuery`, `itemMatchesTokens`, `_parseWildcard`, `affinityScore`, `sortItems`, `filteredItems`, tag/list-options helpers |
-| `items.js` | Item/list mutation actions (favourite, rate, trash, delete, list CRUD), `showPage`, search/filter actions |
-| `render.js` | **Barrel** — `export *` over the `render/` submodules (so other modules + the window bridge keep importing rendering from `./render.js`) |
-| `render/shell.js` | `render` dispatcher, `renderHeaderActions`, `_renderErrorFallback`, `attachEventListeners`, `renderSortControl`, `showModal`/`closeModal` |
-| `render/home.js` | `renderHome`, `renderRecent` |
-| `render/browse.js` | `renderBrowse`, item list, search/filter input handlers + their module-local state (`_searchLookup`, debounce timers, `_listCountMap`) |
-| `render/card.js` | `renderItemCard` |
-| `render/preview.js` | `showPreview`, `closePreview`, `showLinkPicker` |
-| `render/trash.js` | `renderTrashView` |
-| `render/lists.js` | `renderLists` + list menus (`showNewListMenu`, `showCreateList`, `editList`, `showListMenu`, `filterListMenu`) |
-| `render/settings.js` | `renderSettings` (the whole settings page) |
-| `app.js` | Entry point: imports all modules, re-exposes their exports on `window`, runs the bootstrap (SW registration, visibilitychange, `init()`) |
-
-**The `window` bridge** — rendered HTML still uses inline `onclick="fn(…)"` handlers (~148 of them), which resolve against the global scope. `app.js` does `Object.assign(window, ...modules)` so those handlers keep working with **zero template changes**. A future pass can migrate to a `data-action` delegated dispatcher to drop the bridge. When adding a new inline-handler function, just `export` it from its module — the bridge picks it up automatically.
-
-**Service worker asset list** — `sw.js` precaches a hand-maintained `ASSETS` array keyed off `VERSION`; bumping `VERSION` invalidates the whole `reddivault-${VERSION}` cache. **When adding a new `js/*.js` module, add it to `ASSETS` and bump `VERSION`** (and `APP_VERSION` in `state.js`).
-
-**Session-based sync, not OAuth** — the Chrome extension uses `fetch()` against Reddit's internal API endpoints with the user's existing browser cookies. Avoids Reddit's developer application approval process entirely. Personal use only.
-
-**IndexedDB as primary store** — Supabase is the cloud sync layer, not the source of truth. The PWA reads from local IndexedDB on every load. `supabasePull()` merges remote into local; `supabasePush()` pushes local dirty items to remote.
-
-**Soft delete** — "permanently deleted" items are never removed from the DB. They get `isPermanentlyDeleted: true` + `deletedAt` timestamp locally, and `deleted_at` set in Supabase. This prevents them from resurfacing via feed sync. Actual DB purge is a separate explicit action.
-
-**URL enrichment** — two-phase process:
-1. **Arctic Shift bulk pass** (`enrichViaArcticShift`) — hits `arctic-shift.photon-reddit.com` API with up to 500 IDs/request. No auth, generous rate limits. Resolves thousands of items in minutes. Posts and comments use separate endpoints (`/api/posts/ids`, `/api/comments/ids`). 500ms delay between batches.
-2. **Reddit per-item fallback** (`enrichItemFromReddit`) — unchanged slow loop for items Arctic Shift didn't have. Rate limiting: configurable delay (default 7.5s). Only runs on the items Phase 1 missed.
-
-**No folder column** — early versions had a `folder` text column. This was renamed to `deleted_at timestamptz` in a Supabase migration. There are no folders in the current schema — organisation is via Lists.
-
-**Bookmarklet capture (v0.9.12.0+)** — for mobile / non-Chrome where there's no extension. A PWA-generated `javascript:` bookmarklet (`buildInboxBookmarklet`) runs same-origin on reddit.com using the user's session cookie, fetches `saved.json`, and POSTs raw items to a dedicated **`reddit_inbox` staging table** — deliberately **not** to `reddit_saves`. **Incremental like feed sync (v0.9.12.1+):** before paginating it does one *read-only* GET of recent `reddit_id`s (`order=saved_at.desc&limit=500`) and stops as soon as it reaches a page of saves it already has, sending only genuinely-new items to the inbox; if that read fails (offline / first run) it falls back to a full scan. It still **never writes** to `reddit_saves`. The app drains the inbox on startup and via a Settings button (`drainInbox`), running items through the shared app-side ingest (`ingestChildren` → `mapRedditChild` + `pushToSupabase`), then deletes the drained rows. This keeps the bookmarklet away from the main table and routes all real writes through the app's trusted, dedup-aware path. A CSP probe (`cspProbeBookmarklet`) confirmed Reddit's CSP allows the same-origin fetch on iOS. **Must run on `old.reddit.com`:** new Reddit (`www`/`sh.reddit.com`) has a strict CSP `connect-src` that blocks the cross-origin write to Supabase (`fetch` throws "Load failed"), so the inbox POST silently fails there while the same-origin `saved.json` read still works (manifesting as "found N items but couldn't reach the inbox"). old.reddit.com allows the write. If the inbox POST fails, the bookmarklet falls back to copying a `{type:'rv-bookmarklet',children}` envelope to the clipboard for manual "Paste captured items" import (`importPastedBookmarklet`). The anon key is embedded in the bookmarklet text (RLS-protected; acceptable for personal use).
-
-**Multi-function menu + typed staging (v0.9.13.0+)** — the bookmarklet is now menu-driven: tapping it shows **① Capture new saves** (the flow above) and **② Refresh scores**. Refresh pages the most-recent active saves from Supabase (`deleted_at=is.null&order=saved_at.desc`, via `Range`/`Range-Unit` headers), batches them through Reddit's same-origin `/api/info.json?id=…` (100 ids/call, 1s pacing), and **flushes `{op:'score',reddit_id,score}` rows to the inbox per batch** so an interrupted run still stages its progress (`sent` counter reported in banners; 429 retries the same batch). **Configurable scope (v0.9.15.0+):** how many recent saves to check is the `scoreRefreshLimit` setting (Settings → Bookmarklet block; `0` = all, default 500). The bookmarklet reads it **live from `user_preferences` at run time** (not baked in), so changing it takes effect without re-copying the bookmarklet — scores settle quickly, so a small cap avoids hammering Reddit while "All" stays a one-click occasional option.
-
-**Account check (v0.9.14.0+)** — an optional expected Reddit username (`state.redditUsername`, set in Settings → Bookmarklet block, synced via `user_preferences`) is baked into the bookmarklet (`EX`). On run, before the menu, it fetches same-origin `/api/me.json` to resolve the logged-in account: 401/403 → "Log in"; the menu header shows **"Logged in as u/…"**; if `EX` is set and mismatches, it blocks behind a warning overlay ("…but this vault belongs to u/X") with a **Use anyway** escape. Empty username = display only, no enforcement. **Typed staging:** inbox rows are dispatched by `payload.op` — legacy/capture rows have **no `op`** (bare `{kind,data}`, treated as captures, so old rows still drain), score rows carry `op:'score'`. Score rows use a **`score:`-prefixed `reddit_id` UNIQUE key** (`'score:'+fullname`) so a capture and a score for the same item occupy disjoint key spaces and can't collide under `ignore-duplicates`. `drainInbox` splits rows by op: capture rows → `ingestChildren` (unchanged), score rows → `applyScoreUpdates` (updates `item.score` for items **already present locally** only — never creates rows, so no resurrection — then pushes changed items via `pushToSupabase`). **Graceful context/login UX:** off-reddit → "Go to old.reddit.com"; new reddit (`www`/`sh`) → "Switch to old.reddit.com" (preserving pathname); 401/403 → "Log in to Reddit". Since a bookmarklet can't survive a navigation, these overlays tell the user to **tap the bookmark again** once the right page loads. Each menu button starts its op on a fresh user gesture so the login `window.open` isn't popup-blocked.
-
----
-
-## Supabase Schema (current)
-
-Five tables:
-
-```sql
-reddit_saves       -- items (posts + comments)
-reddit_inbox       -- bookmarklet capture staging (drained into reddit_saves, then cleared)
-reddit_lists       -- user lists (static and smart)
-reddit_item_lists  -- many-to-many: item ↔ list membership
-user_preferences   -- key-value settings sync across devices
-```
-
-### `reddit_saves` columns
-`id, reddit_id, type, subreddit, title, url, permalink, body, author, score, saved_at, post_created_at, enrich_status, is_favourite, rating, is_disliked, deleted_at, created_at, updated_at`
-
-- `enrich_status`: `'pending'` | `'enriched'` | `'dead'`
-- `deleted_at`: null = active, timestamptz = permanently deleted
-- `is_disliked`: trashed (soft trash, recoverable)
-- `updated_at`: auto-maintained by moddatetime trigger
-
-### `reddit_lists` columns
-`id, name, type, query, is_tag, tag_name, created_at, updated_at`
-
-- `type`: `'static'` | `'smart'`
-- `is_tag`: if true, this list also renders as a tag chip on matching items in browse view
-- `query`: search query string for smart lists (uses same parser as main search)
-
-### `reddit_item_lists` columns
-`id, reddit_id, list_name` — unique constraint on `(reddit_id, list_name)`
-
-### `user_preferences` columns
-`key, value, updated_at` — stores: `redditFeedUrl`, `redditUsername`, `scoreRefreshLimit`, `feedProxyUrl`, `feedProxyType`, `confirmDestructive`, `last_modified`
-
-### `reddit_inbox` columns
-`id, reddit_id, payload, created_at` — transient bookmarklet staging.
-- `reddit_id`: `UNIQUE` upsert key (bookmarklet upserts with `on_conflict=reddit_id`, `resolution=ignore-duplicates`, so re-runs don't pile up). Capture rows use the Reddit fullname (`t3_…`/`t1_…`); score-refresh rows use `score:`+fullname so the two op types never collide.
-- `payload`: typed by `payload.op` — **no `op`** = legacy/capture (bare `{kind,data}` child for `mapRedditChild`); `op:'score'` = `{op:'score',reddit_id,score}` applied by `applyScoreUpdates`.
-- `payload`: `jsonb` — the raw `{kind, data:{…}}` Reddit child the app feeds to `mapRedditChild`
-- Drained and **emptied** by `drainInbox` on each import; never a long-lived store.
-
----
-
-## IndexedDB Schema (Dexie, version 8)
-
-```javascript
-db.version(8).stores({
-  items:      '++id, redditId, type, subreddit, title, url, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt, isPermanentlyDeleted',
-  lists:      '++id, name, type',
-  item_lists: '++id, itemId, listId',
-});
-```
-
-Field name mapping (IndexedDB camelCase → Supabase snake_case):
-- `redditId` → `reddit_id`
-- `savedAt` → `saved_at`
-- `postCreatedAt` → `post_created_at`
-- `enrichStatus` → `enrich_status`
-- `isFavourite` → `is_favourite`
-- `isDisliked` → `is_disliked`
-- `isPermanentlyDeleted` → (`deleted_at` being non-null in Supabase)
-- `deletedAt` → `deleted_at`
-- `isTag` → `is_tag`
-- `tagName` → `tag_name`
-
----
-
-## App State (`state` object)
-
-Key fields:
-```javascript
-state.items          // all items array (loaded from IndexedDB)
-state.lists          // all lists array
-state.itemLists      // all item_list junction records
-state.search         // current search string
-state.showFilters    // filter panel open
-state.filterSub      // subreddit filter
-state.filterAuthor   // author filter
-state.filterDateFrom/To  // date range filters
-state.filterDateField    // 'savedAt' | 'postCreatedAt'
-state.tagMode        // 'AND' | 'OR' for tag chip filtering
-state.activeTagIds   // array of list IDs being used as tag filters
-state.sortBy         // 'savedAt' | 'postCreatedAt' | 'affinity' | 'score' | 'random'
-state.view           // 'browse' | 'lists' | 'settings' | 'trash' | 'deleted'
-state.isDirty        // local changes not yet pushed to Supabase
-state.supabaseUrl    // Supabase project URL
-state.supabaseKey    // Supabase anon key
-state.redditFeedUrl  // Reddit private RSS feed URL
-state.feedProxyUrl   // Cloudflare worker URL
-state.listView           // 'all' | list id — which list is open
-state.listSeparate       // separate smart vs static lists in Lists tab
-state.listSmartFirst     // smart lists appear above static when separated (default: true)
-state.disableZoom    // iOS viewport zoom disabled
-state.confirmDestructive // confirm before destructive actions
-```
-
----
-
-## Render Pattern
-
-The app uses a simple manual render cycle:
-
-```javascript
-render()              // renders the full shell (nav, current view)
-renderBrowseList()    // re-renders just the item list (called on search/filter changes)
-```
-
-`render()` is called for view/state changes. `renderBrowseList()` is called for search/filter/sort changes to avoid re-rendering the entire shell. Both write to `innerHTML`.
-
-`filteredItems()` — the central filter function. Applies: `isPermanentlyDeleted`, `isDisliked`, `enrichStatus !== 'dead'`, view context, active tag filters, subreddit/author/date filters, and search query tokens.
-
----
-
-## Search Engine
-
-Parser: `parseSearchQuery(raw)` → array of token objects
-Matcher: `itemMatchesTokens(item, tokens)`
-
-### Syntax
-| Input | Behaviour |
-|-------|-----------|
-| `python tutorial` | AND — both words must appear as whole words |
-| `react, vue, svelte` | OR — bare comma list = OR group |
-| `(react, vue)` | OR group (explicit parens) |
-| `"machine learning"` | exact substring anywhere in text |
-| `witch*` | words starting with "witch" (witches, witchcraft) |
-| `*witch` | words ending with "witch" (switch) |
-| `*witch*` | words containing "witch" (switches, bewitched) |
-| `-javascript` | exclude this word |
-| `r:programming` | subreddit filter (partial match) |
-| `u:username` | author filter (partial match) |
-| `type:post` | type filter |
-
-**Word boundary matching** is the default for bare words — `app` does NOT match `apple` or `applications`. Use `app*` for prefix matching.
-
-**Wildcards inside OR groups work** — `(run*, walk*)` correctly applies prefix matching to each term.
-
-**Field prefixes stay partial** — `r:prog` matches `r/programming`.
-
-**Negation in bare-comma OR** — if any term in a comma list is negated (`-python, javascript`), the whole thing falls through to AND parsing rather than OR, so `-python, javascript` means NOT python AND javascript.
-
-Helper: `_parseWildcard(raw)` — parses a single term string into `{ value, exact, suffixWild, prefixWild }`.
-
----
-
-## Sync System
-
-### Feed sync (auto / manual)
-`syncFromFeed()` — fetches Reddit RSS feed via a configurable CORS proxy, parses JSON, upserts new items. Skips items already in the DB and items that are `isPermanentlyDeleted`. Runs on interval if `state.autoFeedSync` is enabled.
-
-**Proxy modes** — controlled by `state.feedProxyType` (`'cloudflare'` | `'corsfix'`, default `'cloudflare'`):
-- `'cloudflare'` — uses the user's own deployed Cloudflare Worker at `state.feedProxyUrl`. URL format: `{workerUrl}?url={encodedFeedUrl}`.
-- `'corsfix'` — uses the public `proxy.corsfix.com` service, no setup required. URL format: `https://proxy.corsfix.com/?{feedUrl}` (no encoding, no key).
-
-`_buildProxyUrl(feedUrl)` — helper that constructs the correct proxy URL based on `state.feedProxyType`. Always use this instead of constructing the URL manually.
-
-`mapRedditChild(child, source)` — pure mapper from a raw Reddit listing child (`t1`/`t3`) to a RedditVault item. **Single source of truth** for both feed sync and the bookmarklet drain; `syncFromFeed` and `ingestChildren` both call it so the two ingestion paths can't drift.
-
-### Bookmarklet inbox (mobile / non-Chrome capture)
-`buildInboxBookmarklet(url, key, expectUser)` — generates the menu-driven `javascript:` bookmarklet (single source for both ops). Before the menu it resolves the logged-in account via same-origin `/api/me.json` and (if `expectUser` is set) warns on a mismatch — see the Account check note above. **① Capture:** read-only GET of recent `reddit_id`s for an incremental early-stop → fetch `saved.json` same-origin newest-first, stopping at the first fully-known page → POST only new raw items to `reddit_inbox`. **② Refresh scores:** reads the `scoreRefreshLimit` preference live (0=all, default 500) → page that many active ids from `reddit_saves` via `Range` headers → batch `/api/info.json?id=…` (100/call) → POST `{op:'score',…}` rows (keyed `score:`+fullname) **per batch** (incremental flush; partial progress survives interruption). `saveRedditUsername()` / `saveScoreRefreshLimit()` persist those settings (config + `pushPreference`). Banners use a `done()` helper (textContent + real Close button) so the whole string stays quote-free (no inline `onclick`, no double quotes, no backticks). `drainInbox({manual})` — pages the inbox via `supabaseFetchRange`, **dispatches rows by `payload.op`**: capture/legacy rows → `ingestChildren(children,'bookmarklet')`, `op:'score'` rows → `applyScoreUpdates([{redditId,score}])`; then `DELETE`s all drained ids (chunked). Result is `{added,skipped,scoresUpdated,drained}`. Called on startup **and on foreground (`visibilitychange`)** so captures made while backgrounded import on return, plus from the Settings button (manual). Quiet runs toast only when `added>0 || scoresUpdated>0`; manual runs always toast. `ingestChildren` dedups against all known ids **including permanently-deleted** ones, so capture can't resurrect deletions; `applyScoreUpdates` only touches items already in `state.items` (so it can't resurrect either), updates IndexedDB only when the score changed, and pushes via the app's own `pushToSupabase`. `importPastedBookmarklet()` is the clipboard fallback receiver (capture only). `cspProbeBookmarklet(url,key)` is a diagnostics-only probe.
-
-### Cloud push
-`supabasePush(items)` — upserts items to `reddit_saves` using `on_conflict=reddit_id`.
-`pushListsToSupabase()` — upserts lists and rebuilds `reddit_item_lists` for each list.
-
-### Cloud pull
-`syncFromSupabase()` — delta sync using `updated_at=gt.{lastSync}` filter when `state.lastSync` exists. Falls back to full table scan on first run (no `lastSync`). `lastSync` is recorded at the *start* of the pull (not end) so rows modified during a slow pull aren't missed next time. Lists use the same delta filter. Static list memberships are reconciled per-list (add missing, remove stale) only for lists whose `updated_at` changed — push always touches the parent list's `updated_at` when memberships change so the trigger fires. Smart list membership is never stored — computed at render time. Toast shows "Already up to date" when delta returns zero changes.
-
-**In-flight edit guard (v0.9.17.1+):** a pull fetches a *snapshot* of remote rows at pull-start, then its per-item write loop can land much later. If the user rates/favourites/trashes an item *while that pull is in flight*, the stale snapshot would clobber the just-made edit (symptom: stars appear, then vanish, then "synced"). To prevent this, every per-item local mutation (`setRating`, `toggleFavourite`, `dislikeItem`, `restoreItem`, `deleteItemPermanently`, `restoreDeletedItem`, bulk trash/delete) stamps `item.localEditAt = now` (client clock, unindexed Dexie field). Both `syncFromSupabase` and `deltaPullBeforePush` **skip overwriting any item whose `localEditAt` is newer than the pull's own start time** — both timestamps are on the same client clock, so there's no server-clock-skew problem. The edit's own `pushItemUpdate` carries it to the cloud; a *later* pull (start time > the edit) reconciles normally, so `localEditAt` never lingers harmfully.
-
----
-
-## Lists System
-
-**Static lists** — manual membership. Items added/removed via UI. Stored in `item_lists` junction table.
-
-**Smart lists** — defined by a search query. Membership computed at runtime by running `parseSearchQuery(list.query)` against all items. Not stored in `item_lists`.
-
-**Tags** — smart lists with `isTag: true`. These render as coloured chip pills on matching items in the browse view. Tag chips are also shown as filter buttons at the top of browse view. `state.activeTagIds` tracks which tags are active as filters.
-
-**Tag cache** — `state.tagCache` is a `Map<itemId, listId[]>` precomputed by `rebuildTagCache()`. Called after `loadData()` and after any list mutation. Makes tag chip rendering O(1) per item.
-
-**Affinity sort** — scores items on: rating (0–50 pts), favourite (+30 pts flat), author frequency (0–15 pts log-scaled), tag membership (0–20 pts). `rebuildAuthorFreq()` precomputes author counts. Called in `loadData()`. Unrated (`rating == null`) uses a neutral 10-pt baseline; an explicit thumbs-down (`rating === 0`) scores 0, ranking it below unrated.
-
-**Rating model (v0.9.18.0+)** — three distinct states: **unrated (`null`)**, **thumbs-down (`0`)**, **stars (`1`–`5`)**. `0` is a real persisted value (Supabase `rating` is a nullable int) — push/pull use `?? null` (never `|| null`, which would coerce `0` → unrated). The fiddly inline 5-star row was replaced by a single compact **rating chip** on each card (`render/card.js`, shows current state: muted "☆ Rate" / 👎 / ★n) that opens `showRatingMenu(itemId)` (`render/shell.js`) — a `showModal` picker with large (~48px) 👎 + ★1–5 + "Clear rating" buttons. The same picker is reachable from the preview sheet (`render/preview.js`), which re-renders just its meta block in place via `refreshOpenPreviewMeta()` after an edit. `setRating(id, value)` sets the value directly (no re-tap toggle; value may be `null`/`0`/`1`–`5`). Read-only rating display everywhere uses the shared `ratingDisplay(item)` helper (`util.js`): `null` → nothing, `0` → 👎, `1`–`5` → stars.
-
-**Favourite vs rating (v0.9.18.1+)** — to avoid confusion with the amber rating stars (`#f59e0b`), the **favourite** control (`isFavourite`, still a separate field from `rating`) renders as a **pink heart** (`#ec4899`): filled `♥` when favourited, hollow muted `♡` when not — in `render/card.js`, `render/preview.js`, and the home recent row. The favourited card border tint is pink (`rgba(236,72,153,0.35)`), and the home stat label reads **"Favourited"**. Pink (not red) keeps it distinct from the `var(--danger)` red trash button. Display-only — `toggleFavourite`/Supabase `is_favourite` are unchanged.
-
----
-
-## Item Lifecycle
-
-```
-CSV import / feed sync / extension sync
-  → upsert into IndexedDB (enrichStatus: 'pending' or 'enriched')
-  → push to Supabase
-
-Enrichment (manual trigger)
-  → fetch old.reddit.com/{permalink}.json
-  → update item fields + enrichStatus: 'enriched' | 'dead'
-  → push to Supabase
-
-Trash (isDisliked: true)
-  → hidden from browse view
-  → visible in Trash view
-  → recoverable
-
-Permanent delete (isPermanentlyDeleted: true + deletedAt)
-  → hidden everywhere except Deleted Items view
-  → deleted_at set in Supabase
-  → never resurfaces from feed sync
-  → recoverable via Restore button
-
-Purge (actual deletion)
-  → removed from IndexedDB
-  → DELETE from Supabase reddit_saves
-  → gone permanently
-```
-
----
-
-## Settings Panel Structure (v0.9.5+)
-
-Six sections in this order:
-1. **🔄 Sync New Saves** — sync button, result, auto-sync toggle, interval, feed connection settings (collapsible)
-2. **☁️ Cloud Database** — status, manual push/pull, Supabase connection settings (collapsible)
-3. **📊 Library** — stats (active items only; deleted count shown if any), Backup & Restore sub-block
-4. **📥 Import & Enrich** — CSV import, enrichment controls, About, speed settings (collapsible)
-5. **🎛️ Behaviour** — Confirm destructive actions checkbox, Disable pinch-to-zoom checkbox
-6. **🔬 Diagnostics** (muted, opacity 0.85) — Force reload button, Troubleshooting tools (details), Sync log (details)
-
----
-
-## CSS Variables
-
-```css
---bg         /* page background */
---surface    /* card/panel background */
---border     /* border colour */
---text       /* primary text */
---text-muted /* secondary/hint text */
---accent     /* primary accent (orange-ish) */
---accent2    /* secondary accent (blue-ish) */
---danger     /* red for destructive actions */
-```
-
-Dark mode via `@media (prefers-color-scheme: dark)`.
-
----
-
-## Known Issues / Pending Work
-
-1. **Cloudflare Worker ALLOWED_ORIGIN** — hardcoded to `https://reddivault.vercel.app`. New installs must update this to their own Vercel URL before deploying the worker.
-
-2. **Reddit CSV `saved_posts.csv`** — the CSV field for saved date is often empty; `savedAt` is typically the import timestamp, not the actual Reddit save date.
-
----
-
-## Conventions
-
-- **Versioning**: `APP_VERSION` const at top of `index.html`. Format: `major.minor.patch.hotfix` (e.g. `0.9.6.4`). Bump for every deployed change.
-- **Sync log**: `syncLog(message, level)` — appends to in-memory log shown in Diagnostics. Levels: `'info'` (default), `'ok'`, `'warn'`, `'error'`.
-- **Error boundary**: `window.onerror` + `unhandledrejection` catch and display a recovery UI with version info.
-- **iOS**: `font-size: 16px` on all inputs (prevents iOS zoom on focus). Viewport has `maximum-scale=1.0, user-scalable=no` (controllable via Behaviour setting).
-- **Markdown rendering**: `renderMarkdown(text)` — handles bold, italic, inline code, links, strikethrough. Used for comment body text. Extracts markdown links before escaping to avoid mangling brackets.
-- **Smart quote normalisation**: search input normalises `'` `'` `"` `"` to straight quotes (iOS autocorrect artefact).
-
----
-
-## Session Transcripts
-
-Full conversation history is in `docs/transcripts/`. See `docs/transcripts/journal.txt` for a chronological index.
-
-These can be read with standard file tools if you need to investigate why a specific decision was made.
+## Hard Rules — every change must respect these
+
+1. **Zero-build, static deploy.** Native ES modules loaded directly by the browser —
+   no bundler, no package.json, no transpiler, no build step. Third-party libs (Dexie,
+   PapaParse) come from CDN `<script>` tags in `pwa/index.html`. Vercel serves the files
+   as-is.
+2. **Version bumps on every deployed change.** Bump `APP_VERSION` in `pwa/js/state.js`
+   AND `VERSION` in `pwa/sw.js` (format `major.minor.patch.hotfix`). The SW precaches a
+   hand-maintained `ASSETS` array keyed off `VERSION` — **a new `js/*.js` file must be
+   added to `ASSETS`** or it won't work offline.
+3. **The `window` bridge.** Rendered HTML uses ~140 inline `onclick="fn(…)"` handlers
+   that resolve against global scope. `app.js` does `Object.assign(window, ...modules)`,
+   so any function referenced by an inline handler must be **`export`ed from its module**
+   — the bridge picks it up automatically, zero template changes.
+4. **Rating three-state.** `rating` is `null` (unrated) | `0` (thumbs-down) | `1`–`5`
+   (stars). Always propagate with `?? null`, **never `|| null`** (which coerces a real
+   `0` to unrated).
+5. **Soft delete only.** "Permanently deleted" items stay in the DB with
+   `isPermanentlyDeleted: true` + `deletedAt` (Supabase `deleted_at`) so feed sync can't
+   resurrect them. Actual removal is only the explicit Purge action.
+6. **Single ingestion path.** `mapRedditChild(child, source)` is the only mapper from a
+   raw Reddit listing child to an item — feed sync and the bookmarklet drain both use it.
+   The bookmarklet writes **only** to the `reddit_inbox` staging table, never to
+   `reddit_saves`; all real writes go through the app's dedup-aware drain.
+7. **`localEditAt` pull guard.** Every per-item local mutation stamps
+   `item.localEditAt = Date.now()`. `syncFromSupabase` and `deltaPullBeforePush` must
+   skip overwriting any item whose `localEditAt` is newer than the pull's start time
+   (both on the client clock), so an in-flight pull can't clobber a fresh edit.
+8. **iOS quirks.** `font-size: 16px` on all inputs (prevents zoom-on-focus); viewport
+   pinch-zoom lock is user-controllable (`state.disableZoom`). The bookmarklet string
+   must stay quote-free (no double quotes, no backticks, no inline `onclick`) — banners
+   use the `done()` helper with `textContent`.
 
 ---
 
@@ -370,47 +53,335 @@ These can be read with standard file tools if you need to investigate why a spec
 /
 ├── CLAUDE.md                          ← this file
 ├── SETUP.md                           ← end-user setup guide
-├── supabase-schema.sql                ← current DB schema
-├── vercel.json                        ← Vercel config
+├── supabase-schema.sql                ← DB schema (fresh install + migration sections)
+├── vercel.json                        ← Vercel config (auto-deploys from GitHub)
 ├── pwa/
-│   ├── index.html                     ← PWA shell (markup + CDN libs + module entry)
+│   ├── index.html                     ← shell: markup + CDN libs + module entry
 │   ├── styles.css                     ← all app CSS
-│   ├── js/                            ← app, split into native ES modules
-│   │   ├── app.js                     ← entry: imports all, window bridge, bootstrap
-│   │   ├── state.js                   ← APP_VERSION, db, state, syncLog
-│   │   ├── util.js                    ← formatters, escapers, markdown, toast
-│   │   ├── core.js                    ← init, load/reconcile, tag cache
-│   │   ├── enrich.js                  ← Arctic Shift + Reddit enrichment
-│   │   ├── cloud.js                   ← Supabase push/pull/delta sync
-│   │   ├── feed.js                    ← RSS/JSON feed sync + proxy
-│   │   ├── bookmarklet.js             ← bookmarklet capture / inbox drain / score refresh
-│   │   ├── dataio.js                  ← CSV import, backup/restore, repairs
-│   │   ├── search.js                  ← search engine, affinity, sort, filters
-│   │   ├── items.js                   ← item/list actions, navigation
-│   │   ├── render.js                  ← barrel: re-exports render/ submodules
-│   │   └── render/                    ← view rendering, split by surface
-│   │       ├── shell.js               ← dispatcher, header, modals, listeners
-│   │       ├── home.js                ← home + recent
-│   │       ├── browse.js              ← browse + search/filter UI
-│   │       ├── card.js                ← item card
-│   │       ├── preview.js             ← preview sheet + link picker
-│   │       ├── trash.js               ← trash/deleted view
-│   │       ├── lists.js               ← lists view + list menus
-│   │       └── settings.js            ← settings page
-│   ├── sw.js                          ← service worker
-│   ├── manifest.json                  ← PWA manifest
-│   ├── icon-192.png
-│   └── icon-512.png
-├── extension/
-│   ├── manifest.json
-│   ├── popup.html
-│   ├── popup.js
-│   └── background.js
+│   ├── sw.js                          ← service worker (VERSION + ASSETS list)
+│   ├── manifest.json, icon-*.png
+│   └── js/                            ← the app, native ES modules
+│       ├── app.js                     ← entry: imports all, window bridge, bootstrap
+│       ├── state.js                   ← APP_VERSION, Dexie db + version chain, state, syncLog
+│       ├── util.js                    ← escHtml/escAttr, fmtDate, showToast, renderMarkdown,
+│       │                                openLink, fullUrl, ratingDisplay, applyZoomSetting
+│       ├── core.js                    ← init, loadConfig/loadData, rebuildTagCache,
+│       │                                rebuildFilterLists, reconcileDirtyState, markDirty
+│       ├── enrich.js                  ← Arctic Shift + Reddit enrichment, rate limiting
+│       ├── cloud.js                   ← Supabase REST (supabaseFetch), push/pull/delta sync,
+│       │                                preferences push/pull, retry/dirty machinery
+│       ├── feed.js                    ← RSS/JSON feed sync, _buildProxyUrl, config save
+│       ├── bookmarklet.js             ← buildInboxBookmarklet, drainInbox, ingestChildren,
+│       │                                mapRedditChild, applyScoreUpdates,
+│       │                                importPastedBookmarklet, cspProbeBookmarklet
+│       ├── dataio.js                  ← CSV import, JSON backup/restore, repairs, delete
+│       ├── search.js                  ← parseSearchQuery, itemMatchesTokens, _parseWildcard,
+│       │                                affinityScore, sortItems, filteredItems,
+│       │                                list-options helpers (serialise/applyListOptions)
+│       ├── items.js                   ← item/list mutations (favourite, rate, trash, delete,
+│       │                                list CRUD), showPage, search/filter actions
+│       ├── render.js                  ← barrel: `export *` over render/ submodules
+│       └── render/
+│           ├── shell.js               ← render dispatcher, header, error fallback,
+│           │                            showModal/closeModal, showRatingMenu, sort control
+│           ├── home.js                ← renderHome, renderRecent
+│           ├── browse.js              ← renderBrowse, item list, search/filter handlers
+│           ├── card.js                ← renderItemCard
+│           ├── preview.js             ← showPreview, closePreview, showLinkPicker,
+│           │                            refreshOpenPreviewMeta
+│           ├── trash.js               ← renderTrashView
+│           ├── lists.js               ← renderLists + list menus
+│           └── settings.js            ← the whole settings page
+├── extension/                         ← Chrome extension (manifest, popup, background)
 ├── cloudflare-worker/
 │   ├── reddit-feed-proxy.js           ← CORS proxy worker
-│   └── wrangler.toml                  ← Cloudflare CI/CD config (wrangler deploy)
-└── docs/
-    └── transcripts/
-        ├── journal.txt
-        └── *.txt                      ← full session transcripts
+│   └── wrangler.toml                  ← wrangler deploy config
+└── docs/transcripts/                  ← full session transcripts + journal.txt index
 ```
+
+Other modules and the window bridge import rendering from `./render.js` (the barrel),
+never from `render/` submodules directly.
+
+---
+
+## Data Flow
+
+```
+Reddit (session cookies) → Chrome Extension → Supabase → PWA (IndexedDB cache)
+Reddit (session cookies) → Bookmarklet → Supabase reddit_inbox → PWA drains into library
+Reddit (RSS feed)        → Cloudflare Worker (or corsfix proxy) → PWA feed sync
+Reddit public JSON API   → PWA enrichment (no auth needed)
+```
+
+- **IndexedDB is the source of truth**; Supabase is the sync layer. The PWA reads local
+  on every load; `supabasePull` merges remote into local, `supabasePush` pushes dirty items.
+- **Session-based sync, not OAuth** — the extension and bookmarklet ride the user's
+  existing reddit.com login cookies, avoiding Reddit's developer-app approval. Personal
+  use only; the Supabase anon key embedded in the bookmarklet is RLS-protected and
+  acceptable for this threat model.
+- There are **no folders** — organisation is via Lists. (The old `folder` column became
+  `deleted_at` in a Supabase migration; a legacy `folders` Dexie store lingers unused.)
+
+---
+
+## Supabase Schema
+
+Five tables (see `supabase-schema.sql`):
+
+| Table | Purpose |
+|-------|---------|
+| `reddit_saves` | items (posts + comments) |
+| `reddit_inbox` | bookmarklet staging — drained into `reddit_saves`, then cleared |
+| `reddit_lists` | user lists (static and smart) |
+| `reddit_item_lists` | many-to-many item ↔ list, unique on `(reddit_id, list_name)` |
+| `user_preferences` | key-value settings sync (`key, value, updated_at`) |
+
+**`reddit_saves`:** `id, reddit_id, type, subreddit, title, url, permalink, body, author,
+score, saved_at, post_created_at, enrich_status, is_favourite, rating, is_disliked,
+deleted_at, created_at, updated_at`
+- `enrich_status`: `'pending' | 'enriched' | 'dead'`
+- `deleted_at`: null = active, timestamptz = permanently deleted
+- `is_disliked`: soft trash (recoverable) · `rating`: nullable int (see Hard Rule 4)
+- `updated_at`: maintained by moddatetime trigger — delta pulls key off it
+
+**`reddit_lists`:** `id, name, type ('static'|'smart'), query, is_tag, tag_name,
+options_json, created_at, updated_at`
+- `options_json` is `text`, **not jsonb** — the app stores a JSON *string*
+  (`serialiseListOptions`) and `JSON.parse`s it on read (`applyListOptions`); jsonb would
+  round-trip as an object and the options would be silently dropped.
+
+**`reddit_inbox`:** `id, reddit_id, payload jsonb, created_at` — transient staging.
+- `reddit_id` is the `UNIQUE` upsert key (`on_conflict=reddit_id`,
+  `resolution=ignore-duplicates`, so bookmarklet re-runs don't pile up).
+- Rows are typed by `payload.op`: **no `op`** = capture (bare `{kind, data}` Reddit child,
+  keyed by fullname `t3_…`/`t1_…`, fed to `mapRedditChild`); **`op:'score'`** =
+  `{op:'score', reddit_id, score}`, keyed `'score:'+fullname` so the two op types can
+  never collide under ignore-duplicates.
+
+**`user_preferences` keys:** `redditFeedUrl`, `redditUsername`, `scoreRefreshLimit`,
+`feedProxyUrl`, `feedProxyType`, `feedFormat`, `confirmDestructive`, `recentSearches`,
+`last_modified`.
+
+---
+
+## IndexedDB Schema (Dexie, version 9)
+
+```javascript
+db.version(9).stores({
+  items:      '++id, redditId, type, subreddit, title, url, savedAt, postCreatedAt, enriched, enrichStatus, enrichAttempts, syncedAt, isPermanentlyDeleted',
+  folders:    '++id, name, icon, createdAt',   // legacy, unused
+  lists:      '++id, name, type, createdAt, isTag',
+  item_lists: '++id, itemId, listId',
+  config:     'key',                            // local key-value config
+});
+```
+
+Unindexed fields ride along on objects (e.g. `items.localEditAt`, `lists.optionsJson`).
+The version chain in `state.js` carries upgrade migrations — never edit old versions,
+add a new `db.version(n)`.
+
+Field mapping (IndexedDB camelCase → Supabase snake_case): `redditId → reddit_id`,
+`savedAt → saved_at`, `postCreatedAt → post_created_at`, `enrichStatus → enrich_status`,
+`isFavourite → is_favourite`, `isDisliked → is_disliked`, `deletedAt → deleted_at`
+(`isPermanentlyDeleted` ⇔ `deleted_at` non-null), `isTag → is_tag`,
+`tagName → tag_name`, `optionsJson → options_json`.
+
+---
+
+## App State (`state` in state.js)
+
+Key fields (see `state.js` for the full annotated object):
+
+```javascript
+state.page            // 'home' | 'browse' | 'recent' | 'lists' | 'settings'
+state.items / lists / itemLists   // loaded from IndexedDB
+state.search          // current search string
+state.showFilters, filterType, filterRating, filterHasLinks,
+state.filterSubreddit, filterAuthor, filterDateFrom/To,
+state.filterDateField // 'postCreatedAt' | 'savedAt'
+state.filterFavourite, searchBody
+state.activeTagIds    // list ids active as tag filters
+state.tagMode         // 'AND' | 'OR'
+state.tagCache        // Map<listId, { count, itemIds: Set }> — see Lists
+state.sortBy          // 'savedAt' | 'postCreatedAt' | 'affinity' | 'score' | 'random'
+state.sortDir         // 'asc' | 'desc'
+state.showTrash / showDeleted     // trash + deleted-items views (flags, not pages)
+state.localDirty / cloudAhead     // sync dirty tracking
+state.lastPushedAt    // delta cursor for push
+state.supabaseUrl / supabaseKey
+state.redditFeedUrl, feedProxyUrl, feedProxyType ('cloudflare'|'corsfix'),
+state.feedFormat      // 'rss' | 'json' — Reddit currently WAF-blocks .json
+state.redditUsername  // expected account for the bookmarklet check
+state.scoreRefreshLimit  // saves checked by "Refresh scores" (0 = all, default 500)
+state.listView / listSeparate / listSmartFirst
+state.confirmDestructive, disableZoom
+state.autoFeedSync, autoFeedSyncInterval
+```
+
+---
+
+## Render Pattern
+
+Manual render cycle, everything writes `innerHTML`:
+
+- `render()` — full shell (nav + current page). Call on page/state changes.
+- `renderBrowseList()` — just the item list. Call on search/filter/sort changes.
+- `filteredItems()` (search.js) — the central filter: applies `isPermanentlyDeleted`,
+  `isDisliked`, `enrichStatus !== 'dead'`, view context, active tags,
+  subreddit/author/date filters, and search tokens.
+- Error boundary: `window.onerror` + `unhandledrejection` show a recovery UI with version.
+
+---
+
+## Search Engine
+
+`parseSearchQuery(raw)` → token objects; `itemMatchesTokens(item, tokens)` matches;
+`_parseWildcard(raw)` → `{ value, exact, suffixWild, prefixWild }`.
+
+| Input | Behaviour |
+|-------|-----------|
+| `python tutorial` | AND — whole-word matches |
+| `react, vue` / `(react, vue)` | OR group |
+| `"machine learning"` | exact substring |
+| `witch*` / `*witch` / `*witch*` | prefix / suffix / contains |
+| `-javascript` | exclude |
+| `r:programming` / `u:name` | subreddit / author (partial match) |
+| `type:post` | type filter |
+
+- Bare words are **whole-word** matches (`app` ≠ `apple`); use `app*` for prefix.
+- Wildcards work inside OR groups: `(run*, walk*)`.
+- Field prefixes stay partial: `r:prog` matches r/programming.
+- A negated term in a bare comma list (`-python, javascript`) falls through to AND parsing.
+- Search input normalises smart quotes `' ' " "` (iOS autocorrect).
+
+---
+
+## Sync System
+
+### Cloud push / pull (cloud.js)
+- `supabasePush(items)` — upsert to `reddit_saves` with `on_conflict=reddit_id`.
+- `pushListsToSupabase()` — upserts lists, rebuilds `reddit_item_lists` per list, and
+  always touches the parent list's `updated_at` when memberships change (so delta sees it).
+- `syncFromSupabase()` — delta pull via `updated_at=gt.{lastSync}`; full scan on first
+  run. `lastSync` is recorded at pull-*start* so rows modified during a slow pull aren't
+  missed. Static-list memberships reconcile per-list only for lists whose `updated_at`
+  changed. Respects the `localEditAt` guard (Hard Rule 7).
+
+### Feed sync (feed.js)
+- `syncFromFeed()` — fetch Reddit RSS via CORS proxy, parse, upsert new items; skips
+  known ids and permanently-deleted items. Auto-runs on interval if `state.autoFeedSync`.
+- Proxy via `_buildProxyUrl(feedUrl)` — **always use it**, never build URLs by hand:
+  `'cloudflare'` → `{workerUrl}?url={encoded}`; `'corsfix'` →
+  `https://proxy.corsfix.com/?{feedUrl}` (unencoded, no key, no setup).
+
+### Bookmarklet (bookmarklet.js) — mobile / non-Chrome capture
+`buildInboxBookmarklet(url, key, expectUser)` generates a menu-driven `javascript:`
+bookmarklet. **Must run on `old.reddit.com`** — new Reddit's CSP `connect-src` blocks the
+cross-origin Supabase write (reads still work, so it looks like "found N items but
+couldn't reach the inbox"). Off-reddit / new-reddit / logged-out states get overlays
+telling the user to tap the bookmark again on the right page (a bookmarklet can't
+survive navigation). Each menu button starts on a fresh user gesture (popup-blocker).
+
+- **Account check:** resolves `/api/me.json` before the menu; header shows
+  "Logged in as u/…". If `expectUser` (`state.redditUsername`) is set and mismatched,
+  blocks behind a warning with a "Use anyway" escape. Empty = display only.
+- **① Capture:** incremental — read-only GET of recent `reddit_id`s
+  (`order=saved_at.desc&limit=500`), then pages `saved.json` newest-first, stopping at
+  the first fully-known page; POSTs only new raw children to `reddit_inbox`. Falls back
+  to a full scan if the read fails, and to a clipboard envelope
+  (`{type:'rv-bookmarklet', children}` → "Paste captured items" /
+  `importPastedBookmarklet`) if the inbox POST fails.
+- **② Refresh scores:** reads `scoreRefreshLimit` live from `user_preferences` at run
+  time (not baked in), pages that many active ids from `reddit_saves` via `Range`
+  headers, batches `/api/info.json?id=…` (100/call, 1s pacing; 429 retries the batch),
+  and flushes `{op:'score',…}` rows per batch so interruptions keep partial progress.
+
+**Drain:** `drainInbox({manual})` runs on startup, on `visibilitychange` foreground, and
+from the Settings button. Pages the inbox, dispatches by `payload.op`: capture rows →
+`ingestChildren(children,'bookmarklet')`; score rows → `applyScoreUpdates`. Then DELETEs
+drained ids (chunked). Result `{added, skipped, scoresUpdated, drained}`; quiet runs
+toast only when something changed. Anti-resurrection: `ingestChildren` dedups against
+all known ids **including permanently-deleted**; `applyScoreUpdates` only touches items
+already in `state.items` and pushes via the app's own `pushToSupabase`.
+
+---
+
+## Lists, Tags, Ratings
+
+- **Static lists** — manual membership, stored in the `item_lists` junction.
+- **Smart lists** — a search query; membership computed at render time via
+  `parseSearchQuery(list.query)`, never stored. `optionsJson` persists the list's
+  filters/sort (`serialiseListOptions`/`applyListOptions`).
+- **Tags** — smart lists with `isTag: true`; render as chip pills on matching cards and
+  as filter buttons in browse. `rebuildTagCache()` precomputes
+  `state.tagCache: Map<listId, { count, itemIds: Set }>` after `loadData()` and any list
+  mutation, making per-item chip rendering O(1).
+- **Affinity sort** — rating (0–50), favourite (+30 flat), author frequency (0–15
+  log-scaled via `rebuildAuthorFreq()`), tag membership (0–20). Unrated (`null`) gets a
+  neutral 10-pt baseline; thumbs-down (`0`) scores 0, below unrated.
+- **Rating UI** — each card shows a compact rating chip (muted "☆ Rate" / 👎 / ★n) that
+  opens `showRatingMenu(itemId)` (shell.js modal picker: 👎, ★1–5, Clear). Also reachable
+  from the preview sheet, which refreshes its meta in place
+  (`refreshOpenPreviewMeta()`). Read-only display always goes through
+  `ratingDisplay(item)` in util.js.
+- **Favourite ≠ rating** — `isFavourite` is a separate field, rendered as a **pink heart**
+  (`#ec4899`, filled ♥ / hollow ♡) to stay distinct from amber rating stars and the red
+  trash button. Card border tint pink when favourited; home stat reads "Favourited".
+
+---
+
+## Item Lifecycle
+
+```
+CSV import / feed sync / extension / bookmarklet drain
+  → upsert IndexedDB (enrichStatus 'pending'|'enriched') → push to Supabase
+
+Enrichment (manual): Arctic Shift bulk pass first, Reddit per-item fallback second
+  → enrichStatus 'enriched' | 'dead' → push
+
+Trash (isDisliked)      → hidden from browse, visible in Trash, recoverable
+Permanent delete        → isPermanentlyDeleted + deletedAt / deleted_at; hidden everywhere
+                          except Deleted Items; never resurfaces; restorable
+Purge                   → actually removed from IndexedDB + Supabase; gone
+```
+
+**Enrichment detail:** phase 1 `enrichViaArcticShift` hits
+`arctic-shift.photon-reddit.com` (`/api/posts/ids`, `/api/comments/ids`; up to 500
+ids/request, 500ms between batches, no auth). Phase 2 `enrichItemFromReddit` is the slow
+per-item fallback (configurable delay, default 7.5s) for whatever phase 1 missed.
+
+---
+
+## Settings Page — seven sections in order
+
+1. **🔄 Sync New Saves** — sync button, auto-sync toggle/interval, feed connection (collapsible)
+2. **🔖 Bookmarklet Sync** — bookmarklet copy, expected username, score-refresh limit, import-from-inbox
+3. **☁️ Cloud Database** — status, manual push/pull, Supabase connection (collapsible)
+4. **📊 Library** — stats (active items; deleted count if any), Backup & Restore
+5. **📥 Import & Enrich** — CSV import, enrichment controls, About, speed settings
+6. **🎛️ Behaviour** — confirm-destructive, disable pinch-to-zoom
+7. **🔬 Diagnostics** (muted) — force reload, troubleshooting tools, sync log
+
+---
+
+## Conventions
+
+- **CSS variables:** `--bg, --surface, --border, --text, --text-muted, --accent`
+  (orange), `--accent2` (blue), `--danger` (red). Dark mode via
+  `@media (prefers-color-scheme: dark)`.
+- **Sync log:** `syncLog(msg, level)` — in-memory (session-only, cap 200), shown in
+  Diagnostics. Levels: `'info' | 'ok' | 'warn' | 'error'`.
+- **Markdown:** `renderMarkdown(text)` — bold, italic, inline code, links,
+  strikethrough; extracts links before escaping. Used for comment bodies.
+- **Toasts:** `showToast(msg)`; quiet background syncs only toast on change.
+
+---
+
+## Known Issues / Pending Work
+
+1. **Cloudflare Worker `ALLOWED_ORIGIN`** — hardcoded to `https://reddivault.vercel.app`;
+   new installs must change it before deploying the worker.
+2. **Reddit CSV `saved_posts.csv`** — the saved-date field is usually empty, so `savedAt`
+   is typically the import timestamp, not the real save date.
+3. **Window-bridge migration** — a future pass can replace inline `onclick` handlers with
+   a `data-action` delegated dispatcher and drop the bridge.
