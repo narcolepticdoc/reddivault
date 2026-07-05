@@ -1,5 +1,5 @@
 // bookmarklet.js — part of RedditVault (auto-split from the original single-file PWA).
-import { pushPreference, pushToSupabase, supabaseFetch, supabaseFetchRange } from './cloud.js';
+import { markClean, pushPreference, pushToSupabase, supabaseFetch, supabaseFetchRange } from './cloud.js';
 import { loadData } from './core.js';
 import { render } from './render.js';
 import { db, state, syncLog } from './state.js';
@@ -98,8 +98,9 @@ export async function applyScoreUpdates(updates) {
   }
   if (changed.length && state.supabaseUrl && state.supabaseKey) {
     for (let i = 0; i < changed.length; i += 200) {
-      await pushToSupabase(changed.slice(i, i + 200));
+      await pushToSupabase(changed.slice(i, i + 200), true);
     }
+    await markClean();
   }
   return changed.length;
 }

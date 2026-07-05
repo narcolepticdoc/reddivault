@@ -1,6 +1,6 @@
 // core.js — part of RedditVault (auto-split from the original single-file PWA).
 import { drainInbox } from './bookmarklet.js';
-import { checkCloudAhead, markClean, pullPreferences, pushListsToSupabase, scheduleRetry, supabaseFetch, syncFromSupabase } from './cloud.js';
+import { checkCloudAhead, pullPreferences, pushAllDirty, scheduleRetry, supabaseFetch, syncFromSupabase } from './cloud.js';
 import { autoFeedSyncIfDue } from './feed.js';
 import { render, renderHeaderActions } from './render.js';
 import { filteredItems, itemMatchesTokens, parseSearchQuery } from './search.js';
@@ -52,22 +52,17 @@ export async function reconcileDirtyState() {
       state.cloudAhead = true;
       renderHeaderActions();
       await syncFromSupabase();
-      if (state.localDirty) {
-        syncLog('Reconcile: still dirty after pull — force clearing', 'warn');
-        await markClean();
-      }
+      // The pull recomputes the dirty flag itself (unsynced items stay dirty
+      // and re-arm the retry) — never force-clear here.
     } else {
       syncLog('Reconcile: local may be ahead — attempting push');
       try {
-        await pushListsToSupabase();
+        await pushAllDirty();
         syncLog('Reconcile: push succeeded', 'ok');
       } catch(e) {
-        syncLog(`Reconcile: push failed (${e.message}) — clearing dirty anyway`, 'warn');
-        await markClean();
-      }
-      if (state.localDirty) {
-        syncLog('Reconcile: still dirty after push — force clearing', 'warn');
-        await markClean();
+        // Stay dirty — clearing here would silently discard unpushed changes.
+        syncLog(`Reconcile: push failed (${e.message}) — staying dirty for retry`, 'error');
+        scheduleRetry();
       }
     }
   } catch(e) {

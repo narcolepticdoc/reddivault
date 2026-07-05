@@ -1,4 +1,4 @@
-const VERSION = '0.9.18.1';
+const VERSION = '0.9.19.0';
 const CACHE = `reddivault-${VERSION}`;
 
 const ASSETS = [
@@ -52,19 +52,22 @@ self.addEventListener('activate', e => {
 });
 
 self.addEventListener('fetch', e => {
-  const url = e.request.url;
-
-  // External API calls — pass through, no caching
-  if (url.includes('supabase.co') || url.includes('reddit.com')) {
-    e.respondWith(fetch(e.request));
-    return;
-  }
-
   // Only cache GET requests — skip POST/PATCH/DELETE entirely
   if (e.request.method !== 'GET') return;
 
+  const url = new URL(e.request.url);
+  const sameOrigin = url.origin === self.location.origin;
+  const isCdn = url.hostname === 'cdnjs.cloudflare.com';
+
+  // Only our own static files and the two CDN libs are cache-managed.
+  // Everything else — Supabase (any domain), Reddit, feed proxies, Arctic
+  // Shift, including the same-origin /api/ proxy path — goes straight to the
+  // network so API responses are never served stale from cache.
+  if (!sameOrigin && !isCdn) return;
+  if (sameOrigin && url.pathname.startsWith('/api/')) return;
+
   // Main app HTML — network first, cache fallback
-  if (url.endsWith('/') || url.includes('index.html')) {
+  if (sameOrigin && (url.pathname === '/' || url.pathname.endsWith('/index.html'))) {
     e.respondWith(
       fetch(e.request)
         .then(res => {

@@ -8,7 +8,7 @@ RedditVault is a personal Reddit saved-items manager built to work around Reddit
 ~1,000-item API limit. A static PWA (IndexedDB-first) syncs with Supabase; saves are
 captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
 
-**Live URL:** https://reddivault.vercel.app · **Current version:** v0.9.18.1
+**Live URL:** https://reddivault.vercel.app · **Current version:** v0.9.19.0
 
 ---
 
@@ -37,9 +37,10 @@ captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
    The bookmarklet writes **only** to the `reddit_inbox` staging table, never to
    `reddit_saves`; all real writes go through the app's dedup-aware drain.
 7. **`localEditAt` pull guard.** Every per-item local mutation stamps
-   `item.localEditAt = Date.now()`. `syncFromSupabase` and `deltaPullBeforePush` must
-   skip overwriting any item whose `localEditAt` is newer than the pull's start time
-   (both on the client clock), so an in-flight pull can't clobber a fresh edit.
+   `item.localEditAt` with an ISO timestamp (client clock). `syncFromSupabase` and
+   `deltaPullBeforePush` must skip overwriting any item whose `localEditAt` is newer
+   than the pull's start time (both on the client clock), so an in-flight pull can't
+   clobber a fresh edit.
 8. **iOS quirks.** `font-size: 16px` on all inputs (prevents zoom-on-focus); viewport
    pinch-zoom lock is user-controllable (`state.disableZoom`). The bookmarklet string
    must stay quote-free (no double quotes, no backticks, no inline `onclick`) — banners
@@ -63,7 +64,7 @@ captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
 │   └── js/                            ← the app, native ES modules
 │       ├── app.js                     ← entry: imports all, window bridge, bootstrap
 │       ├── state.js                   ← APP_VERSION, Dexie db + version chain, state, syncLog
-│       ├── util.js                    ← escHtml/escAttr, fmtDate, showToast, renderMarkdown,
+│       ├── util.js                    ← escHtml, fmtDate, showToast, renderMarkdown,
 │       │                                openLink, fullUrl, ratingDisplay, applyZoomSetting
 │       ├── core.js                    ← init, loadConfig/loadData, rebuildTagCache,
 │       │                                rebuildFilterLists, reconcileDirtyState, markDirty
@@ -114,7 +115,8 @@ Reddit public JSON API   → PWA enrichment (no auth needed)
 ```
 
 - **IndexedDB is the source of truth**; Supabase is the sync layer. The PWA reads local
-  on every load; `supabasePull` merges remote into local, `supabasePush` pushes dirty items.
+  on every load; `syncFromSupabase` merges remote into local, `pushToSupabase` /
+  `pushAllDirty` push local items up.
 - **Session-based sync, not OAuth** — the extension and bookmarklet ride the user's
   existing reddit.com login cookies, avoiding Reddit's developer-app approval. Personal
   use only; the Supabase anon key embedded in the bookmarklet is RLS-protected and
@@ -203,7 +205,7 @@ state.filterFavourite, searchBody
 state.activeTagIds    // list ids active as tag filters
 state.tagMode         // 'AND' | 'OR'
 state.tagCache        // Map<listId, { count, itemIds: Set }> — see Lists
-state.sortBy          // 'savedAt' | 'postCreatedAt' | 'affinity' | 'score' | 'random'
+state.sortBy          // 'affinity' | 'savedAt' | 'postCreatedAt' | 'score' | 'rating' | 'subreddit' | 'title'
 state.sortDir         // 'asc' | 'desc'
 state.showTrash / showDeleted     // trash + deleted-items views (flags, not pages)
 state.localDirty / cloudAhead     // sync dirty tracking
@@ -259,7 +261,17 @@ Manual render cycle, everything writes `innerHTML`:
 ## Sync System
 
 ### Cloud push / pull (cloud.js)
-- `supabasePush(items)` — upsert to `reddit_saves` with `on_conflict=reddit_id`.
+- **Delta cursor:** `state.lastPushedAt` (historical name) means "everything on the
+  cloud up to T has been merged locally". It advances **only when a pull completes**
+  (`syncFromSupabase`, `deltaPullBeforePush`), never on push — advancing it on push
+  would skip rows another device wrote between our last pull and the push. Pushes
+  write `last_modified` (via `markClean`) so other devices know to pull; the cost is
+  at most one redundant delta pull after a push-only session.
+- `pushToSupabase(items)` — upsert to `reddit_saves` with `on_conflict=reddit_id`;
+  stamps `syncedAt` on the pushed items on success, calls `markDirty` on failure.
+  Items with no `syncedAt` are the retry queue: `pushAllDirty` re-pushes them (batched,
+  skipping locally-deleted ones), and a completed pull keeps `localDirty` set while any
+  remain.
 - `pushListsToSupabase()` — upserts lists, rebuilds `reddit_item_lists` per list, and
   always touches the parent list's `updated_at` when memberships change (so delta sees it).
 - `syncFromSupabase()` — delta pull via `updated_at=gt.{lastSync}`; full scan on first
@@ -344,6 +356,11 @@ Permanent delete        → isPermanentlyDeleted + deletedAt / deleted_at; hidde
                           except Deleted Items; never resurfaces; restorable
 Purge                   → actually removed from IndexedDB + Supabase; gone
 ```
+
+**Deletion/restore sync rule** (both pull paths): a remote `deleted_at` always wins;
+a remote row that is *active* while we hold a local permanent deletion un-deletes it
+only if the remote row's `updated_at` is newer than our local `deletedAt` — so restores
+propagate across devices, but a stale remote row can't resurrect a deletion.
 
 **Enrichment detail:** phase 1 `enrichViaArcticShift` hits
 `arctic-shift.photon-reddit.com` (`/api/posts/ids`, `/api/comments/ids`; up to 500
