@@ -178,11 +178,6 @@ export function escHtml(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-export function escAttr(str) {
-  if (!str) return '';
-  return String(str).replace(/'/g, "\\'").replace(/"/g, '&quot;');
-}
-
 // Step-0 CSP probe bookmarklet (see Bookmarklet Sync plan). Runs same-origin on
 // reddit.com: first proves the logged-in saved.json fetch works, then tests
 // whether Reddit's CSP connect-src lets us POST straight to Supabase. The result

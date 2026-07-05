@@ -163,8 +163,7 @@ async function fetchRedditSaved() {
         author: d.author || '',
         score: d.score || 0,
         saved_at: syncTime,             // When we synced (best proxy for save time)
-        post_created_at: postCreatedAt, // When the Reddit post was originally made
-        folder: null
+        post_created_at: postCreatedAt  // When the Reddit post was originally made
       });
     }
 

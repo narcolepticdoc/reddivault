@@ -68,21 +68,34 @@ export function scheduleRetry() {
 
 export async function pushAllDirty() {
   if (!state.supabaseUrl || !state.supabaseKey || !state.localDirty) return;
+  // Items that never reached the cloud (failed or interrupted pushes).
+  // Locally-deleted unsynced items are excluded — pushing them would create
+  // an active cloud row and resurrect them on other devices.
+  const unsynced = state.items.filter(i => !i.syncedAt && !i.isPermanentlyDeleted);
+  if (unsynced.length) {
+    syncLog(`pushAllDirty: pushing ${unsynced.length} unsynced item(s)`);
+    for (let i = 0; i < unsynced.length; i += 200) {
+      await pushToSupabase(unsynced.slice(i, i + 200), true);
+    }
+  }
   syncLog('pushAllDirty: pushing lists');
   await pushListsToSupabase();
 }
 
+// Clears the dirty flag and advertises our write to other devices via
+// last_modified. Deliberately does NOT advance lastPushedAt: that is the
+// delta-pull cursor ("everything on the cloud up to T has been merged"),
+// which is only true after a pull — advancing it on push would skip rows
+// another device wrote between our last pull and this push.
 export async function markClean(pushedAt) {
   const ts = pushedAt || new Date().toISOString();
   const wasDirty = state.localDirty;
   state.localDirty = false;
   state.cloudAhead = false;
-  state.lastPushedAt = ts;
   state.lastSyncedAt = ts;
   _retryCount = 0;
   if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
   await db.config.put({ key: 'localDirty', value: false });
-  await db.config.put({ key: 'lastPushedAt', value: ts });
   await db.config.put({ key: 'lastSyncedAt', value: ts });
   if (wasDirty) syncLog('Clean: dirty flag cleared', 'ok');
   try {
@@ -211,9 +224,10 @@ export async function syncFromSupabase() {
   // will have updated_at >= pullStartedAt, so it won't be missed next time.
   const pullStartedAt = new Date().toISOString();
 
-  // Delta sync: only fetch rows modified since our last successful push.
-  // This is the correct cursor — we want everything that changed on the cloud
-  // after we last wrote to it. Falls back to full scan on first-time setup.
+  // Delta sync: only fetch rows modified since the last completed pull.
+  // lastPushedAt (historical name) is the pull cursor — it advances only when
+  // a pull finishes, so no remote write can fall between cursor advances.
+  // Falls back to full scan on first-time setup.
   const cursor = state.lastPushedAt || null;
   const isDelta = !!cursor;
   const deltaFilter = isDelta ? `&updated_at=gt.${encodeURIComponent(cursor)}` : '';
@@ -252,9 +266,25 @@ export async function syncFromSupabase() {
     let added = 0, updated = 0;
     for (const item of allRemoteItems) {
       const exists = await db.items.where('redditId').equals(item.reddit_id).first();
-      // If cloud row has deleted_at, honour it; never overwrite a local permanent deletion
-      const isPermanentlyDeleted = !!(item.deleted_at || (exists && exists.isPermanentlyDeleted));
-      const deletedAt = item.deleted_at || (exists && exists.deletedAt) || null;
+      // Deletion state: a remote deleted_at always wins. When the remote row is
+      // active but we hold a local permanent deletion, honour the remote
+      // restore only if the row changed *after* our deletion — otherwise a
+      // stale remote row (e.g. our own deletion that failed to push) would
+      // resurrect the item. Compares server updated_at to client deletedAt, so
+      // clock skew of a few seconds can only err toward keeping the deletion.
+      let isPermanentlyDeleted, deletedAt;
+      if (item.deleted_at) {
+        isPermanentlyDeleted = true;
+        deletedAt = item.deleted_at;
+      } else if (exists && exists.isPermanentlyDeleted) {
+        const remoteTs = new Date(item.updated_at || 0).getTime();
+        const localDeleteTs = new Date(exists.deletedAt || 0).getTime();
+        isPermanentlyDeleted = remoteTs <= localDeleteTs;
+        deletedAt = isPermanentlyDeleted ? exists.deletedAt : null;
+      } else {
+        isPermanentlyDeleted = false;
+        deletedAt = null;
+      }
       if (!exists) {
         // Don't re-add items the cloud knows are permanently deleted
         if (isPermanentlyDeleted) { updated++; continue; }
@@ -416,18 +446,26 @@ export async function syncFromSupabase() {
       syncLog(`syncFromSupabase: lists sync skipped — ${e.message}`, 'warn');
     }
 
-    // Pull complete — lastPushedAt (delta cursor) does not advance on pull.
-    // lastSyncedAt (display label) does — we are now confirmed in sync.
-    // markClean is NOT called here — it would advance lastPushedAt incorrectly.
+    // Pull complete — everything with updated_at ≤ pullStartedAt is merged, so
+    // the delta cursor advances to pull start (forward only). Rows modified
+    // during the pull have updated_at ≥ pullStartedAt and surface next delta.
+    if (!state.lastPushedAt || pullStartedAt > state.lastPushedAt) {
+      state.lastPushedAt = pullStartedAt;
+      await db.config.put({ key: 'lastPushedAt', value: pullStartedAt });
+    }
     state.lastSyncedAt = pullStartedAt;
     await db.config.put({ key: 'lastSyncedAt', value: pullStartedAt });
     state.syncStatus = 'connected';
     state.cloudAhead = false;
-    state.localDirty = false;
     _retryCount = 0;
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
-    await db.config.put({ key: 'localDirty', value: false });
     await loadData();
+    // Keep the dirty flag honest: items that never reached the cloud still
+    // need a push — a pull must not silently clear them out of the queue.
+    const unsynced = state.items.some(i => !i.syncedAt && !i.isPermanentlyDeleted);
+    state.localDirty = unsynced;
+    await db.config.put({ key: 'localDirty', value: unsynced });
+    if (unsynced) scheduleRetry();
     await pullPreferences();
     renderHeaderActions();
     syncLog(`syncFromSupabase: complete`, 'ok');
@@ -467,14 +505,19 @@ export async function deltaPullBeforePush() {
       for (const r of remoteItems) {
         const existing = await db.items.where('redditId').equals(r.reddit_id).first();
         if (!existing) {
+          // Never re-add items the cloud knows are permanently deleted
+          // (same rule as syncFromSupabase).
+          if (r.deleted_at) continue;
           await db.items.add({
             redditId: r.reddit_id, type: r.type, subreddit: r.subreddit,
             title: r.title, url: r.url, permalink: r.permalink,
             body: r.body, author: r.author, score: r.score,
             savedAt: r.saved_at, postCreatedAt: r.post_created_at,
+            enriched: !!(r.title && r.subreddit),
             enrichStatus: r.enrich_status || 'pending',
             isFavourite: r.is_favourite || false, rating: r.rating ?? null,
             isDisliked: r.is_disliked || false,
+            isPermanentlyDeleted: false, deletedAt: null,
             syncedAt: new Date().toISOString(),
           });
         } else if ((existing.localEditAt ? new Date(existing.localEditAt).getTime() : 0) > pullStartTime) {
@@ -485,13 +528,25 @@ export async function deltaPullBeforePush() {
           const remoteTs = new Date(r.updated_at || 0).getTime();
           const localTs  = new Date(existing.syncedAt || 0).getTime();
           if (remoteTs > localTs) {
-            await db.items.update(existing.id, {
+            const patch = {
               isFavourite: r.is_favourite || false,
               rating: r.rating ?? null,
               isDisliked: r.is_disliked || false,
               enrichStatus: r.enrich_status || existing.enrichStatus,
               syncedAt: new Date().toISOString(),
-            });
+            };
+            // Propagate deletions/restores (same rules as syncFromSupabase):
+            // remote deleted_at wins; a remote restore only applies when the
+            // row changed after our local deletion.
+            if (r.deleted_at) {
+              patch.isPermanentlyDeleted = true;
+              patch.deletedAt = r.deleted_at;
+            } else if (existing.isPermanentlyDeleted
+                       && remoteTs > new Date(existing.deletedAt || 0).getTime()) {
+              patch.isPermanentlyDeleted = false;
+              patch.deletedAt = null;
+            }
+            await db.items.update(existing.id, patch);
           }
         }
       }
@@ -560,6 +615,14 @@ export async function deltaPullBeforePush() {
       await loadData();
     }
 
+    // Everything on the cloud up to pullStart has now been merged — advance
+    // the delta cursor (forward only) so future deltas don't rescan these rows.
+    const startIso = new Date(pullStartTime).toISOString();
+    if (!state.lastPushedAt || startIso > state.lastPushedAt) {
+      state.lastPushedAt = startIso;
+      await db.config.put({ key: 'lastPushedAt', value: startIso });
+    }
+
     syncLog('deltaPullBeforePush: done', 'ok');
   } catch(e) {
     syncLog(`deltaPullBeforePush: failed — ${e.message}`, 'warn');
@@ -588,11 +651,19 @@ export async function pushToSupabase(items, skipClean = false) {
   }));
   try {
     await supabaseFetch('/reddit_saves?on_conflict=reddit_id', 'POST', payload);
+    // Stamp syncedAt so the unsynced-item retry (pushAllDirty) and the
+    // delta-pull freshness check both know these rows reached the cloud.
+    const ts = new Date().toISOString();
+    const ids = items.map(i => i.redditId).filter(Boolean);
+    if (ids.length) await db.items.where('redditId').anyOf(ids).modify({ syncedAt: ts });
     syncLog(`push: ${items.length} item${items.length !== 1 ? 's' : ''} pushed to cloud`, 'ok');
     if (!skipClean) await markClean();
   } catch(e) {
     syncLog(`push: failed — ${e.message}`, 'error');
     console.warn('Push failed:', e);
+    // Flag the failure so the retry machinery re-pushes these items later —
+    // callers like feed sync and the inbox drain don't handle it themselves.
+    await markDirty('item push failed');
   }
 }
 

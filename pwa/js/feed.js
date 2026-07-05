@@ -244,10 +244,9 @@ export async function syncFromFeed() {
   let after = null;
   const MAX_PAGES = 40; // safety cap — 40 × 25 = 1000 items
 
-  // Build set of existing reddit_ids for fast dedup
-  // Includes permanently deleted items so they are never re-inserted from feed
+  // Build set of existing reddit_ids for fast dedup — state.items includes
+  // permanently deleted items, so the feed can never re-insert them
   const existing = new Set(state.items.map(i => i.redditId));
-  const permanentlyDeleted = new Set(state.items.filter(i => i.isPermanentlyDeleted).map(i => i.redditId));
 
   // Feed format: 'rss' (default) or 'json'. Reddit currently WAF-blocks the
   // .json endpoint, so RSS is the working default; the toggle lets the user

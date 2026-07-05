@@ -1,5 +1,5 @@
 // dataio.js — part of RedditVault (auto-split from the original single-file PWA).
-import { pushToSupabase, supabaseFetch } from './cloud.js';
+import { markClean, pushToSupabase, supabaseFetch } from './cloud.js';
 import { loadConfig, loadData, markDirty } from './core.js';
 import { render } from './render.js';
 import { db, state } from './state.js';
@@ -166,7 +166,8 @@ export async function repairCSVDuplicates() {
       // then delete the bare-ID duplicate.
       const updates = {};
       if (!prefixedItem.isFavourite && item.isFavourite) updates.isFavourite = item.isFavourite;
-      if (!prefixedItem.rating && item.rating) updates.rating = item.rating;
+      // rating 0 (thumbs-down) is a real value — only fill a genuinely unrated slot
+      if (prefixedItem.rating == null && item.rating != null) updates.rating = item.rating;
       if (Object.keys(updates).length) await db.items.update(prefixedItem.id, updates);
       await db.items.delete(item.id);
       // Also delete from Supabase
@@ -329,13 +330,16 @@ export async function handleCSVImport(file) {
 
         await loadData();
 
-        // Push new items to Supabase if configured
+        // Push new items to Supabase if configured. pushToSupabase stamps
+        // syncedAt on success (a where('syncedAt').equals(null) pass would
+        // throw — IndexedDB can't index null keys). Batched: CSV imports can
+        // be thousands of rows.
         if (state.supabaseUrl) {
           const newItems = state.items.filter(i => !i.syncedAt);
-          if (newItems.length > 0) {
-            await pushToSupabase(newItems);
-            await db.items.where('syncedAt').equals(null).modify({ syncedAt: new Date().toISOString() });
+          for (let i = 0; i < newItems.length; i += 200) {
+            await pushToSupabase(newItems.slice(i, i + 200), true);
           }
+          if (newItems.length > 0) await markClean();
         }
 
         resolve({ added, dupes, total: rows.length });
