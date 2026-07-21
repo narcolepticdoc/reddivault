@@ -147,7 +147,7 @@ export function renderSettings() {
                     document.getElementById('proxy-label-corsfix').style.borderColor='var(--border)';
                     document.getElementById('proxy-label-corsfix').style.background='';
                   ">
-                ☁️ Cloudflare Worker (recommended)
+                ☁️ Cloudflare Worker
               </label>
               <label id="proxy-label-corsfix" style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${state.feedProxyType==='corsfix'?'border-color:var(--accent2);background:rgba(99,102,241,0.08)':''}">
                 <input type="radio" name="proxy-type" value="corsfix" ${state.feedProxyType==='corsfix'?'checked':''}
@@ -171,7 +171,7 @@ export function renderSettings() {
             </div>
             <div id="proxy-corsfix-note" ${state.feedProxyType!=='corsfix'?'style="display:none"':''}>
               <input id="feed-proxy-url" type="hidden" value="">
-              <span style="font-size:11px;color:var(--text-muted)"><strong>⚠️ Usually won't work for Reddit feeds.</strong> Reddit's firewall blocks CORSfix's shared proxy IPs (independent of User-Agent), so feed sync typically fails with a block/challenge page. The <strong>Cloudflare Worker</strong> option is the reliable choice — Reddit doesn't block its IPs. Note your feed URL (including its private token) would pass through proxy.corsfix.com's servers.<br>CORS proxy service graciously provided by <a href="https://corsfix.com" target="_blank" rel="noopener" style="color:var(--accent2)">CORSfix</a> — thank you for supporting independent developers.</span>
+              <span style="font-size:11px;color:var(--text-muted)">Third-party proxy — no Worker to deploy. RedditVault automatically sends the request headers Reddit's firewall needs (Origin/Referer/User-Agent via CORSfix's header override), so feed sync works through <code>www.reddit.com</code>. Requires a CORSfix account with this site's origin registered. Note your feed URL (including its private token) passes through proxy.corsfix.com's servers; the Cloudflare Worker keeps it within your own account.<br>CORS proxy service graciously provided by <a href="https://corsfix.com" target="_blank" rel="noopener" style="color:var(--accent2)">CORSfix</a> — thank you for supporting independent developers.</span>
             </div>
           </div>
           <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center">Save Feed Settings</button>
