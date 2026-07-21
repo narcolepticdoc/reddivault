@@ -66,31 +66,43 @@ export async function autoFeedSyncIfDue() {
   await syncFromFeed();
 }
 
+// Normalise a Reddit feed URL to the canonical www host. Reddit serves the
+// private feed cleanly from www.reddit.com; old.reddit.com answers a proxied
+// RSS request with a "Welcome to Reddit" landing page instead of the feed (the
+// bookmarklet still needs old.reddit.com, but that path is separate). Leaves a
+// non-reddit host untouched.
+export function _toWwwRedditHost(url) {
+  return url.replace(/:\/\/(old\.|new\.|m\.|np\.|i\.)?reddit\.com/i, '://www.reddit.com');
+}
+
 export function _buildProxyUrl(feedUrl) {
   if (state.feedProxyType === 'corsfix') {
-    // CORSfix syntax: https://proxy.corsfix.com/?{full-url} (no encoding)
-    return `https://proxy.corsfix.com/?${feedUrl}`;
+    // CORSfix syntax: https://proxy.corsfix.com/?{full-url} (no encoding).
+    // Fetch via www.reddit.com — the header override below only works there.
+    return `https://proxy.corsfix.com/?${_toWwwRedditHost(feedUrl)}`;
   }
   // Cloudflare Worker syntax: {workerUrl}?url={encoded-url}
   const base = state.feedProxyUrl || '/api/reddit-feed';
   return `${base}?url=${encodeURIComponent(feedUrl)}`;
 }
 
-// Reddit's WAF blocks generic/browser User-Agents and datacenter IPs on the
-// private feed, answering with an HTML block page instead of the Atom feed.
-// The Cloudflare Worker sets a Reddit-approved `User-Agent` server-side; the
-// corsfix proxy otherwise forwards the browser's UA, so ask it to override the
-// upstream request headers via corsfix's `x-corsfix-headers` mechanism (a JSON
-// blob of headers applied to the outgoing request). Harmless to the Worker,
-// which only reads the `url` query param — so only send it for corsfix, where
-// the custom header (and its CORS preflight) is expected.
+// Reddit's WAF blocks a proxied feed request when it carries a cross-origin
+// Origin/Referer (it fingerprints the request as a third-party scraper and
+// serves a block/challenge page). The Cloudflare Worker sidesteps this because
+// it makes a clean server-side request; corsfix otherwise forwards the browser's
+// headers. corsfix's `x-corsfix-headers` mechanism (a JSON blob of headers
+// applied to the upstream request) lets us rewrite Origin/Referer to Reddit's
+// own host so the request looks same-origin, plus a Reddit-approved User-Agent.
+// Verified to return the real Atom feed. Only sent for corsfix; the Worker
+// ignores it (and skipping it avoids an unnecessary CORS preflight there).
 export function _proxyFetchInit() {
   if (state.feedProxyType === 'corsfix') {
     return {
       headers: {
         'x-corsfix-headers': JSON.stringify({
+          'Origin': 'https://www.reddit.com',
+          'Referer': 'https://www.reddit.com/',
           'User-Agent': `web:reddivault:v${APP_VERSION} (+https://reddivault.vercel.app)`,
-          'Accept': 'application/atom+xml, application/xml, application/json',
         }),
       },
     };
@@ -98,15 +110,50 @@ export function _proxyFetchInit() {
   return {};
 }
 
-// A 200 response whose body is an HTML page (not the Atom/JSON feed) means the
-// proxy reached Reddit but Reddit served a block/challenge page — or the proxy
-// itself returned an error page. Detect it so we can raise an actionable error
-// instead of a cryptic "invalid XML" from DOMParser.
+// A response body that is not the Atom/JSON feed — either a Reddit WAF
+// block/challenge page or a corsfix structured error. Detect these so we can
+// raise an honest, actionable error instead of a cryptic "invalid XML" from
+// DOMParser or a bare "HTTP 404".
 export function _looksLikeBlockPage(text) {
   if (!text) return false;
   const head = text.slice(0, 600).toLowerCase();
   if (/<\?xml|<feed|<rss|"data"\s*:|"kind"\s*:/.test(head)) return false;
-  return /<!doctype html|<html|<body|network security|whoa there|blocked|access denied/.test(head);
+  return /<!doctype html|<html|<body|theme-beta|network security|whoa there|welcome to reddit|blocked|access denied/.test(head);
+}
+
+// Pull a human-readable hint out of a failed proxy response body: corsfix
+// returns JSON like {corsfix_error, message, ...}; Reddit returns an HTML
+// block page. Returns '' when nothing recognisable is found.
+export function _proxyErrorHint(text) {
+  if (!text) return '';
+  if (text.includes('corsfix_error')) {
+    try {
+      const j = JSON.parse(text);
+      return j.message || j.corsfix_error || '';
+    } catch { return 'CORSfix rejected the request'; }
+  }
+  if (_looksLikeBlockPage(text)) return 'Reddit returned a block/challenge page';
+  return '';
+}
+
+// Build the honest error thrown when a feed request comes back as anything but
+// the feed (a genuine failure, since we now send the headers Reddit needs):
+// usually a stale feed token, or corsfix quota/rate limits. Surface the hint
+// and point at the likely fixes.
+export function _proxyFailureError(text) {
+  const hint = _proxyErrorHint(text);
+  if (state.feedProxyType === 'corsfix') {
+    return new Error(
+      `CORSfix couldn't fetch your feed`
+      + (hint ? ` — ${hint}` : '')
+      + `. Refresh your Private Feed token (old.reddit.com/prefs/feeds/) or check your CORSfix quota; the Cloudflare Worker proxy is an alternative.`
+    );
+  }
+  return new Error(
+    `The feed proxy returned a block/error page instead of your feed`
+    + (hint ? ` — ${hint}` : '')
+    + `. Check your Private Feed URL and token (copy a fresh one from old.reddit.com/prefs/feeds/).`
+  );
 }
 
 // Reddit's WAF ("network security") now blocks the .json private-feed
@@ -307,27 +354,26 @@ export async function syncFromFeed() {
       if (!res.ok) {
         let detail = '';
         try { const t = await res.text(); detail = t.slice(0, 200); } catch(e) {}
-        // Reddit blocks requests from datacenter IPs (proxies) with a 403 and
-        // an HTML challenge/block page rather than JSON. Detect that and show a
-        // clear, actionable message instead of dumping raw HTML at the user.
-        const looksLikeRedditBlock = res.status === 403 && /<body|theme-beta|<!doctype|<html|network security/i.test(detail);
-        if (looksLikeRedditBlock) {
-          syncLog(`feedSync: HTTP 403 — Reddit block page (${state.feedProxyType || 'cloudflare'})`, 'error');
-          throw new Error('Reddit blocked the feed request (HTTP 403). Check that your Private Feed URL and token are current — copy a fresh one from old.reddit.com/prefs/feeds/.');
+        // A non-2xx from the proxy is usually Reddit's WAF blocking the proxy's
+        // IP (403/404 block page) or corsfix rejecting the request (structured
+        // corsfix_error JSON). Turn either into an honest, actionable message —
+        // for corsfix that means "Reddit blocks its IPs, use Cloudflare".
+        if (_proxyErrorHint(detail)) {
+          syncLog(`feedSync: HTTP ${res.status} — ${state.feedProxyType || 'cloudflare'} block/error — ${detail.replace(/\s+/g, ' ')}`, 'error');
+          throw _proxyFailureError(detail);
         }
         syncLog(`feedSync: HTTP ${res.status} — ${detail}`, 'error');
         throw new Error(`HTTP ${res.status}${detail ? ' — ' + detail : ''}`);
       }
       const text = await res.text();
 
-      // A 200 with an HTML body means the proxy reached Reddit but got a block
-      // page (Reddit's WAF rejects generic proxies), or the proxy returned its
-      // own error page. Surface that as an actionable error rather than letting
-      // it fall through to a cryptic parse failure.
+      // A 200 whose body is not the feed means the proxy reached Reddit but got
+      // a block/challenge page, or the proxy returned its own error page. Raise
+      // the same honest error rather than falling through to a cryptic parse
+      // failure downstream.
       if (_looksLikeBlockPage(text)) {
-        const proxyLabel = state.feedProxyType === 'corsfix' ? 'CORSfix' : 'Cloudflare Worker';
         syncLog(`feedSync: proxy returned a non-feed page (${state.feedProxyType || 'cloudflare'}) — ${text.slice(0, 160).replace(/\s+/g, ' ')}`, 'error');
-        throw new Error(`The ${proxyLabel} proxy returned a block/error page instead of your feed. Reddit blocks generic proxies; if you're on CORSfix, switch to the Cloudflare Worker proxy (it sends a Reddit-approved request).`);
+        throw _proxyFailureError(text);
       }
 
       let children, jsonAfter = null;

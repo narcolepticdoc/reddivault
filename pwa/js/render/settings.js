@@ -171,7 +171,7 @@ export function renderSettings() {
             </div>
             <div id="proxy-corsfix-note" ${state.feedProxyType!=='corsfix'?'style="display:none"':''}>
               <input id="feed-proxy-url" type="hidden" value="">
-              <span style="font-size:11px;color:var(--text-muted)">Third-party proxy — no setup required, but your feed URL (including its private token) passes through proxy.corsfix.com's servers. May be capacity limited. Suitable for testing or if you prefer not to manage your own Worker.<br>CORS proxy service graciously provided by <a href="https://corsfix.com" target="_blank" rel="noopener" style="color:var(--accent2)">CORSfix</a> — thank you for supporting independent developers.</span>
+              <span style="font-size:11px;color:var(--text-muted)">Third-party proxy — no Worker to deploy. RedditVault automatically sends the request headers Reddit's firewall needs (Origin/Referer/User-Agent via CORSfix's header override), so feed sync works through <code>www.reddit.com</code>. Requires a CORSfix account with this site's origin registered. Note your feed URL (including its private token) passes through proxy.corsfix.com's servers; the Cloudflare Worker keeps it within your own account.<br>CORS proxy service graciously provided by <a href="https://corsfix.com" target="_blank" rel="noopener" style="color:var(--accent2)">CORSfix</a> — thank you for supporting independent developers.</span>
             </div>
           </div>
           <button class="btn btn-secondary" onclick="saveFeedUrl()" style="width:100%;justify-content:center">Save Feed Settings</button>

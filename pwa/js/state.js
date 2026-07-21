@@ -3,7 +3,7 @@ import { autoFeedSyncIfDue } from './feed.js';
 import { escHtml } from './util.js';
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-export const APP_VERSION = '0.9.19.1';
+export const APP_VERSION = '0.9.19.3';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 export const db = new Dexie('RedditVault');
