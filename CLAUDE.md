@@ -6,9 +6,12 @@ history lives in `docs/transcripts/` (see `journal.txt` for the index), not here
 
 RedditVault is a personal Reddit saved-items manager built to work around Reddit's
 ~1,000-item API limit. A static PWA (IndexedDB-first) syncs with Supabase; saves are
-captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
+captured with the user's own logged-in Reddit session via a userscript (automatic), a
+bookmarklet (manual), or the Chrome extension. RSS feed sync is legacy — Reddit ends RSS
+on Nov 13, 2026 and has refused unauthenticated `.json` since May 28, 2026 ("logged-in
+and authenticated access won't be impacted").
 
-**Live URL:** https://reddivault.vercel.app · **Current version:** v0.9.19.0
+**Live URL:** https://reddivault.vercel.app · **Current version:** v0.10.0.0
 
 ---
 
@@ -21,7 +24,10 @@ captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
 2. **Version bumps on every deployed change.** Bump `APP_VERSION` in `pwa/js/state.js`
    AND `VERSION` in `pwa/sw.js` (format `major.minor.patch.hotfix`). The SW precaches a
    hand-maintained `ASSETS` array keyed off `VERSION` — **a new `js/*.js` file must be
-   added to `ASSETS`** or it won't work offline.
+   added to `ASSETS`** or it won't work offline. The userscript (`pwa/reddivault.user.js`)
+   has its **own** version: bump its `@version` header AND `VERSION` constant on every
+   change to it, or userscript managers won't update. It is not part of the app shell —
+   never add it to `ASSETS` (the SW deliberately bypasses `*.user.js`).
 3. **The `window` bridge.** Rendered HTML uses ~140 inline `onclick="fn(…)"` handlers
    that resolve against global scope. `app.js` does `Object.assign(window, ...modules)`,
    so any function referenced by an inline handler must be **`export`ed from its module**
@@ -33,9 +39,10 @@ captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
    `isPermanentlyDeleted: true` + `deletedAt` (Supabase `deleted_at`) so feed sync can't
    resurrect them. Actual removal is only the explicit Purge action.
 6. **Single ingestion path.** `mapRedditChild(child, source)` is the only mapper from a
-   raw Reddit listing child to an item — feed sync and the bookmarklet drain both use it.
-   The bookmarklet writes **only** to the `reddit_inbox` staging table, never to
-   `reddit_saves`; all real writes go through the app's dedup-aware drain.
+   raw Reddit listing child to an item — feed sync, the inbox drain and
+   `applyMetaUpdates` all use it. The bookmarklet and the userscript write **only** to
+   the `reddit_inbox` staging table, never to `reddit_saves`; all real writes go through
+   the app's dedup-aware drain.
 7. **`localEditAt` pull guard.** Every per-item local mutation stamps
    `item.localEditAt` with an ISO timestamp (client clock). `syncFromSupabase` and
    `deltaPullBeforePush` must skip overwriting any item whose `localEditAt` is newer
@@ -43,8 +50,20 @@ captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
    clobber a fresh edit.
 8. **iOS quirks.** `font-size: 16px` on all inputs (prevents zoom-on-focus); viewport
    pinch-zoom lock is user-controllable (`state.disableZoom`). The bookmarklet string
-   must stay quote-free (no double quotes, no backticks, no inline `onclick`) — banners
-   use the `done()` helper with `textContent`.
+   must stay quote-free (no double quotes, no backticks, no inline `onclick`, and no
+   apostrophes inside its single-quoted literals) — banners use the `done()` helper with
+   `textContent`.
+9. **Account binding (several Reddit accounts).** Only the vault's account
+   (`state.redditUsername`, required for both capture tools) may ever be captured:
+   the bookmarklet and userscript check `/api/me.json` before every run with **no
+   override**, read `/user/<vault user>/saved.json` (never `/user/me/`), the userscript
+   re-checks right before every upload, and every inbox row carries `by` (capturing
+   account) — `drainInbox`/`importPastedBookmarklet` reject rows whose `by` doesn't match
+   (`_inboxRowFromOtherAccount`; rows without `by` from old bookmarklets are accepted).
+10. **No anonymous Reddit requests from the app.** Reddit refuses unauthenticated `.json`
+    (403 since May 28, 2026). Every Reddit read happens inside reddit.com with the user's
+    session (bookmarklet/userscript/extension); the PWA itself only talks to Supabase and
+    Arctic Shift.
 
 ---
 
@@ -60,6 +79,8 @@ captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
 │   ├── index.html                     ← shell: markup + CDN libs + module entry
 │   ├── styles.css                     ← all app CSS
 │   ├── sw.js                          ← service worker (VERSION + ASSETS list)
+│   ├── reddivault.user.js             ← capture userscript (own @version; served static,
+│   │                                    auto-updates; NOT in ASSETS)
 │   ├── manifest.json, icon-*.png
 │   └── js/                            ← the app, native ES modules
 │       ├── app.js                     ← entry: imports all, window bridge, bootstrap
@@ -68,13 +89,15 @@ captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
 │       │                                openLink, fullUrl, ratingDisplay, applyZoomSetting
 │       ├── core.js                    ← init, loadConfig/loadData, rebuildTagCache,
 │       │                                rebuildFilterLists, reconcileDirtyState, markDirty
-│       ├── enrich.js                  ← Arctic Shift + Reddit enrichment, rate limiting
+│       ├── enrich.js                  ← Arctic Shift bulk enrichment, mark-dead/retry
 │       ├── cloud.js                   ← Supabase REST (supabaseFetch), push/pull/delta sync,
-│       │                                preferences push/pull, retry/dirty machinery
-│       ├── feed.js                    ← RSS/JSON feed sync, _buildProxyUrl, config save
-│       ├── bookmarklet.js             ← buildInboxBookmarklet, drainInbox, ingestChildren,
-│       │                                mapRedditChild, applyScoreUpdates,
-│       │                                importPastedBookmarklet, cspProbeBookmarklet
+│       │                                pushInBatches, preferences push/pull, retry/dirty
+│       ├── feed.js                    ← LEGACY RSS feed sync (RSS_SUNSET/rssRetired),
+│       │                                _buildProxyUrl, Supabase/feed config save
+│       ├── bookmarklet.js             ← capture + inbox: buildInboxBookmarklet, drainInbox,
+│       │                                ingestChildren, mapRedditChild, applyScoreUpdates,
+│       │                                applyMetaUpdates, importPastedBookmarklet,
+│       │                                cspProbeBookmarklet, userscript pairing helpers
 │       ├── dataio.js                  ← CSV import, JSON backup/restore, repairs, delete
 │       ├── search.js                  ← parseSearchQuery, itemMatchesTokens, _parseWildcard,
 │       │                                affinityScore, sortItems, filteredItems,
@@ -94,7 +117,7 @@ captured via a Chrome extension, a bookmarklet, or the Reddit RSS feed.
 │           ├── lists.js               ← renderLists + list menus
 │           └── settings.js            ← the whole settings page
 ├── extension/                         ← Chrome extension (manifest, popup, background)
-├── cloudflare-worker/
+├── cloudflare-worker/                 ← LEGACY (RSS feed proxy; obsolete after Nov 13, 2026)
 │   ├── reddit-feed-proxy.js           ← CORS proxy worker
 │   └── wrangler.toml                  ← wrangler deploy config
 └── docs/transcripts/                  ← full session transcripts + journal.txt index
@@ -108,19 +131,23 @@ never from `render/` submodules directly.
 ## Data Flow
 
 ```
-Reddit (session cookies) → Chrome Extension → Supabase → PWA (IndexedDB cache)
+Reddit (session cookies) → Userscript  → Supabase reddit_inbox → PWA drains into library
 Reddit (session cookies) → Bookmarklet → Supabase reddit_inbox → PWA drains into library
-Reddit (RSS feed)        → Cloudflare Worker (or corsfix proxy) → PWA feed sync
-Reddit public JSON API   → PWA enrichment (no auth needed)
+Reddit (session cookies) → Chrome Extension → Supabase → PWA (IndexedDB cache)
+Arctic Shift archive     → PWA enrichment (bulk, no auth)
+Reddit (RSS feed)        → Cloudflare Worker / corsfix → PWA feed sync   [LEGACY, ends Nov 13, 2026]
 ```
 
 - **IndexedDB is the source of truth**; Supabase is the sync layer. The PWA reads local
   on every load; `syncFromSupabase` merges remote into local, `pushToSupabase` /
   `pushAllDirty` push local items up.
-- **Session-based sync, not OAuth** — the extension and bookmarklet ride the user's
-  existing reddit.com login cookies, avoiding Reddit's developer-app approval. Personal
-  use only; the Supabase anon key embedded in the bookmarklet is RLS-protected and
-  acceptable for this threat model.
+- **Session-based sync, not OAuth** — the userscript, bookmarklet and extension ride the
+  user's existing reddit.com login cookies. Reddit closed self-service API keys in Nov
+  2025, so there is no OAuth path (and borrowing another app's client ID — e.g.
+  RedReader's — was ruled out: its `redreader://` redirect can't reach a web app, and it
+  would misuse that app's accessibility grant). Personal use only; the Supabase anon key
+  in the bookmarklet / userscript pairing is RLS-protected and acceptable for this
+  threat model.
 - There are **no folders** — organisation is via Lists. (The old `folder` column became
   `deleted_at` in a Supabase migration; a legacy `folders` Dexie store lingers unused.)
 
@@ -155,14 +182,20 @@ options_json, created_at, updated_at`
 **`reddit_inbox`:** `id, reddit_id, payload jsonb, created_at` — transient staging.
 - `reddit_id` is the `UNIQUE` upsert key (`on_conflict=reddit_id`,
   `resolution=ignore-duplicates`, so bookmarklet re-runs don't pile up).
-- Rows are typed by `payload.op`: **no `op`** = capture (bare `{kind, data}` Reddit child,
+- Rows are typed by `payload.op`: **no `op`** = capture (`{kind, data, by}` Reddit child,
   keyed by fullname `t3_…`/`t1_…`, fed to `mapRedditChild`); **`op:'score'`** =
-  `{op:'score', reddit_id, score}`, keyed `'score:'+fullname` so the two op types can
-  never collide under ignore-duplicates.
+  `{op:'score', reddit_id, score, by}`, keyed `'score:'+fullname`; **`op:'meta'`** =
+  `{op:'meta', reddit_id, child, by}` (full details for a pending item) or
+  `{op:'meta', reddit_id, missing:true, by}`, keyed `'meta:'+fullname`. Distinct key
+  prefixes mean op types never collide under ignore-duplicates, and the inbox is
+  bounded at ~3 rows per item no matter how often capture runs.
+- `by` = the Reddit account that captured the row (Hard Rule 9).
 
 **`user_preferences` keys:** `redditFeedUrl`, `redditUsername`, `scoreRefreshLimit`,
 `feedProxyUrl`, `feedProxyType`, `feedFormat`, `confirmDestructive`, `recentSearches`,
-`last_modified`.
+`last_modified`, `userscriptLastRefreshAt` (written by the userscript to coordinate its
+daily refresh across devices; `pullPreferences` ignores it). The bookmarklet and
+userscript read `scoreRefreshLimit` and `redditUsername` live.
 
 ---
 
@@ -211,13 +244,14 @@ state.showTrash / showDeleted     // trash + deleted-items views (flags, not pag
 state.localDirty / cloudAhead     // sync dirty tracking
 state.lastPushedAt    // delta cursor for push
 state.supabaseUrl / supabaseKey
-state.redditFeedUrl, feedProxyUrl, feedProxyType ('cloudflare'|'corsfix'),
-state.feedFormat      // 'rss' | 'json' — Reddit currently WAF-blocks .json
-state.redditUsername  // expected account for the bookmarklet check
+state.redditFeedUrl, feedProxyUrl, feedProxyType ('cloudflare'|'corsfix'),  // legacy RSS
+state.feedFormat      // 'rss' | 'json' — legacy RSS
+state.redditUsername  // the vault's Reddit account — REQUIRED for capture (Hard Rule 9)
 state.scoreRefreshLimit  // saves checked by "Refresh scores" (0 = all, default 500)
+state.enrichMaxAttempts  // refresh misses before "Mark as dead" is offered
 state.listView / listSeparate / listSmartFirst
 state.confirmDestructive, disableZoom
-state.autoFeedSync, autoFeedSyncInterval
+state.autoFeedSync, autoFeedSyncInterval   // legacy RSS; no-op after rssRetired()
 ```
 
 ---
@@ -279,42 +313,62 @@ Manual render cycle, everything writes `innerHTML`:
   missed. Static-list memberships reconcile per-list only for lists whose `updated_at`
   changed. Respects the `localEditAt` guard (Hard Rule 7).
 
-### Feed sync (feed.js)
-- `syncFromFeed()` — fetch Reddit RSS via CORS proxy, parse, upsert new items; skips
-  known ids and permanently-deleted items. Auto-runs on interval if `state.autoFeedSync`.
-- Proxy via `_buildProxyUrl(feedUrl)` — **always use it**, never build URLs by hand:
-  `'cloudflare'` → `{workerUrl}?url={encoded}`; `'corsfix'` →
-  `https://proxy.corsfix.com/?{feedUrl}` (unencoded, no key, no setup).
+### Capture: userscript (pwa/reddivault.user.js) — automatic
+Plain script for Tampermonkey / Violentmonkey / iOS "Userscripts". `@match
+https://*.reddit.com/*`. Same inbox protocol as the bookmarklet; writes go through
+`GM.xmlHttpRequest`, which is outside page CSP, so it works on new Reddit as well as old.
+- **Config** `{u, k, x}` lives only in GM storage, set by **pairing**: the PWA's
+  `buildPairingCode()` makes `RV1:<base64 JSON>`; `pairUserscript()` opens
+  `old.reddit.com/#rv-pair=…` (fragment never reaches Reddit; the script confirms, stores
+  and strips it), or the user pastes the code via the RV panel.
+- **Schedule:** capture at most every 30 min per device (visible tab only; checked on
+  load, focus and a 5-min timer); refresh once per 24 h across devices
+  (`userscriptLastRefreshAt`). A GM-storage lock stops tabs running concurrently.
+- **Capture:** page 1 of `/user/<x>/saved.json?limit=25`; a local "seen" set (last 2000
+  ids) means a quiet run costs one Reddit request and **zero** Supabase calls. Only when
+  something unseen appears does it read 1000 recent vault ids to filter. Uploads in
+  batches of ≤100 rows / ≤500 KB; ids are marked seen **only after** Supabase accepts
+  the batch, so failures retry next run.
+- **Refresh:** same logic as bookmarklet op ② (changed scores only + meta for pending).
+- **Manual controls:** floating **RV** badge (shadow DOM, CSSOM styles) → panel with
+  Sync now / Refresh / status / inbox count / Re-pair / Move / Hide; menu commands;
+  hash triggers `#rv-capture`, `#rv-refresh`, `#rv-pair=…`, `#rv-show`.
+- **Account binding:** Hard Rule 9 (gate every run, live re-read of `redditUsername` on
+  mismatch, re-check before each upload, `by` on rows).
 
-### Bookmarklet (bookmarklet.js) — mobile / non-Chrome capture
+### Capture: bookmarklet (bookmarklet.js) — manual, no install
 `buildInboxBookmarklet(url, key, expectUser)` generates a menu-driven `javascript:`
-bookmarklet. **Must run on `old.reddit.com`** — new Reddit's CSP `connect-src` blocks the
-cross-origin Supabase write (reads still work, so it looks like "found N items but
-couldn't reach the inbox"). Off-reddit / new-reddit / logged-out states get overlays
-telling the user to tap the bookmark again on the right page (a bookmarklet can't
-survive navigation). Each menu button starts on a fresh user gesture (popup-blocker).
-
-- **Account check:** resolves `/api/me.json` before the menu; header shows
-  "Logged in as u/…". If `expectUser` (`state.redditUsername`) is set and mismatched,
-  blocks behind a warning with a "Use anyway" escape. Empty = display only.
-- **① Capture:** incremental — read-only GET of recent `reddit_id`s
-  (`order=saved_at.desc&limit=500`), then pages `saved.json` newest-first, stopping at
-  the first fully-known page; POSTs only new raw children to `reddit_inbox`. Falls back
-  to a full scan if the read fails, and to a clipboard envelope
-  (`{type:'rv-bookmarklet', children}` → "Paste captured items" /
-  `importPastedBookmarklet`) if the inbox POST fails.
-- **② Refresh scores:** reads `scoreRefreshLimit` live from `user_preferences` at run
-  time (not baked in), pages that many active ids from `reddit_saves` via `Range`
-  headers, batches `/api/info.json?id=…` (100/call, 1s pacing; 429 retries the batch),
-  and flushes `{op:'score',…}` rows per batch so interruptions keep partial progress.
+bookmarklet; `expectUser` (`state.redditUsername`) is required.
+- **Host modes:** on `old.reddit.com` it reads recent vault ids, captures incrementally
+  and POSTs directly. On new Reddit (www/sh) CSP `connect-src` blocks every Supabase
+  call, so it scans the newest 3 pages and offers the clipboard envelope
+  (`{type:'rv-bookmarklet', v:2, by, children}` → "Paste captured items" /
+  `importPastedBookmarklet`). The same envelope is the fallback if an old.reddit POST fails.
+- **Account check:** `/api/me.json` must equal `expectUser` — hard block, no "use
+  anyway"; reads `/user/<expectUser>/saved.json`; re-checks before sending.
+- **① Capture** / **② Refresh scores & details** (old.reddit only): reads
+  `scoreRefreshLimit` live, pages that many active ids (+ stored scores) and up to 1000
+  pending ids, batches `/api/info.json` (100/call, 1s pacing, 429 retry; parent titles
+  for comments fetched when missing), sends `score` rows only for changed scores and
+  `meta` rows for pending items, flushing per batch.
 
 **Drain:** `drainInbox({manual})` runs on startup, on `visibilitychange` foreground, and
-from the Settings button. Pages the inbox, dispatches by `payload.op`: capture rows →
-`ingestChildren(children,'bookmarklet')`; score rows → `applyScoreUpdates`. Then DELETEs
-drained ids (chunked). Result `{added, skipped, scoresUpdated, drained}`; quiet runs
-toast only when something changed. Anti-resurrection: `ingestChildren` dedups against
-all known ids **including permanently-deleted**; `applyScoreUpdates` only touches items
-already in `state.items` and pushes via the app's own `pushToSupabase`.
+from the Settings button. Pages the inbox, rejects rows from another account (`by`),
+dispatches by `payload.op`: capture rows → `ingestChildren(children,'bookmarklet')`;
+score rows → `applyScoreUpdates`; meta rows → `applyMetaUpdates` (existing items only,
+skips permanently-deleted, keeps `savedAt`, stamps `localEditAt`; `missing` bumps
+`enrichAttempts`). Then DELETEs drained ids (chunked). Result `{added, skipped,
+scoresUpdated, detailsUpdated, rejected, drained}`; quiet runs toast only when something
+changed or was rejected. All cloud pushes use `pushInBatches` (200/request; `markClean`
+only if every batch succeeded). Anti-resurrection: `ingestChildren` dedups against all
+known ids **including permanently-deleted**.
+
+### Legacy: RSS feed sync (feed.js)
+- `syncFromFeed()` — fetch Reddit RSS via CORS proxy, parse, upsert new items. Reddit
+  ends RSS on **Nov 13, 2026** (`RSS_SUNSET`); after `rssRetired()` auto-sync no-ops and a
+  manual sync explains the failure. UI lives in a collapsed "Legacy" block. Removal of
+  the feed code, its prefs and `cloudflare-worker/` is a planned follow-up.
+- Proxy via `_buildProxyUrl(feedUrl)` — never build URLs by hand.
 
 ---
 
@@ -345,11 +399,12 @@ already in `state.items` and pushes via the app's own `pushToSupabase`.
 ## Item Lifecycle
 
 ```
-CSV import / feed sync / extension / bookmarklet drain
+CSV import / inbox drain (userscript, bookmarklet) / extension / legacy feed sync
   → upsert IndexedDB (enrichStatus 'pending'|'enriched') → push to Supabase
 
-Enrichment (manual): Arctic Shift bulk pass first, Reddit per-item fallback second
-  → enrichStatus 'enriched' | 'dead' → push
+Enrichment: Arctic Shift bulk pass (manual), then the session refresh (userscript daily /
+bookmarklet ②) → op 'meta' → applyMetaUpdates → enrichStatus 'enriched';
+misses bump enrichAttempts → "Mark as dead" → 'dead' → push
 
 Trash (isDisliked)      → hidden from browse, visible in Trash, recoverable
 Permanent delete        → isPermanentlyDeleted + deletedAt / deleted_at; hidden everywhere
@@ -364,20 +419,24 @@ propagate across devices, but a stale remote row can't resurrect a deletion.
 
 **Enrichment detail:** phase 1 `enrichViaArcticShift` hits
 `arctic-shift.photon-reddit.com` (`/api/posts/ids`, `/api/comments/ids`; up to 500
-ids/request, 500ms between batches, no auth). Phase 2 `enrichItemFromReddit` is the slow
-per-item fallback (configurable delay, default 7.5s) for whatever phase 1 missed.
+ids/request, 500ms between batches, no auth; archive lags Reddit by weeks, no SLA).
+Phase 2 is the session refresh (≤1000 pending items per run). The old anonymous
+per-item `permalink.json` enricher was removed (Reddit returns 403). PullPush was
+considered and rejected (ingestion stopped May 2025).
 
 ---
 
-## Settings Page — seven sections in order
+## Settings Page — six sections in order
 
-1. **🔄 Sync New Saves** — sync button, auto-sync toggle/interval, feed connection (collapsible)
-2. **🔖 Bookmarklet Sync** — bookmarklet copy, expected username, score-refresh limit, import-from-inbox
-3. **☁️ Cloud Database** — status, manual push/pull, Supabase connection (collapsible)
-4. **📊 Library** — stats (active items; deleted count if any), Backup & Restore
-5. **📥 Import & Enrich** — CSV import, enrichment controls, About, speed settings
-6. **🎛️ Behaviour** — confirm-destructive, disable pinch-to-zoom
-7. **🔬 Diagnostics** (muted) — force reload, troubleshooting tools, sync log
+1. **📥 Capture New Saves** — vault Reddit username (required), userscript (install /
+   pair / capture now / show button), bookmarklet (+ paste fallback, CSP probe),
+   refresh-scores limit, import-from-inbox, collapsed **Legacy: RSS feed sync**
+2. **☁️ Cloud Database** — status, manual push/pull, Supabase connection (collapsible)
+3. **📊 Library** — stats (active items; deleted count if any), Backup & Restore
+4. **📥 Import & Enrich** — data-export request link, multi-file CSV import, Arctic
+   Shift, session refresh, not-found/mark-dead
+5. **🎛️ Behaviour** — confirm-destructive, disable pinch-to-zoom
+6. **🔬 Diagnostics** (muted) — force reload, troubleshooting tools, sync log
 
 ---
 
@@ -396,9 +455,15 @@ per-item fallback (configurable delay, default 7.5s) for whatever phase 1 missed
 
 ## Known Issues / Pending Work
 
-1. **Cloudflare Worker `ALLOWED_ORIGIN`** — hardcoded to `https://reddivault.vercel.app`;
-   new installs must change it before deploying the worker.
+1. **Legacy RSS cleanup** — after Nov 13, 2026 confirms RSS is gone, delete the feed sync
+   code, feed prefs/config keys, corsfix bits and `cloudflare-worker/` (whose
+   `ALLOWED_ORIGIN` is hardcoded to `https://reddivault.vercel.app`).
 2. **Reddit CSV `saved_posts.csv`** — the saved-date field is usually empty, so `savedAt`
    is typically the import timestamp, not the real save date.
 3. **Window-bridge migration** — a future pass can replace inline `onclick` handlers with
    a `data-action` delegated dispatcher and drop the bridge.
+4. **Logged-in `.json` contingency** — if Reddit ever blocks `.json` for logged-in
+   sessions too, the userscript/bookmarklet can fall back to parsing the saved page's
+   HTML (old.reddit `.thing[data-fullname]`). Not built.
+5. **Userscript on iOS** — Safari extensions may not run in the in-app view a home-screen
+   PWA opens links in; users open Reddit in Safari directly.

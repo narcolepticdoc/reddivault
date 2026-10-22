@@ -202,22 +202,3 @@ export function showToast(msg, type='success') {
 
 export function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// Sleep with a live countdown displayed in enrich-progress-details
-export async function sleepWithCountdown(ms, labelFn) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    const secsLeft = Math.ceil((end - Date.now()) / 1000);
-    const mins = Math.floor(secsLeft / 60);
-    const secs = secsLeft % 60;
-    const timeStr = mins > 0 ? `${mins}m ${secs.toString().padStart(2,'0')}s` : `${secs}s`;
-    state.enrichProgress = { ...state.enrichProgress, rlCountdown: timeStr };
-    const el = document.getElementById('enrich-progress-details');
-    if (el) {
-      const countdownEl = el.querySelector('#rl-countdown');
-      if (countdownEl) countdownEl.textContent = `Resuming in ${timeStr}`;
-    }
-    await sleep(1000);
-  }
-  state.enrichProgress = { ...state.enrichProgress, rlCountdown: null };
-}
-
