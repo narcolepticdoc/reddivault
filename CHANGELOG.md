@@ -5,6 +5,56 @@ Newest releases at the top.
 
 ---
 
+## [0.10.0.0] – 2026-10-22
+Reddit is ending RSS feeds on **Nov 13, 2026**, and has refused unauthenticated
+`.json` requests since **May 28, 2026** ("Logged-in and authenticated access
+won't be impacted"). Capture and enrichment now go through your own logged-in
+Reddit session only.
+### Added
+- **Capture userscript** (`pwa/reddivault.user.js`, served at
+  `/reddivault.user.js`, auto-updating). Captures new saves automatically while
+  Reddit is open (at most every 30 min per device) and refreshes scores &
+  details once a day across all devices. Writes only to `reddit_inbox`, through
+  `GM.xmlHttpRequest`, which isn't subject to page CSP, so it works on new
+  Reddit too. Floating **RV** button with Sync now / Refresh / status / inbox
+  count, menu commands, and deep links (`#rv-capture`, `#rv-refresh`,
+  `#rv-pair=…`, `#rv-show`). Paired once per browser with a code from Settings.
+  Efficient by design: a run with nothing new costs one small Reddit request
+  and no Supabase calls; uploads are batched by count and size; ids are only
+  marked sent after Supabase accepts them.
+- **Account binding** for people with several Reddit accounts. The vault's
+  Reddit username is now required. The userscript and bookmarklet check the
+  logged-in account before every run, with no override, and read
+  `/user/<vault user>/saved.json`. The userscript re-checks before every upload.
+  Every inbox row carries `by`, and the drain rejects rows from any other
+  account (also checked for pasted items).
+- **Inbox op `meta`** (`applyMetaUpdates`) — full details for pending items, or
+  a "missing" marker that counts toward "Mark as dead".
+- **Multi-file CSV import** (saved_posts.csv + saved_comments.csv together) and a
+  "Request your data" link.
+### Changed
+- Settings: "Sync New Saves" and "Bookmarklet Sync" merged into **Capture New
+  Saves**. Its parts are the vault username, then the userscript, then the
+  bookmarklet, then shared options. RSS feed sync moved into a collapsed
+  **Legacy** block with a shutdown notice.
+- Bookmarklet: works on new Reddit by copying your newest saves for pasting.
+  On old Reddit it sends directly. Op ② is now **Refresh scores & details**:
+  it sends only changed scores, plus details for pending items. The
+  "Use anyway" account override is gone. **Re-copy your bookmarklet.**
+- After Nov 13, 2026, automatic RSS feed sync stops running, and a manual sync
+  explains why it fails.
+- Enrichment is now Arctic Shift first, then your Reddit login.
+- Inbox imports push to Supabase in batches of 200, and only clear the dirty
+  flag if every batch succeeded.
+- Score updates now stamp `localEditAt`.
+### Removed
+- The "🐢 Enrich via Reddit" per-item enricher and its speed settings
+  (unauthenticated `.json`, now refused by Reddit). Config keys
+  `enrichReqPerMin`, `enrichRetryReqPerMin`, `enrichRateLimitPause`,
+  `lastRunRateLimitHits` are no longer used.
+
+---
+
 ## [0.9.12.3] – 2026-05-30
 ### Added
 - **Bookmarklet Sync** — a durable capture path for mobile / any browser, for

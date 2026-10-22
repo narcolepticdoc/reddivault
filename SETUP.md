@@ -7,20 +7,21 @@ Welcome! This guide walks you through everything step by step.
 
 ## What You're Setting Up
 
-RedditVault has four parts:
+RedditVault has three main parts, plus a capture tool that runs in your browser:
 
 ```
-[Chrome Extension]  →  [Supabase Cloud DB]  →  [PWA on iPhone]
-  Syncs from Reddit     Stores everything       Browse & organise
-
-[Cloudflare Worker]  (optional)
-  Proxy for auto-sync via Reddit RSS feed
+[Userscript / Bookmarklet]  →  [Supabase Cloud DB]  →  [PWA on iPhone / any browser]
+  Captures from Reddit           Stores everything        Browse & organise
+  using your own login
 ```
 
-- **Chrome Extension** (Mac/desktop): Uses your existing Reddit browser session to upload saved posts to the cloud database. No API keys or Reddit developer account needed.
-- **Supabase**: Free cloud database that syncs between your desktop and phone.
+- **Supabase**: Free cloud database that syncs between your devices.
 - **PWA** (iPhone/any browser): The main app. Add it to your home screen and it works like a native app — search, filter, lists, tags, ratings, and more.
-- **Cloudflare Worker** (optional): A tiny proxy that lets the PWA auto-sync new saves directly from Reddit's RSS feed without needing the Chrome extension.
+- **Userscript** (recommended): Runs inside your browser whenever Reddit is open and captures new saves automatically, using your existing Reddit login. No API keys or Reddit developer account needed.
+- **Bookmarklet** (no install): A bookmark you tap on Reddit to capture saves manually — works in any browser.
+- **Chrome Extension** (optional, desktop): The original desktop sync tool.
+
+> **Why not RSS any more?** Reddit ends RSS feeds on **Nov 13, 2026** and has refused anonymous `.json` requests since May 2026. Reddit said logged-in access is not affected, so RedditVault now reads your saves only through your own logged-in browser session.
 
 **Time to complete: about 20–30 minutes**
 
@@ -102,9 +103,9 @@ The icon will appear on your home screen and launch as a full-screen app.
 
 ---
 
-## PART 3: Set Up the Chrome Extension (Desktop Sync)
+## PART 3 (Optional): Set Up the Chrome Extension (Desktop Sync)
 
-The extension runs on your Mac and pushes your Reddit saved items to Supabase using your existing Reddit login session — no Reddit API access needed.
+The extension runs on your Mac and pushes your Reddit saved items to Supabase using your existing Reddit login session — no Reddit API access needed. **Optional:** the userscript (Part 4) captures on desktop too, automatically — skip to Part 4 if you prefer it.
 
 ### Step 3.1 — Load the Extension in Chrome
 
@@ -132,91 +133,90 @@ The extension runs on your Mac and pushes your Reddit saved items to Supabase us
 
 ---
 
-## PART 4: Set Up Auto-Sync via RSS Feed (Optional)
+## PART 4: Capture New Saves with the Userscript (Recommended)
 
-This lets the PWA automatically check for new Reddit saves on a schedule, without needing the Chrome extension open. It uses Reddit's private RSS feed and a Cloudflare Worker as a CORS proxy.
+The userscript runs inside your browser whenever you have Reddit open. Every 30 minutes at most it checks your saved items and drops any new ones into a temporary **inbox** in your database. Once a day it also refreshes scores and fills in details for imported items. RedditVault imports from the inbox automatically whenever you open *or return to* the app. The userscript never writes to your main table — only the app does that.
 
-### Step 4.1 — Get Your Reddit RSS Feed URL
+It only runs while Reddit is open in that browser. Your saves belong to your Reddit **account**, though, not your device, so one paired browser captures saves you make anywhere — including in the official Reddit app.
 
-1. Log into Reddit on desktop
-2. Go to **https://old.reddit.com/prefs/feeds**
-3. Find the **"saved links"** RSS feed and copy the URL — it looks like:
-   ```
-   https://www.reddit.com/saved.rss?feed=abc123&user=yourusername
-   ```
-   This URL is private to you — treat it like a password.
+### Step 4.1 — Set your Reddit username
 
-### Step 4.2 — Deploy the Cloudflare Worker
+Open RedditVault → Settings → **📥 Capture New Saves**, enter **your vault's Reddit username** and tap **Save**. This is required. Only this account is ever synced (see *More than one Reddit account?* below).
 
-The worker lives in **`cloudflare-worker/reddit-feed-proxy.js`** in this repo.
+### Step 4.2 — Install a userscript manager
 
-1. Go to **https://workers.cloudflare.com** and sign up for a free account
-2. Click **"Create a Worker"**
-3. Delete all the default code in the editor
-4. Paste the entire contents of `cloudflare-worker/reddit-feed-proxy.js`
-5. Find this line near the top and update it to your Vercel URL:
-   ```javascript
-   const ALLOWED_ORIGIN = 'https://reddivault.vercel.app';
-   ```
-6. Click **"Save and Deploy"**
-7. Copy the worker URL — it looks like `https://reddit-feed-proxy.yourname.workers.dev`
+| Device | What to install |
+|---|---|
+| Desktop (Chrome, Edge, Firefox, Safari) | **Tampermonkey** or **Violentmonkey** |
+| Android | **Firefox** or **Microsoft Edge**, then the Violentmonkey or Tampermonkey add-on. *(Chrome for Android has no extensions.)* |
+| iPhone / iPad | The free **Userscripts** app (App Store). Then go to Settings → Apps → Safari → Extensions → **Userscripts** → turn it on and allow it on **reddit.com**. |
 
-> The free Cloudflare Workers plan allows 100,000 requests/day — far more than this app will ever use.
+### Step 4.3 — Install the RedditVault userscript
 
-### Step 4.3 — Configure the PWA
+In **📥 Capture New Saves**, tap **⬇️ Install userscript**. Your manager shows an install screen — confirm it. Updates arrive automatically when RedditVault is updated.
 
-1. Open RedditVault → Settings → **🔄 Sync New Saves** → tap the ⚙️ settings toggle
-2. Paste your **Reddit RSS feed URL** into "Feed URL"
-3. Paste your **Cloudflare Worker URL** into "Proxy URL"
-4. Tap **"Test feed connection"** — you should see a success message
-5. Enable **"Auto-sync"** and set your preferred interval (e.g. every 30 minutes)
+### Step 4.4 — Pair this browser
+
+Tap **🔗 Pair this browser**. Reddit opens, and the userscript asks you to confirm linking to your vault. You do this once per browser.
+- If the link opens the Reddit *app* instead, tap **Copy pairing code**. Then open reddit.com in your browser, tap the **RV** button → **Paste pairing code**.
+
+### Using it
+
+- Just browse Reddit. A small **RV** button sits in the corner: ✓ means all good, ! means paused (wrong account or logged out), ✗ means a problem.
+- Tap **RV** for **Sync now**, **Refresh scores & details**, the last results, and how many items are waiting in the inbox. You can also move or hide the button. Hidden buttons come back via Settings → **Show userscript button**.
+- **Open Reddit & capture now** in Settings opens your saved page and syncs immediately.
+
+> **iPhone tip:** if the RV button doesn't appear, open Reddit in **Safari itself** (e.g. from a Safari bookmark). Links opened from a home-screen app can land in a view where Safari extensions don't run.
+
+### More than one Reddit account?
+
+RedditVault only ever syncs the account you set in Step 4.1:
+- Before every run, the userscript and the bookmarklet check which account is logged in. If it's a different account they pause, and there is no override.
+- They read only that account's saved list.
+- The userscript re-checks right before every upload, in case you switch accounts mid-sync.
+- Every captured item is tagged with the account that captured it, and RedditVault rejects anything from another account.
 
 ---
 
-## PART 4b: Bookmarklet Sync (Mobile / Any Browser)
+## PART 4b: Bookmarklet (No Install, Any Browser)
 
-Reddit is locking down the unauthenticated feed, and there's no Chrome extension on mobile. The **bookmarklet** is the durable alternative: it runs *as* reddit.com using your existing login, grabs your saved items, and drops them into a temporary **inbox** in your database. RedditVault then imports them automatically the next time you open *or return to* the app. The bookmarklet never writes to your main table — only the app does that, through its normal dedup-aware path.
+The **bookmarklet** does the same capture as the userscript, but runs only when you tap it. It runs *as* reddit.com using your existing login, grabs your saved items, and drops them into the same **inbox**.
 
-> ⚠️ **Run it on `old.reddit.com` only.** New Reddit (`www.reddit.com` / `sh.reddit.com`) uses a strict Content-Security-Policy that blocks the bookmarklet from reaching your database — you'll see **"Load failed"** and nothing will be captured. `old.reddit.com` allows it. The "Open old.reddit.com/saved" button in Settings takes you to the right place.
+> **old.reddit.com vs new Reddit:** on **`old.reddit.com`** the bookmarklet sends straight to your vault. New Reddit (`www.reddit.com` / `sh.reddit.com`) has a strict Content-Security-Policy that blocks the direct send. There, the bookmarklet captures your newest ~300 saves and offers a **Copy** button instead — paste the result into RedditVault. *(The userscript isn't affected by this.)*
 
 ### Step 4b.1 — Add the inbox table
 
-If you set up Supabase before v0.9.12.0, add the new staging table: open Supabase → SQL Editor → New Query, paste the `reddit_inbox` block from the **MIGRATION** section of `supabase-schema.sql`, and Run. (Fresh installs from the current schema already include it.)
+If you set up Supabase before v0.9.12.0, add the staging table: open Supabase → SQL Editor → New Query, paste the `reddit_inbox` block from the **MIGRATION** section of `supabase-schema.sql`, and Run. (Fresh installs from the current schema already include it.)
 
 ### Step 4b.2 — Install the bookmarklet
 
-1. Open RedditVault → Settings → **🔖 Bookmarklet Sync**.
-2. *(Recommended)* Enter **Your Reddit username** and tap **Save**. The bookmarklet will then check that you're logged into the right Reddit account before it captures anything — handy if you have more than one account. Leave it blank to skip the check.
-   - While you're here, set **Refresh scores: how many recent saves to check** (default **500**). Reddit scores settle quickly, so a smaller number keeps "Refresh scores" fast and gentle on Reddit; choose **All** when you occasionally want a full sweep. This takes effect immediately — no need to re-copy the bookmarklet when you change it.
+1. Open RedditVault → Settings → **📥 Capture New Saves**, and make sure **your vault's Reddit username** is set (required — the bookmarklet is built with it).
+2. Optionally set **Refresh scores: how many recent saves to check** (default **500**). This is read live, so changing it needs no re-copy.
 3. **Desktop:** drag the **📥 Save to RedditVault** button to your bookmarks bar.
 4. **iOS / Safari:** tap **Copy**. Bookmark any page (Share → Add Bookmark), then open the Bookmarks list (📖 icon) → **Edit** → tap that bookmark → clear its URL → **paste** → Done.
 
-> If you change your username later, re-install/re-copy the bookmarklet so the new value is baked in.
+> If you change your username later, **re-copy the bookmarklet** so the new value is baked in. (Upgrading from v0.9.x? Re-copy it too — older copies don't have the account protection.)
 
 ### Step 4b.3 — Run the bookmarklet (menu)
 
-1. Go to **`old.reddit.com`** (not www/sh — see the warning above) and make sure you're logged in.
+1. Go to **`old.reddit.com`** and make sure you're logged in as your vault's account.
 2. Run the bookmarklet:
    - **Desktop:** click it in the bookmarks bar.
    - **iOS:** open the **Bookmarks list** (📖 icon) and tap it there. *Do not* type its name in the address bar — iOS blocks that ("JavaScript is not allowed to be used this way").
-3. A small menu appears at the top of the page (with **"Logged in as u/…"** so you can confirm the account) and two actions:
-   - **① Capture new saves** — grabs your latest saved items into the inbox. A banner shows progress, then **"Captured N new saves"** (or **"Already up to date"** if nothing changed).
-   - **② Refresh scores** — re-checks the current up/down vote count on your most recent saves (how many is the **Refresh scores** setting above; default 500, or **All**) and queues the updates, showing **"Queued N score updates."** It stages progress as it goes, so even a long run that gets interrupted keeps what it already processed — just run it again to finish.
-4. Switch back to RedditVault (or launch it) — it drains the inbox automatically on launch **and whenever you return to the app**, and shows a toast for anything it imported or any scores it updated. You can also force it from **Settings → 🔖 Bookmarklet Sync → 📨 Import from inbox now**.
+3. A small menu appears at the top of the page, showing **"logged in as u/…"**. If that's not your vault's account, it stops and tells you to switch.
+   - **① Capture new saves** — grabs your latest saved items into the inbox. Shows **"Captured N new saves"** or **"Already up to date"**.
+   - **② Refresh scores & details** — re-checks scores on your most recent saves (the **Refresh scores** setting) and sends only the ones that changed. It also fills in full details for items that still need enrichment (e.g. from a CSV import). It sends as it goes, so an interrupted run keeps its progress — just run it again. *(old.reddit.com only.)*
+4. Switch back to RedditVault — it drains the inbox automatically on launch **and whenever you return to the app**. You can also force it from **Settings → 📥 Capture New Saves → 📨 Import from inbox now**.
 
-**Helpful prompts:** if you run it on the wrong page or while logged out, the menu offers a button to jump to **old.reddit.com** or the **login** page. A bookmarklet can't keep running across a page change, so after it sends you there, **tap the bookmark again** on the page it landed you on.
+**Helpful prompts:** if you run it on the wrong page or while logged out, the menu offers a button to jump to **old.reddit.com** or the **login** page. A bookmarklet can't keep running across a page change, so **tap the bookmark again** on the page it landed you on.
 
-Capture is incremental: it only scans back as far as the newest saves it hasn't seen yet, so routine re-runs are quick. (The first run, or one after a long gap, scans more.) Refresh scores checks however many recent saves you chose in the setting and paces itself (1s between batches, with automatic back-off if Reddit rate-limits), so an **All** sweep on a large library simply takes a bit longer.
-
-Because the feed sync runs on the same triggers and often catches recent saves first, the inbox drain will frequently report **"0 new"** — that's correct dedup, not a failure. The bookmarklet earns its keep for items the feed can't reach (older than the feed window, or when the feed is blocked).
-
-If the capture banner instead offers a **Copy** button (couldn't reach your inbox), tap it, then in RedditVault use **🔖 Bookmarklet Sync → 📋 Paste captured items** to import. (Refresh scores has no clipboard fallback — just re-run it on old.reddit.com.)
+Capture is incremental: it only scans back as far as the newest saves you already have, so routine runs are quick. If the banner offers a **Copy** button (new Reddit, or your vault was unreachable), tap it, then use **📥 Capture New Saves → 📋 Paste captured items** in RedditVault.
 
 ---
 
 ## PART 5: Import Your Full Reddit History (CSV)
 
-Reddit only exposes your most recent ~1,000 saved items via its feed. To import your complete history, request a data export from Reddit.
+Reddit only lists your most recent ~1,000 saved items, so that's all any capture tool can reach. To import your complete history, request a data export from Reddit. It's an official export that doesn't depend on Reddit's APIs. Worth repeating every few months as a backup.
 
 ### Step 5.1 — Request Your Data
 
@@ -225,16 +225,18 @@ Reddit only exposes your most recent ~1,000 saved items via its feed. To import 
 2. Click **"Request data"** or **"Request archive"**
 3. Reddit will email you when it's ready — usually a few hours, up to 24h
 
-### Step 5.2 — Import the CSV
+### Step 5.2 — Import the CSVs
 
 1. Download and unzip the file Reddit emails you
-2. Look for **`saved_posts.csv`** (may be in a subfolder)
-3. Open RedditVault in any desktop browser
+2. Look for **`saved_posts.csv`** and **`saved_comments.csv`** (may be in a subfolder)
+3. Open RedditVault (a desktop browser is easiest)
 4. Go to **Settings → 📥 Import & Enrich**
-5. Tap the import area and select your `saved_posts.csv`
-6. The app will import everything and push new items to Supabase automatically
+5. Tap the import area and select **both files** (or drag them in)
+6. The app imports everything, skips anything you already have, and pushes new items to Supabase automatically
 
-> Reddit's CSV export is sparse — just IDs and URLs. After importing, use the **"Enrich"** button in Settings to fetch full titles, authors, and post bodies from Reddit's public JSON endpoints. This fills in the missing metadata automatically.
+> Reddit's export is sparse — just IDs and links. To fill in titles, authors and post bodies, enrich in two steps:
+> 1. **⚡ Enrich via Arctic Shift** — a public archive that resolves thousands of items in seconds.
+> 2. **Your Reddit login** fills in the rest: the userscript does it automatically once a day, or run the bookmarklet's **② Refresh scores & details** on old.reddit.com. Up to 1,000 items per run.
 
 ---
 
@@ -242,8 +244,8 @@ Reddit only exposes your most recent ~1,000 saved items via its feed. To import 
 
 ### Daily workflow
 
-- **New saves appear automatically** if you set up the RSS feed sync (Part 4)
-- **Or sync manually** via the Chrome extension when you want to push a batch
+- **New saves are captured automatically** while you browse Reddit with the userscript (Part 4), or whenever you tap the bookmarklet (Part 4b)
+- **RedditVault imports them** the next time you open or return to it
 - **On your iPhone** tap the sync button (🔄 top right) to pull the latest from the cloud
 
 ### Organising your library
@@ -275,14 +277,26 @@ Reddit only exposes your most recent ~1,000 saved items via its feed. To import 
 **PWA says "Sync failed"**
 → Check Supabase URL and key in Settings. The URL should end in `.supabase.co` with no trailing slash.
 
-**Feed sync says "Failed" or returns no items**
-→ Check your Cloudflare Worker is deployed and the `ALLOWED_ORIGIN` matches your exact Vercel URL. Check the RSS feed URL is correct by pasting it into a browser — it should return XML.
+**Feed sync says "Failed"**
+→ Reddit ended RSS feeds on Nov 13, 2026. Switch to the userscript (Part 4) or bookmarklet (Part 4b).
+
+**The userscript's RV button shows "!"**
+→ You're logged out, or logged into a different Reddit account than your vault's. Switch to the vault's account — syncing resumes on its own. Tap RV to see which account it sees.
+
+**The userscript's RV button shows "✗" ("vault unreachable")**
+→ Free Supabase projects pause after a week with no activity. Open the Supabase dashboard and restore the project. Nothing is lost — the userscript retries automatically and only marks items as sent once Supabase accepts them.
+
+**No RV button on Reddit**
+→ Check the userscript is installed and enabled in your manager, and (iPhone) that the Userscripts extension is allowed on reddit.com. Open Reddit in the browser itself, not an in-app view. If you hid the button, use Settings → **Show userscript button**.
+
+**"Skipped N captured from u/…" toast in RedditVault**
+→ Something was captured while a different Reddit account was logged in (e.g. an old bookmarklet copy). Those items were not imported. Re-copy the bookmarklet from Settings.
 
 **iPhone app shows browser UI instead of full-screen**
 → Must be opened in **Safari** (not Chrome for iOS) and added to home screen via "Add to Home Screen". Always open from the home screen icon, not from Safari's address bar.
 
 **Imported CSV items are missing titles**
-→ Expected — Reddit's CSV only contains IDs and URLs. Use the **Enrich** button in Settings → Import & Enrich to fetch the missing metadata.
+→ Expected — Reddit's CSV only contains IDs and URLs. Run **⚡ Enrich via Arctic Shift** in Settings → Import & Enrich. The userscript's daily refresh (or the bookmarklet's **② Refresh scores & details**) fills in the rest.
 
 **Sync is slow**
 → Intentional. The extension waits between pages to avoid Reddit rate limits. For 1,000 items expect 10–15 minutes. Leave the popup open and let it run.
@@ -291,9 +305,10 @@ Reddit only exposes your most recent ~1,000 saved items via its feed. To import 
 
 ## Privacy
 
-- Your Reddit credentials are **never stored or sent anywhere** by this app. The extension uses your browser's existing Reddit session (cookies), exactly like normal browsing.
+- Your Reddit credentials are **never stored or sent anywhere** by this app. The userscript, bookmarklet and extension use your browser's existing Reddit session (cookies), exactly like normal browsing.
+- The userscript stores its pairing (your Supabase URL, anon key and Reddit username) only in your userscript manager's storage. The pairing link carries the code in the URL fragment (`#…`), which browsers never send to Reddit's servers.
 - Your Supabase database is private to you. Only someone with your Supabase URL and anon key can access it — keep the anon key private.
-- The Cloudflare Worker only proxies requests from your configured domain and only to Reddit URLs containing a valid feed token.
+- The optional Cloudflare Worker (legacy RSS feed sync, obsolete after Nov 13, 2026) only proxies requests from your configured domain and only to Reddit URLs containing a valid feed token.
 - No data is sent to any third party. Everything lives in your own Supabase project.
 
 ---

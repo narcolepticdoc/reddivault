@@ -440,7 +440,7 @@ export async function exportJSON() {
   const CONFIG_KEYS = [
     'supabaseUrl', 'supabaseKey',
     'redditFeedUrl', 'redditUsername', 'scoreRefreshLimit', 'feedProxyUrl', 'feedProxyType', 'feedFormat',
-    'enrichReqPerMin', 'enrichRetryReqPerMin', 'enrichRateLimitPause', 'enrichMaxAttempts',
+    'enrichMaxAttempts',
     'confirmDestructive', 'disableZoom', 'autoFeedSync', 'autoFeedSyncInterval',
     'recentSearches',
   ];
@@ -459,6 +459,15 @@ export async function exportJSON() {
 }
 
 // ─── RENDER ──────────────────────────────────────────────────────────────────
+// Import several files in one go — Reddit's data export ships saved posts and
+// saved comments as two CSVs (saved_posts.csv, saved_comments.csv). Each file
+// goes through handleFileImport in turn; dedup makes overlaps harmless.
+export async function handleFileImports(files) {
+  for (const file of Array.from(files || [])) {
+    await handleFileImport(file);
+  }
+}
+
 export async function handleFileImport(file) {
   // JSON files are always treated as backups to restore — never merge
   if (file.name.endsWith('.json')) {
