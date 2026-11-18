@@ -11,7 +11,7 @@ bookmarklet (manual), or the Chrome extension. RSS feed sync is legacy — Reddi
 on Nov 13, 2026 and has refused unauthenticated `.json` since May 28, 2026 ("logged-in
 and authenticated access won't be impacted").
 
-**Live URL:** https://reddivault.vercel.app · **Current version:** v0.10.0.0
+**Live URL:** https://reddivault.vercel.app · **Current version:** v0.10.0.1 (userscript 1.1.0)
 
 ---
 
@@ -329,7 +329,16 @@ https://*.reddit.com/*`. Same inbox protocol as the bookmarklet; writes go throu
   something unseen appears does it read 1000 recent vault ids to filter. Uploads in
   batches of ≤100 rows / ≤500 KB; ids are marked seen **only after** Supabase accepts
   the batch, so failures retry next run.
-- **Refresh:** same logic as bookmarklet op ② (changed scores only + meta for pending).
+- **Refresh** (avoids endpoints Reddit's network-security filter blocks for logged-in
+  users since late Oct 2026: `/api/info.json`, `/by_id`, search, at least on new Reddit):
+  (1) scores come from the saved listing itself — the most recent `scoreRefreshLimit`
+  saves, compared against the vault via `reddit_id=in.(…)`, changed scores only;
+  pending items still in the listing get `meta` rows from it. (2) Older pending items
+  (≤1000/run): `/api/info` on the current host, then old.reddit.com via
+  `GM.xmlHttpRequest`, then one `/comments/…json` thread request per item (≤50/run,
+  1.2s pacing) using the stored permalink. A block page (`isSecurityBlock`) is its own
+  error kind — never reported as a login problem — and refresh failures on Reddit's side
+  don't turn the badge red (shown on the panel's "Last refresh" line).
 - **Manual controls:** floating **RV** badge (shadow DOM, CSSOM styles) → panel with
   Sync now / Refresh / status / inbox count / Re-pair / Move / Hide; menu commands;
   hash triggers `#rv-capture`, `#rv-refresh`, `#rv-pair=…`, `#rv-show`.
@@ -462,8 +471,12 @@ considered and rejected (ingestion stopped May 2025).
    is typically the import timestamp, not the real save date.
 3. **Window-bridge migration** — a future pass can replace inline `onclick` handlers with
    a `data-action` delegated dispatcher and drop the bridge.
-4. **Logged-in `.json` contingency** — if Reddit ever blocks `.json` for logged-in
-   sessions too, the userscript/bookmarklet can fall back to parsing the saved page's
-   HTML (old.reddit `.thing[data-fullname]`). Not built.
+4. **Logged-in `.json` contingency** — since late Oct 2026 Reddit's network-security
+   filter blocks some `.json` endpoints even for logged-in users (`/api/info`, `/by_id`,
+   search; reports of subreddit listings too, on old.reddit as well). The saved listing,
+   `/api/me.json` and `/comments/<id>.json` still work. If the saved listing gets blocked,
+   the fallback is parsing the saved page's HTML (old.reddit `.thing[data-fullname]`).
+   Not built. The bookmarklet's ② still uses `/api/info` on old.reddit and may need the
+   userscript's listing-based approach if that gets blocked.
 5. **Userscript on iOS** — Safari extensions may not run in the in-app view a home-screen
    PWA opens links in; users open Reddit in Safari directly.
