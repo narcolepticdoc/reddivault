@@ -5,6 +5,25 @@ Newest releases at the top.
 
 ---
 
+## [0.10.0.1] – 2026-11-18 (userscript 1.1.0)
+### Fixed
+- **Userscript "Refresh scores & details" failed on new Reddit** with a
+  misleading "Reddit logged you out" error. Since late Oct 2026, Reddit's
+  network-security filter returns a 403 block page for `/api/info.json` (also
+  `/by_id`, search) even for logged-in users, while the saved listing,
+  `/api/me.json` and `/comments/<id>.json` still work. Refresh now:
+  - takes **scores from your saved listing** (the endpoint capture uses), sending
+    only changed scores, and fills in pending items that are still in it;
+  - looks up older pending items with `/api/info` on the current site, then on
+    old.reddit.com, then one thread request per item (≤50 per run, paced) if
+    `/api/info` is blocked everywhere.
+- Reddit's block page is reported as **"network security blocked …"** in
+  capture, refresh and the account check, never as a login problem.
+- A refresh problem on Reddit's side no longer turns the RV badge red (capture
+  can be fine). It shows on the panel's "Last refresh" line instead.
+
+---
+
 ## [0.10.0.0] – 2026-10-22
 Reddit is ending RSS feeds on **Nov 13, 2026**, and has refused unauthenticated
 `.json` requests since **May 28, 2026** ("Logged-in and authenticated access

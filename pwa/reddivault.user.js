@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RedditVault Capture
 // @namespace    https://reddivault.vercel.app
-// @version      1.0.0
+// @version      1.1.0
 // @description  Captures your Reddit saves into your RedditVault inbox while you browse Reddit, using your existing login. Only syncs the Reddit account your vault belongs to.
 // @author       RedditVault
 // @homepageURL  https://reddivault.vercel.app
@@ -47,7 +47,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
   const CAPTURE_EVERY_MS = 30 * 60 * 1000;         // automatic capture: at most every 30 min per device
   const REFRESH_EVERY_MS = 24 * 60 * 60 * 1000;    // automatic refresh: once a day...
   const REFRESH_GLOBAL_MIN_MS = 20 * 60 * 60 * 1000; // ...across ALL devices (skip if another device ran it within 20h)
@@ -56,6 +56,8 @@
   const SEEN_MAX = 2000;                           // local "already sent" memory
   const KNOWN_LIMIT = 1000;                        // vault ids read when something looks new
   const PENDING_PER_RUN = 1000;                    // unenriched items refreshed per run
+  const PER_ITEM_PER_RUN = 50;                     // one-by-one lookups per run when /api/info is blocked
+  const PER_ITEM_DELAY_MS = 1200;                  // pacing for one-by-one lookups
   const BATCH_ROWS = 100;                          // inbox upload batch: max rows...
   const BATCH_BYTES = 500 * 1024;                  // ...and max bytes
   const MAX_PAGES = 40;                            // 40 pages ≈ Reddit's ~1000-item listing cap
@@ -243,42 +245,99 @@
   }
 
   // ─── Reddit (your logged-in session) ───────────────────────────────────────
-  // Same-origin fetch first (behaves exactly like the page); if the manager's
-  // sandbox makes that fail, fall back to GM.xmlHttpRequest with cookies.
-  async function redditGet(path) {
-    const url = location.origin + path;
-    try {
-      const res = await fetch(url, { credentials: 'include', headers: { Accept: 'application/json' } });
-      if (res.status === 429 || res.status === 401 || res.status === 403 || res.status === 404) return { status: res.status };
-      if (res.ok) {
+  // Since late Oct 2026 Reddit's "network security" filter answers some JSON
+  // endpoints with a 403 block page even for logged-in users — seen on
+  // /api/info.json, /by_id and search on new Reddit — while others keep working
+  // (your saved listing, /api/me.json, /comments/<id>.json). A block is not a
+  // login problem, so it is reported as its own kind ('blocked'), and refresh
+  // avoids the blocked endpoints rather than failing.
+  const OLD_REDDIT = 'https://old.reddit.com';
+
+  function isSecurityBlock(r) {
+    return (r.status === 403 || r.status === 0) && /blocked by network security|network-security/i.test(r.text || '');
+  }
+
+  // GET a Reddit path as the logged-in user. On the current site: same-origin
+  // fetch first (behaves exactly like the page), then GM.xmlHttpRequest with
+  // cookies if the manager's sandbox makes that fail. For another Reddit host
+  // (old.reddit.com while on new Reddit) only GM.xmlHttpRequest can make the
+  // cross-origin request. Returns { status, json } or { status, text }.
+  async function redditGet(path, host = location.origin) {
+    const url = host + path;
+    if (host === location.origin) {
+      try {
+        const res = await fetch(url, { credentials: 'include', headers: { Accept: 'application/json' } });
         const text = await res.text();
-        try { return { status: res.status, json: JSON.parse(text) }; } catch (e) { /* not JSON — try the fallback */ }
-      }
-    } catch (e) { /* sandboxed fetch failed — try the fallback */ }
-    const r = await gmRequest({ url, headers: { Accept: 'application/json' }, cookies: true });
-    if (r.status === 200) {
-      try { return { status: 200, json: JSON.parse(r.text) }; } catch (e) { return { status: 0 }; }
+        if (res.ok) {
+          try { return { status: res.status, json: JSON.parse(text) }; } catch (e) { /* not JSON — try the fallback */ }
+        } else if ([401, 403, 404, 429].includes(res.status)) {
+          return { status: res.status, text };
+        }
+      } catch (e) { /* sandboxed fetch failed — try the fallback */ }
     }
-    return { status: r.status };
+    let r;
+    try { r = await gmRequest({ url, headers: { Accept: 'application/json' }, cookies: true }); }
+    catch (e) { return { status: 0, text: e.message }; }
+    if (r.status === 200) {
+      try { return { status: 200, json: JSON.parse(r.text) }; } catch (e) { return { status: 0, text: r.text }; }
+    }
+    return { status: r.status, text: r.text };
   }
 
   async function activeAccount() {
     const r = await redditGet('/api/me.json');
+    if (isSecurityBlock(r)) return { error: "Reddit's network security blocked the account check (not a login problem) — it will try again later" };
     if (r.status === 401 || r.status === 403) return { loggedOut: true };
     if (!r.json) return { error: `Reddit /api/me.json returned HTTP ${r.status}` };
     const name = (r.json.data && r.json.data.name) || r.json.name || null;
     return name ? { name } : { loggedOut: true };
   }
 
-  async function redditInfo(ids) {
+  // Reddit's /api/info: up to 100 items per request. Throws RvError 'blocked'
+  // or 'refused' when Reddit won't serve it on that host, so callers can fall back.
+  async function redditInfo(ids, host = location.origin) {
+    const where = new URL(host).host;
     for (let attempt = 0; attempt < 3; attempt++) {
-      const r = await redditGet(`/api/info.json?id=${ids.join(',')}&raw_json=1`);
+      const r = await redditGet(`/api/info.json?id=${ids.join(',')}&raw_json=1`, host);
       if (r.status === 429) { await sleep(5000); continue; }
-      if (r.status === 401 || r.status === 403) throw new RvError('loggedout', 'Reddit logged you out during the refresh');
-      if (!r.json) throw new RvError('reddit', `Reddit error ${r.status}`);
+      if (isSecurityBlock(r)) throw new RvError('blocked', `Reddit's network security blocks /api/info on ${where}`);
+      if (r.status === 401 || r.status === 403) throw new RvError('refused', `Reddit refused /api/info on ${where} (HTTP ${r.status})`);
+      if (!r.json) throw new RvError('reddit', `Reddit error ${r.status} from /api/info on ${where}`);
       return (r.json.data && r.json.data.children) || [];
     }
-    throw new RvError('reddit', 'Reddit kept rate limiting — will try again later');
+    throw new RvError('ratelimit', 'Reddit kept rate limiting — it will try again later');
+  }
+
+  // Path of an item's own thread JSON (/comments/<post>/…), which still works
+  // where /api/info is blocked. A comment needs its post id, which only the
+  // stored permalink carries.
+  function threadJsonPath(id, permalink) {
+    let path = '';
+    try { path = new URL(permalink || '', 'https://www.reddit.com').pathname; } catch (e) { /* none */ }
+    if (!/\/comments\//.test(path)) {
+      if (!id.startsWith('t3_')) return null;
+      path = `/comments/${id.slice(3)}/`;
+    }
+    return path.replace(/\/+$/, '') + '.json?raw_json=1&limit=1';
+  }
+
+  // Find the item in a thread response and shape it like a listing child.
+  function childFromThread(id, json) {
+    const post = Array.isArray(json) && json[0] && json[0].data && json[0].data.children && json[0].data.children[0];
+    if (!post || !post.data) return null;
+    if (id.startsWith('t3_')) return post.data.name === id ? post : null;
+    const bare = id.slice(3);
+    const walk = list => {
+      for (const c of list || []) {
+        if (!c || !c.data) continue;
+        if (c.data.id === bare) return c;
+        const found = c.data.replies && c.data.replies.data && walk(c.data.replies.data.children);
+        if (found) return found;
+      }
+      return null;
+    };
+    const c = walk(json[1] && json[1].data && json[1].data.children);
+    return c ? { kind: 't1', data: { ...c.data, link_title: c.data.link_title || post.data.title } } : null;
   }
 
   // Same slim shape as the bookmarklet, plus `by` (the capturing account).
@@ -368,6 +427,7 @@
         await sleep(5000);
         continue;
       }
+      if (isSecurityBlock(r)) throw new RvError('blocked', "Reddit's network security blocked reading your saved list (not a login problem) — it will try again later");
       if (r.status === 401 || r.status === 403) throw new RvError('reddit-denied', `Reddit refused access to the saves of u/${cfg.x} (HTTP ${r.status}) — are you logged in as u/${cfg.x}?`);
       if (!r.json) throw new RvError('reddit', `Reddit error ${r.status} while reading your saves`);
       const children = (r.json.data && r.json.data.children) || [];
@@ -409,10 +469,15 @@
   }
 
   // ─── Refresh scores & details ──────────────────────────────────────────────
-  // Unenriched (pending) vault items get their full details (op meta, or a
-  // missing marker); the most recent N items (RedditVault's "Refresh scores"
-  // setting) get a score row only when the score changed. /api/info returns
-  // public data, so this never reads anything account-private.
+  // Built around the endpoints Reddit still serves to logged-in users:
+  //  1. Scores come from your saved listing itself (the endpoint capture uses).
+  //     The most recent N saves (RedditVault's "Refresh scores" setting) are
+  //     compared with the vault and only changed scores are sent; pending items
+  //     still in the listing get their full details from it at the same time.
+  //  2. Pending items older than the listing (e.g. CSV imports) are looked up
+  //     with /api/info (100 per request) on this site, then old.reddit.com; if
+  //     Reddit blocks both, one thread request per item, capped per run.
+  // Step 2 reads only public post/comment data.
   async function refresh(cfg, by, progress) {
     let lim = 500;
     try {
@@ -421,58 +486,112 @@
       if (!isNaN(n) && n >= 0) lim = n;
     } catch (e) { /* default */ }
 
-    progress('Loading your vault…');
-    const have = new Map(), order = [];
-    for (let from = 0; ;) {
-      const want = lim > 0 ? Math.min(1000, lim - order.length) : 1000;
-      if (want <= 0) break;
-      const rows = await sbGet(cfg, 'reddit_saves?select=reddit_id,score&deleted_at=is.null&order=saved_at.desc',
-        { Range: `${from}-${from + want - 1}`, 'Range-Unit': 'items' });
-      for (const row of rows) { have.set(row.reddit_id, row.score); order.push(row.reddit_id); }
-      if (rows.length < want) break;
-      from += want;
-    }
-    const pending = (await sbGet(cfg, `reddit_saves?select=reddit_id&enrich_status=eq.pending&deleted_at=is.null&order=saved_at.desc&limit=${PENDING_PER_RUN}`))
-      .map(row => row.reddit_id);
-    const isPending = new Set(pending);
-    const ids = pending.concat(order.filter(id => !isPending.has(id)));
-
+    const out = [];
     let scores = 0, details = 0;
+    const flush = async () => { for (const b of makeBatches(out.splice(0))) await sbInsertInbox(cfg, b); };
+    const metaRow = (id, c) => ({ reddit_id: 'meta:' + id, payload: c ? { op: 'meta', reddit_id: id, child: slim(c, by), by } : { op: 'meta', reddit_id: id, missing: true, by } });
+
+    progress('Loading items that still need details…');
+    const pending = new Map((await sbGet(cfg, `reddit_saves?select=reddit_id,permalink&enrich_status=eq.pending&deleted_at=is.null&order=saved_at.desc&limit=${PENDING_PER_RUN}`))
+      .map(row => [row.reddit_id, row.permalink]));
+
+    // ── 1. Saved listing → changed scores (+ details for pending items in it)
+    const listed = new Map();
+    const maxItems = lim > 0 ? lim : MAX_PAGES * 100;
+    let after = null, rateLimited = 0;
+    for (let page = 0; page < MAX_PAGES && listed.size < maxItems;) {
+      const r = await redditGet(`/user/${encodeURIComponent(cfg.x)}/saved.json?limit=100&raw_json=1${after ? '&after=' + encodeURIComponent(after) : ''}`);
+      if (r.status === 429) {
+        if (++rateLimited > 2) throw new RvError('ratelimit', 'Reddit is rate limiting — it will try again later');
+        await sleep(5000);
+        continue;
+      }
+      if (isSecurityBlock(r)) throw new RvError('blocked', "Reddit's network security blocked reading your saved list — it will try again later");
+      if (r.status === 401 || r.status === 403) throw new RvError('reddit-denied', `Reddit refused access to the saves of u/${cfg.x} (HTTP ${r.status})`);
+      if (!r.json) throw new RvError('reddit', `Reddit error ${r.status} while reading your saves`);
+      const children = (r.json.data && r.json.data.children) || [];
+      for (const c of children) if (c.data && c.data.name && listed.size < maxItems) listed.set(c.data.name, c);
+      progress(`Checking scores… ${listed.size} saves read`);
+      page++;
+      after = r.json.data && r.json.data.after;
+      if (!after || !children.length) break;
+      await sleep(1000);
+    }
+    const ids = [...listed.keys()];
+    const have = new Map();
     for (let i = 0; i < ids.length; i += 100) {
-      const batch = ids.slice(i, i + 100);
-      const children = await redditInfo(batch);
+      const rows = await sbGet(cfg, `reddit_saves?select=reddit_id,score&reddit_id=in.(${ids.slice(i, i + 100).join(',')})`);
+      for (const row of rows) have.set(row.reddit_id, row.score);
+    }
+    for (const [id, c] of listed) {
+      if (pending.has(id)) {
+        out.push(metaRow(id, c)); details++; pending.delete(id);
+      } else if (have.has(id) && typeof c.data.score === 'number' && c.data.score !== have.get(id)) {
+        out.push({ reddit_id: 'score:' + id, payload: { op: 'score', reddit_id: id, score: c.data.score, by } });
+        scores++;
+      }
+    }
+    await flush();
+
+    // ── 2. Pending items that aren't in the listing
+    const rest = [...pending.keys()];
+    let note = '';
+    if (!rest.length) return { scores, details, note };
+    let host = location.origin, useInfo = true, i = 0;
+    for (; i < rest.length; i += 100) {
+      const batch = rest.slice(i, i + 100);
+      let children = null;
+      while (children === null) {
+        try { children = await redditInfo(batch, host); }
+        catch (e) {
+          if (e.kind === 'ratelimit') throw e;
+          if (host !== OLD_REDDIT) { host = OLD_REDDIT; continue; } // try old Reddit once
+          useInfo = false; break;                                    // blocked everywhere: go one by one
+        }
+      }
+      if (!useInfo) break;
       const got = new Map(), needTitle = new Set();
       for (const c of children) {
         const d = c.data;
         if (!d || !d.name) continue;
         got.set(d.name, c);
-        if (isPending.has(d.name) && c.kind === 't1' && !d.link_title && d.link_id) needTitle.add(d.link_id);
+        if (c.kind === 't1' && !d.link_title && d.link_id) needTitle.add(d.link_id);
       }
-      // Comments from /api/info may lack the parent-post title: one extra call per batch.
       if (needTitle.size) {
-        const parents = await redditInfo([...needTitle]);
-        const titles = new Map(parents.filter(p => p.data).map(p => [p.data.name, p.data.title]));
-        for (const c of got.values()) {
-          const d = c.data;
-          if (!d.link_title && d.link_id && titles.has(d.link_id)) d.link_title = titles.get(d.link_id);
-        }
+        try {
+          const titles = new Map((await redditInfo([...needTitle], host)).filter(p => p.data).map(p => [p.data.name, p.data.title]));
+          for (const c of got.values()) { const d = c.data; if (!d.link_title && d.link_id && titles.has(d.link_id)) d.link_title = titles.get(d.link_id); }
+        } catch (e) { if (e.kind === 'ratelimit') throw e; /* titles stay missing; the item stays pending */ }
       }
-      const rows = [];
-      for (const id of batch) {
-        const c = got.get(id);
-        if (isPending.has(id)) {
-          rows.push({ reddit_id: 'meta:' + id, payload: c ? { op: 'meta', reddit_id: id, child: slim(c, by), by } : { op: 'meta', reddit_id: id, missing: true, by } });
-          details++;
-        } else if (c && typeof c.data.score === 'number' && c.data.score !== have.get(id)) {
-          rows.push({ reddit_id: 'score:' + id, payload: { op: 'score', reddit_id: id, score: c.data.score, by } });
-          scores++;
-        }
-      }
-      for (const b of makeBatches(rows)) await sbInsertInbox(cfg, b);
-      progress(`Checked ${Math.min(i + 100, ids.length)}/${ids.length} — ${scores} score changes, ${details} details…`);
-      if (i + 100 < ids.length) await sleep(1000);
+      for (const id of batch) { out.push(metaRow(id, got.get(id))); details++; }
+      await flush();
+      progress(`Looking up older items… ${Math.min(i + 100, rest.length)}/${rest.length}`);
+      if (i + 100 < rest.length) await sleep(1000);
     }
-    return { scores, details };
+    if (useInfo) return { scores, details, note };
+
+    // /api/info is blocked on both hosts: one thread request per item.
+    const left = rest.slice(i);
+    let done = 0, blocked = false;
+    for (const id of left) {
+      if (done >= PER_ITEM_PER_RUN) break;
+      const path = threadJsonPath(id, pending.get(id));
+      if (!path) continue;
+      let r = await redditGet(path);
+      if (r.status === 429) { await sleep(5000); r = await redditGet(path); }
+      if (isSecurityBlock(r)) { blocked = true; break; }
+      if (r.status === 404 || r.status === 403) { out.push(metaRow(id, null)); details++; }
+      else if (r.json) { out.push(metaRow(id, childFromThread(id, r.json))); details++; }
+      done++;
+      if (out.length >= 20) await flush();
+      progress(`Looking up older items one by one… ${done}/${Math.min(left.length, PER_ITEM_PER_RUN)}`);
+      await sleep(PER_ITEM_DELAY_MS);
+    }
+    await flush();
+    const remaining = left.length - done;
+    if (blocked) note = `Reddit blocked item lookups — ${remaining} older item${remaining !== 1 ? 's' : ''} still need details (try Arctic Shift in RedditVault)`;
+    else if (remaining > 0) note = `${remaining} more older item${remaining !== 1 ? 's' : ''} need details — they continue on the next refresh`;
+    return { scores, details, note };
   }
 
   // ─── Cross-tab run lock ────────────────────────────────────────────────────
@@ -543,16 +662,20 @@
       }
       await sbSetPreference(cfg, 'userscriptLastRefreshAt', new Date().toISOString());
       const res = await refresh(cfg, g.active, setBusyUi);
-      await gmSetJSON('lastRefresh', { at: Date.now(), scores: res.scores, details: res.details });
+      await gmSetJSON('lastRefresh', { at: Date.now(), scores: res.scores, details: res.details, note: res.note || '' });
       await setStatus({ kind: 'ok' });
       if (res.scores || res.details) {
-        toast(`RedditVault: queued ${res.scores} score change${res.scores !== 1 ? 's' : ''} and ${res.details} detail refresh${res.details !== 1 ? 'es' : ''}`, 'ok', 5000);
+        toast(`RedditVault: queued ${res.scores} score change${res.scores !== 1 ? 's' : ''} and ${res.details} detail refresh${res.details !== 1 ? 'es' : ''}${res.note ? '. ' + res.note : ''}`, 'ok', res.note ? 9000 : 5000);
       } else if (manual) {
-        toast('RedditVault: scores and details are already current', 'ok');
+        toast(res.note ? 'RedditVault: ' + res.note : 'RedditVault: scores and details are already current', res.note ? 'warn' : 'ok', res.note ? 9000 : 4500);
       }
     } catch (e) {
       await gmSetJSON('lastRefresh', { at: Date.now(), scores: 0, details: 0, error: e.message });
-      await handleRunError(e, manual);
+      // A refresh problem on Reddit's side doesn't mean capture is broken, so it
+      // is shown on the "Last refresh" line without turning the badge red; a
+      // vault problem affects everything and does.
+      if (String(e.kind || '').startsWith('vault')) await handleRunError(e, manual);
+      else if (manual) toast('RedditVault: refresh failed — ' + e.message, 'warn', 9000);
     } finally {
       busy = false; setBusyUi(null); await releaseLock(); renderPanel();
     }
@@ -752,6 +875,7 @@
 
     line(`Last capture: ${lastCap ? ago(lastCap.at) + (lastCap.error ? ' — failed' : ` — ${lastCap.sent} new`) : 'never'}`, C.muted);
     line(`Last refresh: ${lastRef ? ago(lastRef.at) + (lastRef.error ? ' — failed' : ` — ${lastRef.scores} scores, ${lastRef.details} details`) : 'never'}`, C.muted);
+    if (lastRef && (lastRef.error || lastRef.note)) line('↳ ' + (lastRef.error || lastRef.note), lastRef.error ? C.warn : C.muted);
     if (liveInfo && liveInfo.count != null) {
       line(liveInfo.count
         ? `Inbox: ${liveInfo.count} item${liveInfo.count !== 1 ? 's' : ''} waiting — open RedditVault to import`
