@@ -75,18 +75,10 @@ export async function loadConfig() {
   try {
     const url = await db.config.get('supabaseUrl');
     const key = await db.config.get('supabaseKey');
-    const enrichRpm = await db.config.get('enrichReqPerMin');
-    const retryRpm = await db.config.get('enrichRetryReqPerMin');
-    const rlPause = await db.config.get('enrichRateLimitPause');
     if (url) state.supabaseUrl = url.value;
     if (key) state.supabaseKey = key.value;
     const maxAttempts = await db.config.get('enrichMaxAttempts');
-    const lastRunRL = await db.config.get('lastRunRateLimitHits');
-    if (enrichRpm) state.enrichReqPerMin = enrichRpm.value;
-    if (retryRpm) state.enrichRetryReqPerMin = retryRpm.value;
-    if (rlPause) state.enrichRateLimitPause = rlPause.value;
     if (maxAttempts) state.enrichMaxAttempts = maxAttempts.value;
-    if (lastRunRL) state.lastRunRateLimitHits = lastRunRL.value;
     const recents = await db.config.get('recentSearches');
     if (recents) state.recentSearches = recents.value || [];
     const recentlyViewed = await db.config.get('recentlyViewed');

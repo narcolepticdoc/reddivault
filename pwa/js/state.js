@@ -3,7 +3,7 @@ import { autoFeedSyncIfDue } from './feed.js';
 import { escHtml } from './util.js';
 
 // ─── VERSION ─────────────────────────────────────────────────────────────────
-export const APP_VERSION = '0.9.19.3';
+export const APP_VERSION = '0.10.0.0';
 
 // ─── DATABASE ────────────────────────────────────────────────────────────────
 export const db = new Dexie('RedditVault');
@@ -87,11 +87,7 @@ export let state = {
   syncStatus: 'unknown',
   enriching: false,
   enrichProgress: { done: 0, total: 0 },
-  enrichReqPerMin: 8,
-  enrichRetryReqPerMin: 4,
-  enrichRateLimitPause: 5,
   enrichMaxAttempts: 3,
-  lastRunRateLimitHits: null,
   authorFreq: {},
   recentSearches: [],
   recentlyViewed: [],   // [{ id, ts }] newest-first, local-only, cap 100

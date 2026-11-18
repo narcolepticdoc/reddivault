@@ -630,8 +630,10 @@ export async function deltaPullBeforePush() {
   }
 }
 
+// Returns true on success and false on failure (the failure is also flagged via
+// markDirty), so batching callers can skip markClean when any batch failed.
 export async function pushToSupabase(items, skipClean = false) {
-  if (!state.supabaseUrl || !state.supabaseKey) return;
+  if (!state.supabaseUrl || !state.supabaseKey) return false;
   const payload = items.map(i => ({
     reddit_id: i.redditId,
     type: i.type,
@@ -658,13 +660,27 @@ export async function pushToSupabase(items, skipClean = false) {
     if (ids.length) await db.items.where('redditId').anyOf(ids).modify({ syncedAt: ts });
     syncLog(`push: ${items.length} item${items.length !== 1 ? 's' : ''} pushed to cloud`, 'ok');
     if (!skipClean) await markClean();
+    return true;
   } catch(e) {
     syncLog(`push: failed — ${e.message}`, 'error');
     console.warn('Push failed:', e);
     // Flag the failure so the retry machinery re-pushes these items later —
     // callers like feed sync and the inbox drain don't handle it themselves.
     await markDirty('item push failed');
+    return false;
   }
+}
+
+// Push items in batches of 200 (one request per batch), then clear the dirty
+// flag once — only if every batch succeeded. A failed batch has already called
+// markDirty, so the retry machinery picks those items up later.
+export async function pushInBatches(items, batchSize = 200) {
+  if (!items.length || !state.supabaseUrl || !state.supabaseKey) return;
+  let ok = true;
+  for (let i = 0; i < items.length; i += batchSize) {
+    if (!(await pushToSupabase(items.slice(i, i + batchSize), true))) ok = false;
+  }
+  if (ok) await markClean();
 }
 
 export async function pushListsToSupabase(skipPull = false) {

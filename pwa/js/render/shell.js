@@ -1,5 +1,5 @@
 // render/shell.js — view rendering (split out of the former render.js).
-import { handleFileImport } from '../dataio.js';
+import { handleFileImport, handleFileImports } from '../dataio.js';
 import { setSort, showPage } from '../items.js';
 import { APP_VERSION, renderSyncLogEntries, state, syncLog } from '../state.js';
 import { escHtml } from '../util.js';
@@ -256,8 +256,7 @@ export function attachEventListeners() {
     dropZone.ondrop = async e => {
       e.preventDefault();
       dropZone.classList.remove('drag-over');
-      const file = e.dataTransfer.files[0];
-      if (file) await handleFileImport(file);
+      await handleFileImports(e.dataTransfer.files);
     };
   }
 }

@@ -24,7 +24,7 @@ export function renderTrashView() {
         <div class="empty"><div class="empty-icon">✓</div><h3>No deleted items</h3></div>
       ` : `
         <button class="btn btn-danger btn-sm" style="width:100%;justify-content:center;margin-bottom:12px"
-          onclick="if(confirm('Remove ${deletedItems.length} item${deletedItems.length!==1?'s':''} from the database entirely? If they still exist in your Reddit saves they may reappear on next feed sync.'))purgeDeletedItems()">
+          onclick="if(confirm('Remove ${deletedItems.length} item${deletedItems.length!==1?'s':''} from the database entirely? If they are still in your Reddit saves they may come back the next time they are captured.'))purgeDeletedItems()">
           ⚠️ Purge all from database
         </button>
         ${deletedItems.map(item => {
@@ -44,7 +44,7 @@ export function renderTrashView() {
                 <button class="btn btn-ghost btn-sm" onclick="showPreview(${item.id})">👁 View</button>
                 <button class="btn btn-ghost btn-sm" onclick="restoreDeletedItem(${item.id})">↩ Restore</button>
                 <a class="btn btn-ghost btn-sm" href="${escHtml(openUrl)}" target="_blank" rel="noopener">↗ Open</a>
-                <button class="btn btn-danger btn-sm" onclick="if(confirm('Remove from database entirely? It may reappear on next feed sync.'))purgeSingleItem(${item.id})">⚠ Purge</button>
+                <button class="btn btn-danger btn-sm" onclick="if(confirm('Remove from database entirely? It may come back the next time it is captured.'))purgeSingleItem(${item.id})">⚠ Purge</button>
               </div>
             </div>`;
         }).join('')}

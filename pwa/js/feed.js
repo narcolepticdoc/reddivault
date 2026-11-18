@@ -51,9 +51,24 @@ export async function saveFeedUrl() {
   render();
 }
 
+// Reddit stops serving RSS feeds on this date ("we'll stop supporting RSS feeds
+// on November 13, 2026"). Feed sync is kept as a legacy option until then;
+// afterwards automatic feed sync stops running (so it can't fail on every app
+// open) and a manual sync explains why it failed. Capture moved to the
+// bookmarklet/userscript, which use the user's own Reddit login instead.
+export const RSS_SUNSET = '2026-11-13';
+export function rssRetired(now = Date.now()) {
+  return now >= Date.parse(`${RSS_SUNSET}T00:00:00Z`);
+}
+
+let _loggedRssRetired = false;
 export async function autoFeedSyncIfDue() {
   if (!state.autoFeedSync) return;
   if (!state.redditFeedUrl) return;
+  if (rssRetired()) {
+    if (!_loggedRssRetired) { syncLog('autoFeedSync: off — Reddit ended RSS feeds on Nov 13, 2026'); _loggedRssRetired = true; }
+    return;
+  }
   if (state.feedSyncing) return;
   const lastFeedSync = await db.config.get('lastFeedSync');
   const lastMs = lastFeedSync ? new Date(lastFeedSync.value).getTime() : 0;
@@ -450,9 +465,12 @@ export async function syncFromFeed() {
     }
 
   } catch(e) {
-    state.feedSyncResult = { added, skipped, pages, error: e.message };
+    const msg = rssRetired()
+      ? `Reddit ended RSS feeds on November 13, 2026, so feed sync no longer works — use the userscript or bookmarklet in Capture New Saves. (${e.message})`
+      : e.message;
+    state.feedSyncResult = { added, skipped, pages, error: msg };
     syncLog(`feedSync: failed — ${e.message}`, 'error');
-    showToast(`Sync failed: ${e.message}`, 'error');
+    showToast(`Sync failed: ${msg}`, 'error');
   }
 
   state.feedSyncing = false;

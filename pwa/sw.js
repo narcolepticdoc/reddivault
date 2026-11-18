@@ -1,4 +1,4 @@
-const VERSION = '0.9.19.3';
+const VERSION = '0.10.0.0';
 const CACHE = `reddivault-${VERSION}`;
 
 const ASSETS = [
@@ -65,6 +65,9 @@ self.addEventListener('fetch', e => {
   // network so API responses are never served stale from cache.
   if (!sameOrigin && !isCdn) return;
   if (sameOrigin && url.pathname.startsWith('/api/')) return;
+  // The capture userscript is installed and auto-updated by userscript managers
+  // from the network — never serve it from this cache, or updates would stall.
+  if (sameOrigin && url.pathname.endsWith('.user.js')) return;
 
   // Main app HTML — network first, cache fallback
   if (sameOrigin && (url.pathname === '/' || url.pathname.endsWith('/index.html'))) {
